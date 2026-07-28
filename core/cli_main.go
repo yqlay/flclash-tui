@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.2.2"
+const cliVersion = "0.2.3"
 
 type cliPaths struct {
 	homeDir    string
@@ -176,7 +176,7 @@ func resolvePaths(configArg, directoryArg string) (cliPaths, error) {
 			return cliPaths{}, fmt.Errorf("resolve user config directory: %w", err)
 		}
 		homeDir = filepath.Join(configRoot, "flclash")
-		configArg = "config.yaml"
+		configPath = filepath.Join(homeDir, "config.yaml")
 	}
 
 	absoluteHome, err := filepath.Abs(homeDir)

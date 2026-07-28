@@ -18,21 +18,24 @@ The binary is written to `dist/flclash-cli`.
 
 ## Install the Debian package
 
-Download `flclash-cli_0.2.2_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
+Download `flclash-cli_0.2.3_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
 
 ```bash
-sudo dpkg -i flclash-cli_0.2.2_amd64.deb
+sudo dpkg -i flclash-cli_0.2.3_amd64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash-cli` and documentation under `/usr/share/doc/flclash-cli`.
 
 ## Run the TUI
 
-Create a Clash/Mihomo configuration at `~/.config/flclash/config.yaml`, then:
-
 ```bash
 ./dist/flclash-cli
 ```
+
+On first launch, when the default configuration is missing, the TUI creates a
+minimal DIRECT-only configuration automatically. Open page `6`, press `n` to
+download a subscription URL, then press Enter on the downloaded profile to
+activate it. Existing configuration files are never overwritten.
 
 The TUI provides dashboard, proxy-group and node switching, live connections,
 traffic totals, logs, core settings, provider updates, YAML profile switching,

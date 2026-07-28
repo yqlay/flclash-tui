@@ -76,6 +76,47 @@ func TestResolvePathsUsesRelativeDirectoryOnce(t *testing.T) {
 	}
 }
 
+func TestResolvePathsDefaultConfigUsesUserConfigDirectory(t *testing.T) {
+	configRoot, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := resolvePaths("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHome, _ := filepath.Abs(filepath.Join(configRoot, "flclash"))
+	wantConfig := filepath.Join(wantHome, "config.yaml")
+	if paths.homeDir != wantHome || paths.configPath != wantConfig {
+		t.Fatalf("paths = (%q, %q), want (%q, %q)", paths.homeDir, paths.configPath, wantHome, wantConfig)
+	}
+}
+
+func TestEnsureTUIConfigCreatesMinimalConfig(t *testing.T) {
+	directory := t.TempDir()
+	paths := cliPaths{homeDir: directory, configPath: filepath.Join(directory, "config.yaml")}
+	if err := ensureTUIConfig(paths, true); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(paths.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message := validateConfigBytes(data); message != "" {
+		t.Fatalf("generated config is invalid: %s", message)
+	}
+	if err := ensureTUIConfig(paths, true); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(paths.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(second) != string(data) {
+		t.Fatal("existing config was overwritten")
+	}
+}
+
 func TestRestoreLatestTUIConfigDoesNotOverwriteWithInvalidBackup(t *testing.T) {
 	directory := t.TempDir()
 	configPath := filepath.Join(directory, "config.yaml")

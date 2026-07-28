@@ -135,6 +135,19 @@ type tuiProviderResponse struct {
 	} `json:"providers"`
 }
 
+const defaultTUIConfig = `mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - DIRECT
+rules:
+  - MATCH,PROXY
+`
+
 func tuiCommand(args []string) error {
 	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -154,6 +167,9 @@ func tuiCommand(args []string) error {
 	}
 	if !isInteractiveTUI() {
 		return errors.New("TUI requires an interactive terminal; use run or proxy commands in non-interactive shells")
+	}
+	if err := ensureTUIConfig(paths, *configArg == ""); err != nil {
+		return err
 	}
 
 	var setupParams []byte
@@ -179,6 +195,23 @@ func tuiCommand(args []string) error {
 		}
 	}
 	return runTUI(client, paths, setupParams, !*noStartArg)
+}
+
+func ensureTUIConfig(paths cliPaths, allowCreate bool) error {
+	_, err := os.Stat(paths.configPath)
+	if err == nil {
+		return nil
+	}
+	if !os.IsNotExist(err) || !allowCreate {
+		return fmt.Errorf("config file %q: %w", paths.configPath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.configPath), 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := os.WriteFile(paths.configPath, []byte(defaultTUIConfig), 0o600); err != nil {
+		return fmt.Errorf("create default config: %w", err)
+	}
+	return nil
 }
 
 func startCore(paths cliPaths, testURL, controller, secret string) ([]byte, error) {

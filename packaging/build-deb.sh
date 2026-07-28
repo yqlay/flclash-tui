@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.2.2}"
+VERSION="${VERSION:-0.2.3}"
 ARCH="${ARCH:-amd64}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist}"
 PACKAGE_NAME="flclash-cli_${VERSION}_${ARCH}"
@@ -66,6 +66,6 @@ tar -C "${TARBALL_STAGE}" -czf "${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz" "${PACKAGE
 echo "Built ${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz"
 
 sha256sum "${OUTPUT_DIR}/${PACKAGE_NAME}.deb" \
-  | awk '{print $1}' > "${OUTPUT_DIR}/${PACKAGE_NAME}.deb.sha256"
+  | awk -v file="${PACKAGE_NAME}.deb" '{print $1 "  " file}' > "${OUTPUT_DIR}/${PACKAGE_NAME}.deb.sha256"
 sha256sum "${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz" \
-  | awk '{print $1}' > "${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz.sha256"
+  | awk -v file="${PACKAGE_NAME}.tar.gz" '{print $1 "  " file}' > "${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz.sha256"
