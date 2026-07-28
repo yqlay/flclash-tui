@@ -11,13 +11,16 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	nethttp "net/http"
 
+	"github.com/metacubex/mihomo/config"
 	logrus "github.com/sirupsen/logrus"
 	"golang.org/x/term"
 )
@@ -149,28 +152,50 @@ func tuiCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-
-	var setupParams []byte
-	if !*noStartArg {
-		setupParams, err = startCore(paths, *testURLArg, *controllerArg, *secretArg)
-		if err != nil {
-			return err
-		}
+	if !isInteractiveTUI() {
+		return errors.New("TUI requires an interactive terminal; use run or proxy commands in non-interactive shells")
 	}
 
+	var setupParams []byte
 	client := controllerClient{options: controllerOptions{
 		address: *controllerArg,
 		secret:  *secretArg,
 	}}
+	if !*noStartArg {
+		if err := ensureControllerFree(*controllerArg); err != nil {
+			return err
+		}
+		setupParams, err = startCore(paths, *testURLArg, *controllerArg, *secretArg)
+		if err != nil {
+			return err
+		}
+		var setup SetupParams
+		if err := UnmarshalJson(setupParams, &setup); err == nil && setup.ExternalControllerSecret != nil {
+			client.options.secret = *setup.ExternalControllerSecret
+		}
+		if err := waitForController(client, 3*time.Second); err != nil {
+			handleShutdown()
+			return err
+		}
+	}
 	return runTUI(client, paths, setupParams, !*noStartArg)
 }
 
 func startCore(paths cliPaths, testURL, controller, secret string) ([]byte, error) {
-	if _, err := os.Stat(paths.configPath); err != nil {
+	configData, err := os.ReadFile(paths.configPath)
+	if err != nil {
 		return nil, fmt.Errorf("config file %q: %w", paths.configPath, err)
 	}
 	if err := os.MkdirAll(paths.homeDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
+	}
+	rawConfig, err := config.UnmarshalRawConfig(configData)
+	if err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	effectiveSecret := secret
+	if effectiveSecret == "" {
+		effectiveSecret = rawConfig.Secret
 	}
 
 	initParams, err := json.Marshal(InitParams{
@@ -191,7 +216,9 @@ func startCore(paths cliPaths, testURL, controller, secret string) ([]byte, erro
 	}
 	if controller != "" {
 		setup.ExternalController = &controller
-		setup.ExternalControllerSecret = &secret
+		if effectiveSecret != "" {
+			setup.ExternalControllerSecret = &effectiveSecret
+		}
 	}
 	setupParams, err := json.Marshal(setup)
 	if err != nil {
@@ -207,7 +234,7 @@ func startCore(paths cliPaths, testURL, controller, secret string) ([]byte, erro
 }
 
 func runTUI(client controllerClient, paths cliPaths, setupParams []byte, ownsCore bool) error {
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !isInteractiveTUI() {
 		return errors.New("TUI requires an interactive terminal; use run or proxy commands in non-interactive shells")
 	}
 
@@ -233,11 +260,19 @@ func runTUI(client controllerClient, paths cliPaths, setupParams []byte, ownsCor
 
 	keys := make(chan tuiKey)
 	go readTUIKeys(os.Stdin, keys)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
+		case <-signals:
+			if ownsCore {
+				handleShutdown()
+			}
+			return nil
 		case key := <-keys:
 			switch key {
 			case tuiKeyQuit:
@@ -284,7 +319,7 @@ func runTUI(client controllerClient, paths cliPaths, setupParams []byte, ownsCor
 					snapshot.Status = "All connections closed"
 				}
 			case tuiKeyCloseConnection:
-				if snapshot.Page != tuiPageConnections || len(snapshot.Connections) == 0 {
+				if snapshot.Page != tuiPageConnections || snapshot.SelectedConnection < 0 || snapshot.SelectedConnection >= len(snapshot.Connections) {
 					break
 				}
 				connection := snapshot.Connections[snapshot.SelectedConnection]
@@ -308,7 +343,7 @@ func runTUI(client controllerClient, paths cliPaths, setupParams []byte, ownsCor
 				}
 			case tuiKeyEdit:
 				editPath := paths.configPath
-				if snapshot.Page == tuiPageProfiles && len(snapshot.Profiles) > 0 {
+				if snapshot.Page == tuiPageProfiles && snapshot.SelectedRow >= 0 && snapshot.SelectedRow < len(snapshot.Profiles) {
 					editPath = snapshot.Profiles[snapshot.SelectedRow].Path
 				}
 				if err := runTUIEditor(editPath, &oldState); err != nil {
@@ -409,7 +444,7 @@ func backupTUIConfig(configPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	backupPath := fmt.Sprintf("%s.backup-%d", configPath, time.Now().Unix())
+	backupPath := fmt.Sprintf("%s.backup-%d", configPath, time.Now().UnixNano())
 	if err := os.WriteFile(backupPath, data, 0o600); err != nil {
 		return "", err
 	}
@@ -439,13 +474,34 @@ func restoreLatestTUIConfig(configPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if message := validateConfigBytes(data); message != "" {
+		return "", fmt.Errorf("restored config is invalid: %s", message)
+	}
 	if err := os.WriteFile(configPath, data, 0o600); err != nil {
 		return "", err
 	}
-	if message := handleValidateConfig(configPath); message != "" {
-		return "", fmt.Errorf("restored config is invalid: %s", message)
-	}
 	return latest, nil
+}
+
+func isInteractiveTUI() bool {
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+func waitForController(client controllerClient, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if _, err := client.request(nethttp.MethodGet, "/", nil); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("controller did not become ready")
+	}
+	return fmt.Errorf("controller is not ready: %w", lastErr)
 }
 
 func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
@@ -557,7 +613,8 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 		snapshot.Profiles = nil
 		return
 	}
-	profiles := make([]tuiProfile, 0, len(entries))
+	profiles := make([]tuiProfile, 0, len(entries)+1)
+	currentFound := false
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -567,12 +624,13 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 			continue
 		}
 		path := filepath.Join(paths.homeDir, entry.Name())
+		current := filepath.Clean(path) == filepath.Clean(paths.configPath)
+		currentFound = currentFound || current
 		profiles = append(profiles, tuiProfile{
-			Name: entry.Name(), Path: path,
-			Current: filepath.Clean(path) == filepath.Clean(paths.configPath),
+			Name: entry.Name(), Path: path, Current: current,
 		})
 	}
-	if len(profiles) == 0 {
+	if !currentFound {
 		profiles = append(profiles, tuiProfile{
 			Name: filepath.Base(paths.configPath), Path: paths.configPath, Current: true,
 		})
@@ -602,11 +660,15 @@ func switchTUIProfile(snapshot *tuiSnapshot, paths *cliPaths, setupParams *[]byt
 	}
 	controller := client.options.address
 	secret := client.options.secret
-	params := SetupParams{
-		TestURL:     "https://www.gstatic.com/generate_204",
-		SelectedMap: map[string]string{}, ExternalController: &controller,
-		ExternalControllerSecret: &secret,
+	params := defaultSetupParams()
+	if len(*setupParams) > 0 {
+		if err := UnmarshalJson(*setupParams, params); err != nil {
+			snapshot.Status = "Profile setup failed: " + err.Error()
+			return
+		}
 	}
+	params.ExternalController = &controller
+	params.ExternalControllerSecret = &secret
 	newSetupParams, err := json.Marshal(params)
 	if err != nil {
 		snapshot.Status = "Profile setup failed: " + err.Error()
@@ -631,6 +693,7 @@ func switchTUIProfile(snapshot *tuiSnapshot, paths *cliPaths, setupParams *[]byt
 	*setupParams = newSetupParams
 	snapshot.Status = "Active profile: " + profile.Name
 	refreshTUISnapshot(snapshot, client)
+	refreshTUIProfiles(snapshot, *paths)
 }
 
 func isTUIGroup(proxyType string) bool {
@@ -683,11 +746,11 @@ func moveTUIConnection(snapshot *tuiSnapshot, delta int) {
 }
 
 func selectTUIProxy(snapshot *tuiSnapshot, client controllerClient) {
-	if len(snapshot.Groups) == 0 {
+	if snapshot.SelectedGroup < 0 || snapshot.SelectedGroup >= len(snapshot.Groups) {
 		return
 	}
 	group := snapshot.Groups[snapshot.SelectedGroup]
-	if len(group.Nodes) == 0 {
+	if snapshot.SelectedNode < 0 || snapshot.SelectedNode >= len(group.Nodes) {
 		return
 	}
 	if err := client.selectProxy(group.Name, group.Nodes[snapshot.SelectedNode]); err != nil {
@@ -699,7 +762,7 @@ func selectTUIProxy(snapshot *tuiSnapshot, client controllerClient) {
 }
 
 func updateTUIProvider(snapshot *tuiSnapshot, client controllerClient) {
-	if len(snapshot.Providers) == 0 {
+	if snapshot.SelectedProvider < 0 || snapshot.SelectedProvider >= len(snapshot.Providers) {
 		return
 	}
 	provider := snapshot.Providers[snapshot.SelectedProvider]
@@ -771,11 +834,7 @@ func linuxSystemProxyEnabled() bool {
 
 func setLinuxSystemProxy(port int, enable bool) error {
 	schema := linuxProxySchema()
-	mode := "none"
-	if enable {
-		mode = "manual"
-	}
-	commands := [][]string{{schema, "mode", mode}}
+	commands := make([][]string, 0, 7)
 	if enable {
 		commands = append(commands,
 			[]string{schema, "ignore-hosts", "[]"},
@@ -787,6 +846,13 @@ func setLinuxSystemProxy(port int, enable bool) error {
 			[]string{schema + ".socks", "port", fmt.Sprintf("%d", port)},
 		)
 	}
+	mode := "none"
+	if enable {
+		mode = "manual"
+	}
+	// Set mode last so a failed host/port update cannot leave a half-configured
+	// desktop proxy enabled.
+	commands = append(commands, []string{schema, "mode", mode})
 	for _, args := range commands {
 		if output, err := exec.Command("gsettings", append([]string{"set"}, args...)...).CombinedOutput(); err != nil {
 			return fmt.Errorf("gsettings: %s", strings.TrimSpace(string(output)))
@@ -803,70 +869,81 @@ func linuxProxySchema() string {
 }
 
 func runTUIEditor(path string, oldState **term.State) error {
-	if err := leaveTUIMode(*oldState); err != nil {
-		return err
-	}
-	defer func() { _ = reenterTUIMode(oldState) }()
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		editor = "vi"
-	}
-	command := exec.Command("sh", "-c", editor+" -- \"$1\"", "flclash-tui-editor", path)
-	command.Stdin = os.Stdin
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	return command.Run()
+	return runTUICooked(oldState, func() error {
+		editor := os.Getenv("VISUAL")
+		if editor == "" {
+			editor = os.Getenv("EDITOR")
+		}
+		if editor == "" {
+			editor = "vi"
+		}
+		command := exec.Command("sh", "-c", editor+" -- \"$1\"", "flclash-tui-editor", path)
+		command.Stdin = os.Stdin
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		return command.Run()
+	})
 }
 
 func addTUIProfile(homeDir string, oldState **term.State) error {
+	return runTUICooked(oldState, func() error {
+		_, _ = fmt.Fprint(os.Stdout, "Subscription URL (empty cancels): ")
+		value, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && len(value) == 0 {
+			return err
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil
+		}
+		parsed, err := nethttp.NewRequest(nethttp.MethodGet, value, nil)
+		if err != nil || (parsed.URL.Scheme != "http" && parsed.URL.Scheme != "https") {
+			return errors.New("subscription URL must use http or https")
+		}
+		client := &nethttp.Client{Timeout: 30 * time.Second}
+		response, err := client.Do(parsed)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			return fmt.Errorf("subscription returned %s", response.Status)
+		}
+		data, err := io.ReadAll(response.Body)
+		if err != nil {
+			return err
+		}
+		if len(data) == 0 {
+			return errors.New("subscription response is empty")
+		}
+		if err := os.MkdirAll(homeDir, 0o700); err != nil {
+			return err
+		}
+		path := filepath.Join(homeDir, fmt.Sprintf("profile-%d.yaml", time.Now().UnixNano()))
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			return err
+		}
+		if message := handleValidateConfig(path); message != "" {
+			_ = os.Remove(path)
+			return fmt.Errorf("downloaded profile is invalid: %s", message)
+		}
+		return nil
+	})
+}
+
+func runTUICooked(oldState **term.State, action func() error) error {
 	if err := leaveTUIMode(*oldState); err != nil {
 		return err
 	}
-	defer func() { _ = reenterTUIMode(oldState) }()
-	_, _ = fmt.Fprint(os.Stdout, "Subscription URL (empty cancels): ")
-	value, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil && len(value) == 0 {
-		return err
+	actionErr := action()
+	reenterErr := reenterTUIMode(oldState)
+	if actionErr != nil {
+		if reenterErr != nil {
+			return fmt.Errorf("%v (failed to restore TUI terminal: %w)", actionErr, reenterErr)
+		}
+		return actionErr
 	}
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	parsed, err := nethttp.NewRequest(nethttp.MethodGet, value, nil)
-	if err != nil || (parsed.URL.Scheme != "http" && parsed.URL.Scheme != "https") {
-		return errors.New("subscription URL must use http or https")
-	}
-	client := &nethttp.Client{Timeout: 30 * time.Second}
-	response, err := client.Do(parsed)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("subscription returned %s", response.Status)
-	}
-	data, err := io.ReadAll(response.Body)
-	if err != nil {
-		return err
-	}
-	if len(data) == 0 {
-		return errors.New("subscription response is empty")
-	}
-	if err := os.MkdirAll(homeDir, 0o700); err != nil {
-		return err
-	}
-	path := filepath.Join(homeDir, fmt.Sprintf("profile-%d.yaml", time.Now().Unix()))
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return err
-	}
-	if message := handleValidateConfig(path); message != "" {
-		_ = os.Remove(path)
-		return fmt.Errorf("downloaded profile is invalid: %s", message)
-	}
-	return nil
+	return reenterErr
 }
 
 func leaveTUIMode(state *term.State) error {

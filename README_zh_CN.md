@@ -24,7 +24,7 @@ make cli-linux
 预编译的 Debian 安装包可在 [Releases](https://github.com/yqlay/flclash-cli/releases) 页面下载：
 
 ```bash
-sudo dpkg -i flclash-cli_0.2.1_amd64.deb
+sudo dpkg -i flclash-cli_0.2.2_amd64.deb
 ```
 
 ## 原始 FlClash 应用

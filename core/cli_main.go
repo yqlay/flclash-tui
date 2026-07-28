@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,9 +18,10 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 )
 
-const cliVersion = "0.2.1"
+const cliVersion = "0.2.2"
 
 type cliPaths struct {
 	homeDir    string
@@ -234,7 +236,7 @@ func (c controllerClient) requestStreamFirst(path string) ([]byte, error) {
 	if c.options.secret != "" {
 		req.Header.Set("Authorization", "Bearer "+c.options.secret)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := controllerHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -269,7 +271,7 @@ func (c controllerClient) request(method, path string, body io.Reader) ([]byte, 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := controllerHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -282,6 +284,35 @@ func (c controllerClient) request(method, path string, body io.Reader) ([]byte, 
 		return nil, fmt.Errorf("controller returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
 	}
 	return data, nil
+}
+
+const controllerRequestTimeout = 5 * time.Second
+
+var controllerHTTPClient = &http.Client{Timeout: controllerRequestTimeout}
+
+func controllerDialAddress(address string) (string, bool) {
+	base := address
+	if !strings.Contains(base, "://") {
+		base = "http://" + base
+	}
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Host == "" {
+		return "", false
+	}
+	return parsed.Host, true
+}
+
+func ensureControllerFree(address string) error {
+	dialAddress, ok := controllerDialAddress(address)
+	if !ok {
+		return nil
+	}
+	connection, err := net.DialTimeout("tcp", dialAddress, 100*time.Millisecond)
+	if err != nil {
+		return nil
+	}
+	_ = connection.Close()
+	return fmt.Errorf("controller address %q is already in use; use --no-start to connect to an existing core or choose another port", address)
 }
 
 func (c controllerClient) listProxies() error {

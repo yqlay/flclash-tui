@@ -18,10 +18,10 @@ The binary is written to `dist/flclash-cli`.
 
 ## Install the Debian package
 
-Download `flclash-cli_0.2.1_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
+Download `flclash-cli_0.2.2_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
 
 ```bash
-sudo dpkg -i flclash-cli_0.2.1_amd64.deb
+sudo dpkg -i flclash-cli_0.2.2_amd64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash-cli` and documentation under `/usr/share/doc/flclash-cli`.

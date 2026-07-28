@@ -4,6 +4,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -45,5 +47,55 @@ func TestReadTUIKeys(t *testing.T) {
 		if got := <-keys; got != expected {
 			t.Fatalf("key = %v, want %v", got, expected)
 		}
+	}
+}
+
+func TestResolvePathsUsesDirectoryForDefaultConfig(t *testing.T) {
+	directory := t.TempDir()
+	paths, err := resolvePaths("", directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHome, _ := filepath.Abs(directory)
+	wantConfig := filepath.Join(wantHome, "config.yaml")
+	if paths.homeDir != wantHome || paths.configPath != wantConfig {
+		t.Fatalf("paths = (%q, %q), want (%q, %q)", paths.homeDir, paths.configPath, wantHome, wantConfig)
+	}
+}
+
+func TestResolvePathsUsesRelativeDirectoryOnce(t *testing.T) {
+	directory := filepath.Join("test-data", "instance")
+	paths, err := resolvePaths("", directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHome, _ := filepath.Abs(directory)
+	wantConfig := filepath.Join(wantHome, "config.yaml")
+	if paths.homeDir != wantHome || paths.configPath != wantConfig {
+		t.Fatalf("paths = (%q, %q), want (%q, %q)", paths.homeDir, paths.configPath, wantHome, wantConfig)
+	}
+}
+
+func TestRestoreLatestTUIConfigDoesNotOverwriteWithInvalidBackup(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	original := []byte("mixed-port: 17890\n")
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := configPath + ".backup-999999999999999999"
+	if err := os.WriteFile(backupPath, []byte("mixed-port: [invalid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := restoreLatestTUIConfig(configPath); err == nil {
+		t.Fatal("restore unexpectedly accepted invalid backup")
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("config changed after invalid restore: %q", data)
 	}
 }

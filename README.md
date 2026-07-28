@@ -24,7 +24,7 @@ See [CLI_LINUX.md](CLI_LINUX.md) for TUI pages, keyboard controls, configuration
 Prebuilt Debian packages are available on the [Releases](https://github.com/yqlay/flclash-cli/releases) page:
 
 ```bash
-sudo dpkg -i flclash-cli_0.2.1_amd64.deb
+sudo dpkg -i flclash-cli_0.2.2_amd64.deb
 ```
 
 ## Original FlClash application
