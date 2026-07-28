@@ -45,6 +45,7 @@ func handleInitClash(paramsString string) bool {
 	}
 	version = params.Version
 	constant.SetHomeDir(params.HomeDir)
+	configFilePath = params.ConfigPath
 	isInit = true
 	return isInit
 }

@@ -4,6 +4,27 @@
 
 </div>
 
+# FlClash Linux CLI
+
+这是基于 [FlClash](https://github.com/chen08209/FlClash) 开发的非官方 Linux 命令行衍生项目。它复用 FlClash 的 Go/Mihomo 核心，并增加前台运行、配置校验、配置重载以及通过 Mihomo External Controller 管理代理组的能力。
+
+本项目不是 FlClash 官方发布版本。版权和许可证信息请查看 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
+
+## 快速开始
+
+```bash
+git clone --recurse-submodules https://github.com/yqlay/flclash-cli.git
+cd flclash-cli
+make cli-linux
+./dist/flclash-cli run --config ~/.config/flclash/config.yaml
+```
+
+具体配置、代理控制和限制请查看 [Linux CLI 文档](CLI_LINUX.md)。
+
+## 原始 FlClash 应用
+
+由于 CLI 复用了原项目的核心集成和平台代码，本仓库仍然包含原始 Flutter 图形应用。原始 GUI 项目和正式发布版本请查看 [chen08209/FlClash](https://github.com/chen08209/FlClash)。
+
 ## FlClash
 
 [![Downloads](https://img.shields.io/github/downloads/chen08209/FlClash/total?style=flat-square&logo=github)](https://github.com/chen08209/FlClash/releases/)[![Last Version](https://img.shields.io/github/release/chen08209/FlClash/all.svg?style=flat-square)](https://github.com/chen08209/FlClash/releases/)[![License](https://img.shields.io/github/license/chen08209/FlClash?style=flat-square)](LICENSE)
@@ -44,6 +65,15 @@ on Mobile:
     sudo apt-get install libayatana-appindicator3-dev
     sudo apt-get install libkeybinder-3.0-dev
    ```
+
+如果只需要终端运行代理，不需要 Flutter 图形界面，可以构建 Linux CLI 版本：
+
+```bash
+make cli-linux
+./dist/flclash-cli run --config ~/.config/flclash/config.yaml
+```
+
+CLI 版本复用 FlClash 的 Go/Mihomo 核心，支持配置校验、前台运行、SIGHUP 重载，以及通过 External Controller 列出和切换代理组。详见 [Linux CLI 文档](CLI_LINUX.md)。
 
 ### Android
 

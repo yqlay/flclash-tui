@@ -33,12 +33,13 @@ import (
 )
 
 var (
-	currentConfig *config.Config
-	version       = 0
-	isRunning     = false
-	runLock       sync.Mutex
-	mBatch, _     = batch.New[bool](context.Background(), batch.WithConcurrencyNum[bool](50))
-	debugError    = false
+	currentConfig  *config.Config
+	configFilePath string
+	version        = 0
+	isRunning      = false
+	runLock        sync.Mutex
+	mBatch, _      = batch.New[bool](context.Background(), batch.WithConcurrencyNum[bool](50))
+	debugError     = false
 )
 
 func getExternalProvidersRaw() map[string]cp.Provider {
@@ -255,7 +256,11 @@ func applyConfig(params *SetupParams) error {
 	defer runLock.Unlock()
 	var err error
 	constant.DefaultTestURL = params.TestURL
-	currentConfig, err = executor.ParseWithPath(filepath.Join(constant.Path.HomeDir(), "config.yaml"))
+	path := configFilePath
+	if path == "" {
+		path = filepath.Join(constant.Path.HomeDir(), "config.yaml")
+	}
+	currentConfig, err = executor.ParseWithPath(path)
 	if err != nil {
 		currentConfig, _ = config.ParseRawConfig(config.DefaultRawConfig())
 	}

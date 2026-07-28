@@ -4,6 +4,27 @@
 
 </div>
 
+# FlClash CLI for Linux
+
+An unofficial Linux command-line client derived from [FlClash](https://github.com/chen08209/FlClash). It reuses FlClash's Go/Mihomo core and adds a foreground CLI entry point, configuration validation, reload support, and proxy-group control through the Mihomo External Controller.
+
+This is an independent derivative project, not an official FlClash release. See [NOTICE](NOTICE) and [LICENSE](LICENSE) for copyright and license information.
+
+## Quick start
+
+```bash
+git clone --recurse-submodules https://github.com/yqlay/flclash-cli.git
+cd flclash-cli
+make cli-linux
+./dist/flclash-cli run --config ~/.config/flclash/config.yaml
+```
+
+See [CLI_LINUX.md](CLI_LINUX.md) for configuration, proxy control, and limitations.
+
+## Original FlClash application
+
+The original Flutter graphical application remains in this repository because the CLI reuses its core integration and platform code. For the upstream GUI project and releases, see [chen08209/FlClash](https://github.com/chen08209/FlClash).
+
 ## FlClash
 
 [![Downloads](https://img.shields.io/github/downloads/chen08209/FlClash/total?style=flat-square&logo=github)](https://github.com/chen08209/FlClash/releases/)[![Last Version](https://img.shields.io/github/release/chen08209/FlClash/all.svg?style=flat-square)](https://github.com/chen08209/FlClash/releases/)[![License](https://img.shields.io/github/license/chen08209/FlClash?style=flat-square)](LICENSE)
@@ -44,6 +65,15 @@ on Mobile:
     sudo apt-get install libayatana-appindicator3-dev
     sudo apt-get install libkeybinder-3.0-dev
    ```
+
+For terminal-only use without the Flutter GUI, build the Linux CLI:
+
+```bash
+make cli-linux
+./dist/flclash-cli run --config ~/.config/flclash/config.yaml
+```
+
+The CLI reuses FlClash's Go/Mihomo core and supports configuration validation, foreground execution, SIGHUP reload, and proxy-group control through the External Controller. See [Linux CLI documentation](CLI_LINUX.md).
 
 ### Android
 
