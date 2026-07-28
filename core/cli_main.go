@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -18,7 +19,7 @@ import (
 	"syscall"
 )
 
-const cliVersion = "0.1.0"
+const cliVersion = "0.2.0"
 
 type cliPaths struct {
 	homeDir    string
@@ -31,25 +32,26 @@ type controllerOptions struct {
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		printUsage(os.Stdout)
-		return
-	}
-
 	var err error
-	switch os.Args[1] {
-	case "run", "start":
-		err = runCommand(os.Args[2:])
-	case "check", "validate":
-		err = checkCommand(os.Args[2:])
-	case "proxy":
-		err = proxyCommand(os.Args[2:])
-	case "version", "--version", "-v":
-		fmt.Printf("FlClash CLI %s (Mihomo core)\n", cliVersion)
-	case "help", "--help", "-h":
-		printUsage(os.Stdout)
-	default:
-		err = fmt.Errorf("unknown command %q", os.Args[1])
+	if len(os.Args) < 2 {
+		err = tuiCommand(nil)
+	} else {
+		switch os.Args[1] {
+		case "tui", "ui":
+			err = tuiCommand(os.Args[2:])
+		case "run", "start":
+			err = runCommand(os.Args[2:])
+		case "check", "validate":
+			err = checkCommand(os.Args[2:])
+		case "proxy":
+			err = proxyCommand(os.Args[2:])
+		case "version", "--version", "-v":
+			fmt.Printf("FlClash CLI %s (Mihomo core)\n", cliVersion)
+		case "help", "--help", "-h":
+			printUsage(os.Stdout)
+		default:
+			err = fmt.Errorf("unknown command %q", os.Args[1])
+		}
 	}
 
 	if err != nil {
@@ -65,6 +67,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "FlClash CLI - Linux command-line client powered by the FlClash Mihomo core")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  flclash-cli [tui] --config ./config.yaml")
 	fmt.Fprintln(w, "  flclash-cli run --config ./config.yaml")
 	fmt.Fprintln(w, "  flclash-cli check --config ./config.yaml")
 	fmt.Fprintln(w, "  flclash-cli proxy list --controller 127.0.0.1:9090")
@@ -72,6 +75,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  flclash-cli version")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  tui, ui           Open the full-screen terminal interface (default)")
 	fmt.Fprintln(w, "  run, start       Start the proxy in the foreground")
 	fmt.Fprintln(w, "  check, validate   Validate a Clash/Mihomo YAML configuration")
 	fmt.Fprintln(w, "  proxy             Inspect or change a running core through its API")
@@ -92,34 +96,12 @@ func runCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(paths.configPath); err != nil {
-		return fmt.Errorf("config file %q: %w", paths.configPath, err)
-	}
-	if err := os.MkdirAll(paths.homeDir, 0o700); err != nil {
-		return fmt.Errorf("create data directory: %w", err)
-	}
-
-	initParams, err := json.Marshal(InitParams{
-		HomeDir:    paths.homeDir,
-		ConfigPath: paths.configPath,
-		Version:    1,
-	})
-	if err != nil {
+	if _, err := startCore(paths, *testURL, "", ""); err != nil {
 		return err
 	}
-	if !handleInitClash(string(initParams)) {
-		return errors.New("initialize FlClash core failed")
-	}
-
 	setupParams, err := json.Marshal(SetupParams{TestURL: *testURL, SelectedMap: map[string]string{}})
 	if err != nil {
 		return err
-	}
-	if message := handleSetupConfig(setupParams); message != "" {
-		return fmt.Errorf("load config: %s", message)
-	}
-	if !handleStartListener() {
-		return errors.New("start proxy listeners failed")
 	}
 
 	fmt.Printf("FlClash CLI is running\n")
@@ -240,6 +222,38 @@ type controllerClient struct {
 	options controllerOptions
 }
 
+func (c controllerClient) requestStreamFirst(path string) ([]byte, error) {
+	base := c.options.address
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "http://" + base
+	}
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(base, "/")+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.options.secret != "" {
+		req.Header.Set("Authorization", "Bearer "+c.options.secret)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("controller returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+	}
+	line, err := bufio.NewReader(resp.Body).ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return nil, err
+	}
+	return bytesTrimSpace(line), nil
+}
+
+func bytesTrimSpace(data []byte) []byte {
+	return []byte(strings.TrimSpace(string(data)))
+}
+
 func (c controllerClient) request(method, path string, body io.Reader) ([]byte, error) {
 	base := c.options.address
 	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
@@ -314,4 +328,29 @@ func (c controllerClient) selectProxy(group, proxy string) error {
 	}
 	fmt.Printf("selected %q in %q\n", proxy, group)
 	return nil
+}
+
+func (c controllerClient) closeAllConnections() error {
+	_, err := c.request(http.MethodDelete, "/connections", nil)
+	return err
+}
+
+func (c controllerClient) closeConnection(id string) error {
+	_, err := c.request(http.MethodDelete, "/connections/"+url.PathEscape(id), nil)
+	return err
+}
+
+func (c controllerClient) patchConfig(values map[string]interface{}) error {
+	body, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	_, err = c.request(http.MethodPatch, "/configs", strings.NewReader(string(body)))
+	return err
+}
+
+func (c controllerClient) updateProvider(name string) error {
+	path := "/providers/proxies/" + url.PathEscape(name)
+	_, err := c.request(http.MethodPut, path, nil)
+	return err
 }

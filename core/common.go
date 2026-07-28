@@ -264,6 +264,15 @@ func applyConfig(params *SetupParams) error {
 	if err != nil {
 		currentConfig, _ = config.ParseRawConfig(config.DefaultRawConfig())
 	}
+	if params.ExternalController != nil {
+		currentConfig.Controller.ExternalController = *params.ExternalController
+		currentConfig.Controller.ExternalControllerTLS = ""
+		currentConfig.Controller.ExternalControllerUnix = ""
+		currentConfig.Controller.ExternalControllerPipe = ""
+		if params.ExternalControllerSecret != nil {
+			currentConfig.Controller.Secret = *params.ExternalControllerSecret
+		}
+	}
 	hub.ApplyConfig(currentConfig)
 	patchSelectGroup(params.SelectedMap)
 	updateListeners()

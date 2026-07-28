@@ -18,8 +18,10 @@ type InitParams struct {
 }
 
 type SetupParams struct {
-	SelectedMap map[string]string `json:"selected-map"`
-	TestURL     string            `json:"test-url"`
+	SelectedMap              map[string]string `json:"selected-map"`
+	TestURL                  string            `json:"test-url"`
+	ExternalController       *string           `json:"external-controller,omitempty"`
+	ExternalControllerSecret *string           `json:"external-controller-secret,omitempty"`
 }
 
 type UpdateParams struct {

@@ -12,6 +12,8 @@ help:
 	@echo 'make core PLATFORM=linux ARCH=amd64'
 	@echo 'make core-macos ARCH=arm64'
 	@echo 'make core-android ARCH=arm64'
+	@echo 'make cli-linux                    # build Linux TUI/CLI'
+	@echo 'make package-linux-deb            # build Debian and tar.gz packages'
 	@echo 'make core-android TARGET_PLATFORM=android-arm64'
 
 submodules:

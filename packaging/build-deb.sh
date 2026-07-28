@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-0.2.0}"
 ARCH="${ARCH:-amd64}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist}"
 PACKAGE_NAME="flclash-cli_${VERSION}_${ARCH}"
@@ -49,9 +49,9 @@ Section: net
 Priority: optional
 Architecture: ${ARCH}
 Maintainer: yqlay <yqlay@users.noreply.github.com>
-Description: Linux CLI client derived from FlClash
- Unofficial Linux command-line client that reuses the FlClash Mihomo core.
- Supports foreground proxy execution, config validation, reload, and control.
+Description: Linux TUI and CLI client derived from FlClash
+ Unofficial Linux terminal interface and command-line client that reuses the FlClash Mihomo core.
+ Supports interactive proxy management, config profiles, settings, and scriptable control.
 EOF
 
 dpkg-deb --build --root-owner-group "${WORK_DIR}" "${OUTPUT_DIR}/${PACKAGE_NAME}.deb" >/dev/null
@@ -64,3 +64,8 @@ cp -a "${WORK_DIR}/usr/bin/flclash-cli" "${TARBALL_STAGE}/${PACKAGE_NAME}/"
 cp -a "${WORK_DIR}/usr/share/doc/flclash-cli/." "${TARBALL_STAGE}/${PACKAGE_NAME}/"
 tar -C "${TARBALL_STAGE}" -czf "${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}"
 echo "Built ${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz"
+
+sha256sum "${OUTPUT_DIR}/${PACKAGE_NAME}.deb" \
+  | awk '{print $1}' > "${OUTPUT_DIR}/${PACKAGE_NAME}.deb.sha256"
+sha256sum "${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz" \
+  | awk '{print $1}' > "${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz.sha256"

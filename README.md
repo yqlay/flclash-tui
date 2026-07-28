@@ -6,7 +6,7 @@
 
 # FlClash CLI for Linux
 
-An unofficial Linux command-line client derived from [FlClash](https://github.com/chen08209/FlClash). It reuses FlClash's Go/Mihomo core and adds a foreground CLI entry point, configuration validation, reload support, and proxy-group control through the Mihomo External Controller.
+An unofficial Linux TUI/CLI client derived from [FlClash](https://github.com/chen08209/FlClash). It reuses FlClash's Go/Mihomo core and provides a full-screen terminal interface plus scriptable commands.
 
 This is an independent derivative project, not an official FlClash release. See [NOTICE](NOTICE) and [LICENSE](LICENSE) for copyright and license information.
 
@@ -16,15 +16,15 @@ This is an independent derivative project, not an official FlClash release. See 
 git clone --recurse-submodules https://github.com/yqlay/flclash-cli.git
 cd flclash-cli
 make cli-linux
-./dist/flclash-cli run --config ~/.config/flclash/config.yaml
+./dist/flclash-cli --config ~/.config/flclash/config.yaml
 ```
 
-See [CLI_LINUX.md](CLI_LINUX.md) for configuration, proxy control, and limitations.
+See [CLI_LINUX.md](CLI_LINUX.md) for TUI pages, keyboard controls, configuration, proxy control, and multi-instance usage.
 
 Prebuilt Debian packages are available on the [Releases](https://github.com/yqlay/flclash-cli/releases) page:
 
 ```bash
-sudo dpkg -i flclash-cli_0.1.0_amd64.deb
+sudo dpkg -i flclash-cli_0.2.0_amd64.deb
 ```
 
 ## Original FlClash application
@@ -76,10 +76,10 @@ For terminal-only use without the Flutter GUI, build the Linux CLI:
 
 ```bash
 make cli-linux
-./dist/flclash-cli run --config ~/.config/flclash/config.yaml
+./dist/flclash-cli --config ~/.config/flclash/config.yaml
 ```
 
-The CLI reuses FlClash's Go/Mihomo core and supports configuration validation, foreground execution, SIGHUP reload, and proxy-group control through the External Controller. See [Linux CLI documentation](CLI_LINUX.md).
+No arguments opens the TUI. It includes dashboard, proxy groups/nodes, connections, traffic, logs, settings, providers, YAML profiles, reload, and Linux system-proxy controls. The `run`, `check`, and `proxy` commands remain available for automation. See [Linux CLI documentation](CLI_LINUX.md).
 
 ### Android
 

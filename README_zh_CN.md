@@ -6,7 +6,7 @@
 
 # FlClash Linux CLI
 
-这是基于 [FlClash](https://github.com/chen08209/FlClash) 开发的非官方 Linux 命令行衍生项目。它复用 FlClash 的 Go/Mihomo 核心，并增加前台运行、配置校验、配置重载以及通过 Mihomo External Controller 管理代理组的能力。
+这是基于 [FlClash](https://github.com/chen08209/FlClash) 开发的非官方 Linux TUI/CLI 衍生项目。它复用 FlClash 的 Go/Mihomo 核心，提供全屏终端界面，同时保留脚本化命令。
 
 本项目不是 FlClash 官方发布版本。版权和许可证信息请查看 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
 
@@ -16,15 +16,15 @@
 git clone --recurse-submodules https://github.com/yqlay/flclash-cli.git
 cd flclash-cli
 make cli-linux
-./dist/flclash-cli run --config ~/.config/flclash/config.yaml
+./dist/flclash-cli --config ~/.config/flclash/config.yaml
 ```
 
-具体配置、代理控制和限制请查看 [Linux CLI 文档](CLI_LINUX.md)。
+具体页面、快捷键、配置、代理控制和多实例用法请查看 [Linux CLI 文档](CLI_LINUX.md)。
 
 预编译的 Debian 安装包可在 [Releases](https://github.com/yqlay/flclash-cli/releases) 页面下载：
 
 ```bash
-sudo dpkg -i flclash-cli_0.1.0_amd64.deb
+sudo dpkg -i flclash-cli_0.2.0_amd64.deb
 ```
 
 ## 原始 FlClash 应用
@@ -76,10 +76,10 @@ on Mobile:
 
 ```bash
 make cli-linux
-./dist/flclash-cli run --config ~/.config/flclash/config.yaml
+./dist/flclash-cli --config ~/.config/flclash/config.yaml
 ```
 
-CLI 版本复用 FlClash 的 Go/Mihomo 核心，支持配置校验、前台运行、SIGHUP 重载，以及通过 External Controller 列出和切换代理组。详见 [Linux CLI 文档](CLI_LINUX.md)。
+不带参数时进入 TUI，包含仪表盘、代理组/节点、连接、流量、日志、设置、Provider、YAML 配置切换、重载和 Linux 系统代理控制；`run`、`check`、`proxy` 命令仍可供脚本使用。详见 [Linux CLI 文档](CLI_LINUX.md)。
 
 ### Android
 
