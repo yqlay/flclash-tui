@@ -39,6 +39,7 @@ const (
 	tuiPageSettings
 	tuiPageProfiles
 	tuiPageProviders
+	tuiPageTools
 )
 
 type tuiConnection struct {
@@ -274,6 +275,8 @@ func runTUI(client controllerClient, paths cliPaths, setupParams []byte, ownsCor
 				snapshot.Page = tuiPageProfiles
 			case tuiKeyProviders:
 				snapshot.Page = tuiPageProviders
+			case tuiKeyTools:
+				snapshot.Page = tuiPageTools
 			case tuiKeyCloseConnections:
 				if err := client.closeAllConnections(); err != nil {
 					snapshot.Status = "Close connections failed: " + err.Error()
@@ -326,6 +329,35 @@ func runTUI(client controllerClient, paths cliPaths, setupParams []byte, ownsCor
 						refreshTUIProfiles(&snapshot, paths)
 					}
 				}
+			case tuiKeyBackup:
+				if backupPath, err := backupTUIConfig(paths.configPath); err != nil {
+					snapshot.Status = "Backup failed: " + err.Error()
+				} else {
+					snapshot.Status = "Backup created: " + filepath.Base(backupPath)
+				}
+			case tuiKeyRestore:
+				if backupPath, err := restoreLatestTUIConfig(paths.configPath); err != nil {
+					snapshot.Status = "Restore failed: " + err.Error()
+				} else if ownsCore {
+					if message := handleSetupConfig(setupParams); message != "" {
+						snapshot.Status = "Restore applied with errors: " + message
+					} else {
+						snapshot.Status = "Restored: " + filepath.Base(backupPath)
+					}
+				}
+			case tuiKeyGeoUpdate:
+				if err := client.updateGeo(); err != nil {
+					snapshot.Status = "Geo update failed: " + err.Error()
+				} else {
+					snapshot.Status = "Geo databases update started"
+				}
+			case tuiKeyResetTraffic:
+				if ownsCore {
+					handleResetTraffic()
+					snapshot.Status = "Traffic counters reset"
+				} else {
+					snapshot.Status = "Traffic reset requires a core started by this process"
+				}
 			case tuiKeyUp:
 				if snapshot.Page == tuiPageProviders {
 					moveTUIProvider(&snapshot, -1)
@@ -370,6 +402,50 @@ func runTUI(client controllerClient, paths cliPaths, setupParams []byte, ownsCor
 			drawTUI(os.Stdout, snapshot, paths, client.options.address, ownsCore, coreRunning)
 		}
 	}
+}
+
+func backupTUIConfig(configPath string) (string, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", err
+	}
+	backupPath := fmt.Sprintf("%s.backup-%d", configPath, time.Now().Unix())
+	if err := os.WriteFile(backupPath, data, 0o600); err != nil {
+		return "", err
+	}
+	return backupPath, nil
+}
+
+func restoreLatestTUIConfig(configPath string) (string, error) {
+	entries, err := os.ReadDir(filepath.Dir(configPath))
+	if err != nil {
+		return "", err
+	}
+	prefix := filepath.Base(configPath) + ".backup-"
+	var latest string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		candidate := filepath.Join(filepath.Dir(configPath), entry.Name())
+		if latest == "" || entry.Name() > filepath.Base(latest) {
+			latest = candidate
+		}
+	}
+	if latest == "" {
+		return "", errors.New("no config backup found")
+	}
+	data, err := os.ReadFile(latest)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		return "", err
+	}
+	if message := handleValidateConfig(configPath); message != "" {
+		return "", fmt.Errorf("restored config is invalid: %s", message)
+	}
+	return latest, nil
 }
 
 func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
@@ -851,6 +927,11 @@ const (
 	tuiKeyEdit
 	tuiKeyNewProfile
 	tuiKeyCloseConnection
+	tuiKeyTools
+	tuiKeyBackup
+	tuiKeyRestore
+	tuiKeyGeoUpdate
+	tuiKeyResetTraffic
 )
 
 func readTUIKeys(reader io.Reader, keys chan<- tuiKey) {
@@ -907,6 +988,16 @@ func readTUIKeys(reader io.Reader, keys chan<- tuiKey) {
 			key = tuiKeyNewProfile
 		case 'd':
 			key = tuiKeyCloseConnection
+		case '8':
+			key = tuiKeyTools
+		case 'b':
+			key = tuiKeyBackup
+		case 'B':
+			key = tuiKeyRestore
+		case 'g':
+			key = tuiKeyGeoUpdate
+		case 'z':
+			key = tuiKeyResetTraffic
 		case '\r', '\n', ' ':
 			key = tuiKeySelect
 		case 'k':
@@ -978,6 +1069,7 @@ func drawTUI(w io.Writer, snapshot tuiSnapshot, paths cliPaths, controllerAddres
 		b.WriteString("  e            edit selected/current YAML in $EDITOR\n")
 		b.WriteString("  n            download a subscription profile\n")
 		b.WriteString("  6            profiles  7 providers\n")
+		b.WriteString("  8            tools (backup, restore, Geo, editor)\n")
 		b.WriteString("  ?            toggle help\n")
 		b.WriteString("  q/Ctrl-C     quit\n")
 	} else if snapshot.Page == tuiPageConnections {
@@ -1004,6 +1096,15 @@ func drawTUI(w io.Writer, snapshot tuiSnapshot, paths cliPaths, controllerAddres
 			}
 			b.WriteString("\n  Enter updates the selected proxy provider.\n")
 		}
+	} else if snapshot.Page == tuiPageTools {
+		b.WriteString("\n  \x1b[1mTools\x1b[0m\n\n")
+		b.WriteString("  e  edit the current YAML configuration in $EDITOR\n")
+		b.WriteString("  b  create a timestamped configuration backup\n")
+		b.WriteString("  B  restore the newest configuration backup\n")
+		b.WriteString("  g  update Mihomo Geo databases\n")
+		b.WriteString("  z  reset traffic counters\n")
+		b.WriteString("\n  Advanced DNS, network, rules, scripts, and profile overrides remain\n")
+		b.WriteString("  available through the same YAML editor and core configuration path.\n")
 	} else if snapshot.Page == tuiPageDashboard {
 		drawTUIDashboard(&b, snapshot, paths)
 	} else if len(snapshot.Groups) == 0 {
@@ -1036,7 +1137,7 @@ func drawTUI(w io.Writer, snapshot tuiSnapshot, paths cliPaths, controllerAddres
 	}
 
 	b.WriteString("\n────────────────────────────────────────────────────────────────────────\n")
-	b.WriteString(" 1 dashboard  2 proxies  3 connections  4 logs  5 settings  6 profiles  7 providers\n")
+	b.WriteString(" 1 dashboard  2 proxies  3 connections  4 logs  5 settings  6 profiles  7 providers  8 tools\n")
 	b.WriteString(" ↑/↓ select  ←/→ node  Enter switch  r refresh  R reload  e edit  n new profile\n")
 	b.WriteString(" d close selected  x close all  ? help  q quit\n")
 	_, _ = io.WriteString(w, b.String())

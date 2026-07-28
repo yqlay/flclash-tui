@@ -19,7 +19,7 @@ import (
 	"syscall"
 )
 
-const cliVersion = "0.2.0"
+const cliVersion = "0.2.1"
 
 type cliPaths struct {
 	homeDir    string
@@ -352,5 +352,10 @@ func (c controllerClient) patchConfig(values map[string]interface{}) error {
 func (c controllerClient) updateProvider(name string) error {
 	path := "/providers/proxies/" + url.PathEscape(name)
 	_, err := c.request(http.MethodPut, path, nil)
+	return err
+}
+
+func (c controllerClient) updateGeo() error {
+	_, err := c.request(http.MethodPost, "/configs/geo", nil)
 	return err
 }
