@@ -21,6 +21,12 @@ make cli-linux
 
 See [CLI_LINUX.md](CLI_LINUX.md) for configuration, proxy control, and limitations.
 
+Prebuilt Debian packages are available on the [Releases](https://github.com/yqlay/flclash-cli/releases) page:
+
+```bash
+sudo dpkg -i flclash-cli_0.1.0_amd64.deb
+```
+
 ## Original FlClash application
 
 The original Flutter graphical application remains in this repository because the CLI reuses its core integration and platform code. For the upstream GUI project and releases, see [chen08209/FlClash](https://github.com/chen08209/FlClash).

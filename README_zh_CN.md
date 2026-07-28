@@ -21,6 +21,12 @@ make cli-linux
 
 具体配置、代理控制和限制请查看 [Linux CLI 文档](CLI_LINUX.md)。
 
+预编译的 Debian 安装包可在 [Releases](https://github.com/yqlay/flclash-cli/releases) 页面下载：
+
+```bash
+sudo dpkg -i flclash-cli_0.1.0_amd64.deb
+```
+
 ## 原始 FlClash 应用
 
 由于 CLI 复用了原项目的核心集成和平台代码，本仓库仍然包含原始 Flutter 图形应用。原始 GUI 项目和正式发布版本请查看 [chen08209/FlClash](https://github.com/chen08209/FlClash)。

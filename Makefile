@@ -5,7 +5,7 @@ BUILDKIT := plugins/setup/buildkit/run_build_tool.sh
 ARCH_ARG := $(if $(ARCH),--arch $(ARCH),)
 TARGET_PLATFORM_ARG := $(if $(TARGET_PLATFORM),--target-platform $(TARGET_PLATFORM),)
 
-.PHONY: help submodules core core-macos core-linux core-windows core-android cli-linux
+.PHONY: help submodules core core-macos core-linux core-windows core-android cli-linux package-linux-deb
 
 help:
 	@echo 'make core                         # build macOS core by default'
@@ -38,3 +38,6 @@ cli-linux:
 	@mkdir -p $$(dirname $(abspath $(CLI_OUTPUT)))
 	@cd core && CGO_ENABLED=0 go build -tags cli -trimpath -ldflags "-s -w" -o $(abspath $(CLI_OUTPUT)) .
 	@echo "Built $(CLI_OUTPUT)"
+
+package-linux-deb:
+	bash packaging/build-deb.sh
