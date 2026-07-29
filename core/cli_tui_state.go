@@ -190,6 +190,24 @@ func loadTUISubscriptionSources(homeDir string) map[string]string {
 	return sources
 }
 
+func loadTUISubscriptionSource(homeDir, profilePath string) (string, error) {
+	key, err := tuiProfileStateKey(homeDir, profilePath)
+	if err != nil {
+		return "", err
+	}
+	state, err := loadTUIState(homeDir)
+	if err != nil {
+		return "", fmt.Errorf("load subscription source: %w", err)
+	}
+	sourceURL := strings.TrimSpace(state.SubscriptionSources[key])
+	if sourceURL == "" {
+		return "", errors.New(
+			"profile is not linked to a subscription; import its URL once to create a linked profile",
+		)
+	}
+	return sourceURL, nil
+}
+
 func renameTUISubscriptionSource(homeDir, oldPath, newPath string) error {
 	oldKey, err := tuiProfileStateKey(homeDir, oldPath)
 	if err != nil {

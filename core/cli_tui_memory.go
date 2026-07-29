@@ -133,7 +133,7 @@ func readTUIProcessRSS(path string, pageSize uint64) (uint64, error) {
 }
 
 func (m *tuiModel) startCoreMemoryMonitor() {
-	if m.ownsCore || m.coreMemoryUpdates != nil {
+	if m.ownsCore && m.service == nil || m.coreMemoryUpdates != nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())

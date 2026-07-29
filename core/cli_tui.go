@@ -168,6 +168,7 @@ type tuiProfile struct {
 type tuiSnapshot struct {
 	Page               tuiPage
 	Groups             []tuiGroup
+	GroupOrder         []string
 	Traffic            trafficSnapshot
 	TotalTraffic       trafficSnapshot
 	Connections        []tuiConnection
@@ -192,10 +193,12 @@ type tuiSnapshot struct {
 	SelectedSetting    int
 	SelectedTool       int
 	ProxyView          int
+	ProxyNodeFocus     bool
 	FocusSidebar       bool
 	ShowHelp           bool
 	ServiceRunning     bool
 	ExternalCore       bool
+	ManagedService     bool
 	InputTitle         string
 	InputValue         string
 	InputHint          string
@@ -291,24 +294,32 @@ func tuiCommand(args []string) error {
 			return fmt.Errorf("apply FlClash defaults: %w", err)
 		}
 	}
-	_ = rememberTUIActiveProfile(paths)
 	originalLogOutput := logrus.StandardLogger().Out
 	logrus.SetOutput(io.Discard)
 	defer logrus.SetOutput(originalLogOutput)
 
 	controllerAddress := *controllerArg
 	controllerUnix := ""
+	var service *tuiServiceClient
+	coreRunning := false
 	if *noStartArg && controllerAddress == "" {
 		controllerAddress = "127.0.0.1:9090"
 	}
-	if !*noStartArg && controllerAddress == "" {
-		socketDirectory, socketErr := os.MkdirTemp("", "flclash-cli-controller-")
-		if socketErr != nil {
-			return fmt.Errorf("create controller socket directory: %w", socketErr)
+	if !*noStartArg {
+		var status tuiServiceStatus
+		service, status, err = ensureTUIService(paths, *testURLArg)
+		if err != nil {
+			return err
 		}
-		defer os.RemoveAll(socketDirectory)
-		controllerUnix = filepath.Join(socketDirectory, "controller.sock")
+		if _, pathErr := tuiProfileStateKey(paths.homeDir, status.ConfigPath); pathErr != nil {
+			return fmt.Errorf("background service returned an invalid profile path: %w", pathErr)
+		}
+		paths.configPath = status.ConfigPath
+		controllerAddress = ""
+		controllerUnix = status.CoreSocket
+		coreRunning = status.Running
 	}
+	_ = rememberTUIActiveProfile(paths)
 	options := controllerOptions{
 		address:    controllerAddress,
 		unixSocket: controllerUnix,
@@ -319,34 +330,12 @@ func tuiCommand(args []string) error {
 		client:  controllerHTTPClientForOptions(options, 750*time.Millisecond),
 	}
 
-	var setupParams []byte
 	if !*noStartArg {
-		if controllerAddress != "" {
-			if err := ensureControllerFree(controllerAddress); err != nil {
-				return err
-			}
-		}
-		setupParams, err = initializeCore(
-			paths,
-			*testURLArg,
-			controllerAddress,
-			controllerUnix,
-			*secretArg,
-			false,
-		)
-		if err != nil {
-			return err
-		}
-		var setup SetupParams
-		if err := UnmarshalJson(setupParams, &setup); err == nil && setup.ExternalControllerSecret != nil {
-			client.options.secret = *setup.ExternalControllerSecret
-		}
 		if err := waitForController(client, 3*time.Second); err != nil {
-			handleShutdown()
 			return err
 		}
 	}
-	return runTUI(client, paths, setupParams, !*noStartArg)
+	return runTUI(client, paths, nil, !*noStartArg, service, coreRunning)
 }
 
 func ensureTUIConfig(paths cliPaths, allowCreate bool) error {
@@ -457,6 +446,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 	defer handleStopLog()
 	snapshot := tuiSnapshot{
 		Status:            "Loading...",
+		GroupOrder:        loadTUIProxyGroupOrder(paths.configPath),
 		SelectedGroup:     0,
 		SelectedNode:      0,
 		SelectedRow:       -1,
@@ -741,14 +731,6 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 					snapshot.SelectedDashboard = wrapTUIIndex(snapshot.SelectedDashboard, 1, tuiDashboardRowCount)
 				} else if snapshot.Page == tuiPageTools {
 					snapshot.SelectedTool = wrapTUIIndex(snapshot.SelectedTool, 1, tuiToolsRowCount)
-				}
-			case tuiKeyNodePrevious:
-				if !snapshot.FocusSidebar && snapshot.Page == tuiPageProxies {
-					moveTUINode(&snapshot, -1)
-				}
-			case tuiKeyNodeNext:
-				if !snapshot.FocusSidebar && snapshot.Page == tuiPageProxies {
-					moveTUINode(&snapshot, 1)
 				}
 			case tuiKeyDelayTest:
 				if snapshot.Page == tuiPageProxies &&
@@ -1087,7 +1069,7 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 			Delays: delays,
 		})
 	}
-	sort.Slice(groups, func(i, j int) bool { return groups[i].Name < groups[j].Name })
+	orderTUIGroups(groups, snapshot.GroupOrder)
 	snapshot.Groups = groups
 	snapshot.SelectedGroup = findTUIGroup(groups, selectedGroupName)
 	if len(groups) > 0 {
@@ -1446,6 +1428,8 @@ func switchTUIProfile(
 	}
 	paths.configPath = profile.Path
 	*setupParams = newSetupParams
+	snapshot.GroupOrder = loadTUIProxyGroupOrder(profile.Path)
+	snapshot.ProxyNodeFocus = false
 	snapshot.Status = "Active profile: " + profile.Name
 	if err := rememberTUIActiveProfile(*paths); err != nil {
 		snapshot.Status += "; could not remember profile: " + err.Error()
@@ -1472,6 +1456,46 @@ func isTUIGroup(proxyType string) bool {
 	default:
 		return false
 	}
+}
+
+func loadTUIProxyGroupOrder(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	rawConfig, err := config.UnmarshalRawConfig(data)
+	if err != nil {
+		return nil
+	}
+	order := make([]string, 0, len(rawConfig.ProxyGroup))
+	for _, group := range rawConfig.ProxyGroup {
+		name, ok := group["name"].(string)
+		if ok && name != "" {
+			order = append(order, name)
+		}
+	}
+	return order
+}
+
+func orderTUIGroups(groups []tuiGroup, order []string) {
+	positions := make(map[string]int, len(order))
+	for index, name := range order {
+		positions[name] = index
+	}
+	sort.SliceStable(groups, func(i, j int) bool {
+		left, leftKnown := positions[groups[i].Name]
+		right, rightKnown := positions[groups[j].Name]
+		switch {
+		case leftKnown && rightKnown:
+			return left < right
+		case leftKnown:
+			return true
+		case rightKnown:
+			return false
+		default:
+			return groups[i].Name < groups[j].Name
+		}
+	})
 }
 
 func moveTUIGroup(snapshot *tuiSnapshot, delta int) {
@@ -1928,6 +1952,7 @@ type tuiKey byte
 
 const (
 	tuiKeyQuit tuiKey = iota
+	tuiKeyInterrupt
 	tuiKeyRefresh
 	tuiKeyReload
 	tuiKeyHelp
@@ -1937,8 +1962,7 @@ const (
 	tuiKeyDown
 	tuiKeyLeft
 	tuiKeyRight
-	tuiKeyNodePrevious
-	tuiKeyNodeNext
+	tuiKeyBack
 	tuiKeySelect
 	tuiKeyDashboard
 	tuiKeyProxies
@@ -1990,8 +2014,10 @@ func readTUIKeysSynchronized(reader io.Reader, keys chan<- tuiKey, handled <-cha
 		}
 		key := tuiKey(0xff)
 		switch buffer[0] {
-		case 'q', 'Q', 3:
+		case 'q', 'Q':
 			key = tuiKeyQuit
+		case 3:
+			key = tuiKeyInterrupt
 		case 'r':
 			key = tuiKeyRefresh
 		case 'R':
@@ -2034,7 +2060,7 @@ func readTUIKeysSynchronized(reader io.Reader, keys chan<- tuiKey, handled <-cha
 			key = tuiKeyPortDown
 		case 'p':
 			key = tuiKeySetPort
-		case 's':
+		case 'S':
 			key = tuiKeySystemProxy
 		case 'c':
 			key = tuiKeyCoreToggle
@@ -2066,14 +2092,10 @@ func readTUIKeysSynchronized(reader io.Reader, keys chan<- tuiKey, handled <-cha
 			key = tuiKeyDelayTestAll
 		case '\r', '\n', ' ':
 			key = tuiKeySelect
-		case 'k':
+		case 'w':
 			key = tuiKeyUp
-		case 'j':
+		case 's':
 			key = tuiKeyDown
-		case 'h':
-			key = tuiKeyNodePrevious
-		case 'l':
-			key = tuiKeyNodeNext
 		case 0x1b:
 			key = readTUIEscape(reader)
 		}
@@ -2124,6 +2146,7 @@ func handleTUIFocusNavigation(snapshot *tuiSnapshot, key tuiKey) bool {
 		snapshot.Page = page
 		snapshot.SelectedMenu = int(page)
 		snapshot.FocusSidebar = false
+		snapshot.ProxyNodeFocus = false
 		return true
 	}
 	switch key {
@@ -2144,6 +2167,7 @@ func handleTUIFocusNavigation(snapshot *tuiSnapshot, key tuiKey) bool {
 			snapshot.Page = tuiPage(wrapTUIIndex(snapshot.SelectedMenu, 0, int(tuiPageCount)))
 			snapshot.SelectedMenu = int(snapshot.Page)
 			snapshot.FocusSidebar = false
+			snapshot.ProxyNodeFocus = false
 		case tuiKeyLeft:
 		default:
 			return false
@@ -2243,9 +2267,9 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 		b.WriteByte('\n')
 	}
 
-	footer := "  ←→ panel  ↑↓ move  Enter apply  ? help  q stop & quit"
+	footer := "  ←→ panel  ↑↓/ws move  Enter apply  ? help  q detach  Ctrl+C stop"
 	if width >= 110 {
-		footer = "  ←→ panel  ↑↓/jk move  h/l node  d delay  A all  n network  Enter apply  ? help  q stop & quit"
+		footer = "  ←→ panel  ↑↓/ws move  Enter open/apply  Esc back  d delay  ? help  q detach  Ctrl+C stop"
 	}
 	if snapshot.Status != "" && snapshot.Status != "Connected" {
 		statusWidth := maxTUIWidth(width-tuiDisplayWidth(footer)-5, 0)
@@ -2269,7 +2293,7 @@ func renderTUITooSmall(width, height int) string {
 		fmt.Sprintf("  Terminal: %dx%d", width, height),
 		"  Resize to at least 64x14",
 		"",
-		"  q stop & quit",
+		"  q detach UI · Ctrl+C stop Service",
 	}
 	var b strings.Builder
 	for row := 0; row < height; row++ {
@@ -2594,16 +2618,28 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 	groupLimit := minTUI(len(snapshot.Groups), maxTUIWidth(availableRows/3, 1))
 	nodeLimit := maxTUIWidth(availableRows-groupLimit, 1)
 	groupStart, groupEnd := tuiVisibleRange(len(snapshot.Groups), snapshot.SelectedGroup, groupLimit)
+	groupHint := "↑↓/ws group · Enter nodes · d test group · [/] view"
+	if snapshot.ProxyNodeFocus {
+		groupHint = "Esc returns to proxy groups"
+	}
 	tuiTitle(
 		b,
 		"Proxies  ·  Groups  [1/2]",
-		"↑↓ group · h/l node · d/D selected delay · A all delays · Enter switch · [/] view",
+		groupHint,
 		width,
 	)
 	for index := groupStart; index < groupEnd; index++ {
 		item := snapshot.Groups[index]
 		row := fmt.Sprintf("%-28s %-12s %s", truncateTUI(item.Name, 28), item.Type, truncateTUI(item.Now, maxTUIWidth(width-48, 10)))
-		tuiRow(b, row, width, index == snapshot.SelectedGroup && !snapshot.FocusSidebar, "")
+		tuiRow(
+			b,
+			row,
+			width,
+			index == snapshot.SelectedGroup &&
+				!snapshot.FocusSidebar &&
+				!snapshot.ProxyNodeFocus,
+			"",
+		)
 	}
 	tuiEndPanel(b, width)
 
@@ -2611,7 +2647,10 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 	tuiTitle(
 		b,
 		nodeTitle,
-		fmt.Sprintf("%d nodes · d test selected · A test all", len(group.Nodes)),
+		fmt.Sprintf(
+			"%d nodes · ↑↓/ws select · Enter apply · d test · Esc back",
+			len(group.Nodes),
+		),
 		width,
 	)
 	nodeStart, nodeEnd := tuiVisibleRange(len(group.Nodes), snapshot.SelectedNode, nodeLimit)
@@ -2640,7 +2679,9 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 			b,
 			label,
 			width,
-			index == snapshot.SelectedNode && !snapshot.FocusSidebar,
+			index == snapshot.SelectedNode &&
+				!snapshot.FocusSidebar &&
+				snapshot.ProxyNodeFocus,
 			color,
 		)
 	}
@@ -2654,7 +2695,7 @@ func drawTUIProviders(b *strings.Builder, snapshot tuiSnapshot, width, height in
 	tuiTitle(
 		b,
 		"Proxies  ·  Providers  [2/2]",
-		"↑↓ provider · Enter update · [/] view",
+		"↑↓/ws provider · Enter update · [/] view",
 		width,
 	)
 	if len(snapshot.Providers) == 0 {
@@ -2752,16 +2793,16 @@ func tuiVisibleRange(total, selected, limit int) (int, int) {
 
 func drawTUIHelp(b *strings.Builder, width, height int) {
 	rows := []string{
-		"Navigation     ← sidebar · → content · ↑/↓ or j/k move · Enter opens/applies",
+		"Navigation     ← sidebar · → content · ↑↓/ws move · Enter opens/applies · Esc back",
 		"Sections       1-7 open directly · Tab changes focus · [/] changes proxy view",
 		"Dashboard      n refreshes public and intranet IP detection",
-		"Proxies        h/l node · d/D selected delay · A all delays · Enter switch",
-		"Profiles       Enter activate · U update · F2/u rename · e edit · n import",
+		"Proxies        Enter opens nodes · d group/node delay · A group delay · Esc groups",
+		"Profiles       Enter activate · U refresh subscription · F2/u rename · e edit · n import",
 		"Requests       x clears local history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
-		"Core           s system proxy (auto-start) · c start/stop · t TUN · m mode",
+		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
 		"Tools          Enter applies row · a LAN · v IPv6 · p port · z reset traffic",
-		"Exit           q graceful stop & quit · Ctrl+C interrupt, clean up, and stop",
+		"Exit           q detaches TUI · Ctrl+C stops Service/Core and exits",
 	}
 	if height < 28 {
 		rows = rows[:minTUI(5, len(rows))]
@@ -2874,7 +2915,7 @@ func tuiMemoryRows(snapshot tuiSnapshot) []string {
 		)
 	}
 	rows := []string{"System memory " + systemMemory}
-	if snapshot.ExternalCore {
+	if snapshot.ExternalCore || snapshot.ManagedService {
 		processMemory := "Measuring..."
 		if snapshot.Memory.ProcessRSS > 0 {
 			processMemory = formatTUIUintBytes(snapshot.Memory.ProcessRSS)
@@ -2888,7 +2929,12 @@ func tuiMemoryRows(snapshot tuiSnapshot) []string {
 		rows = append(
 			rows,
 			"TUI process   "+processMemory,
-			"External Core "+coreMemory,
+			func() string {
+				if snapshot.ManagedService {
+					return "Managed Core  " + coreMemory
+				}
+				return "External Core " + coreMemory
+			}(),
 		)
 	} else {
 		processMemory := "Measuring..."
@@ -3062,7 +3108,7 @@ func drawTUISettings(b *strings.Builder, snapshot tuiSnapshot, width, height int
 	}
 	tuiEndPanel(b, width)
 	if height >= len(rows)+7 {
-		tuiEmptyPanel(b, "Optional keys", "a LAN · v IPv6 · t TUN · m mode · p port · +/- adjust · s system proxy · c service", width)
+		tuiEmptyPanel(b, "Optional keys", "a LAN · v IPv6 · t TUN · m mode · p port · +/- adjust · S system proxy · c service", width)
 	}
 }
 
@@ -3119,7 +3165,7 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 		b,
 		"Profiles",
 		fmt.Sprintf(
-			"%d available · Enter activate · U update · F2/u rename",
+			"%d available · Enter activate · U refresh linked · e edit · F2/u rename",
 			len(snapshot.Profiles),
 		),
 		width,
@@ -3143,12 +3189,20 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 		label := truncateTUI(profile.Name, width-42)
 		if profile.Current {
 			if index == snapshot.SelectedRow && !snapshot.FocusSidebar {
-				label += "  [active · U update]"
+				if profile.SubscriptionURL != "" {
+					label += "  [active · U refresh · e edit]"
+				} else {
+					label += "  [active · local · e edit]"
+				}
 			} else {
 				label += "  [active]"
 			}
 		} else if index == snapshot.SelectedRow && !snapshot.FocusSidebar {
-			label += "  [Enter activate · U update · F2 rename]"
+			if profile.SubscriptionURL != "" {
+				label += "  [Enter activate · U refresh · e edit · F2 rename]"
+			} else {
+				label += "  [Enter activate · local · e edit · F2 rename]"
+			}
 		}
 		tuiRow(
 			b,

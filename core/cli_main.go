@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.3.5"
+const cliVersion = "0.3.6"
 
 type cliPaths struct {
 	homeDir    string
@@ -45,10 +45,16 @@ func main() {
 			err = tuiCommand(os.Args[2:])
 		case "run", "start":
 			err = runCommand(os.Args[2:])
+		case "stop":
+			err = stopCommand(os.Args[2:])
+		case "_service":
+			err = serviceCommand(os.Args[2:])
 		case "check", "validate":
 			err = checkCommand(os.Args[2:])
 		case "proxy":
 			err = proxyCommand(os.Args[2:])
+		case "profile":
+			err = profileCommand(os.Args[2:])
 		case "update", "upgrade":
 			err = updateCommand(os.Args[2:])
 		case "version", "--version", "-v":
@@ -79,17 +85,21 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  flclash-cli [tui] --config ./config.yaml")
 	fmt.Fprintln(w, "  flclash-cli run --config ./config.yaml")
+	fmt.Fprintln(w, "  flclash-cli stop")
 	fmt.Fprintln(w, "  flclash-cli check --config ./config.yaml")
 	fmt.Fprintln(w, "  flclash-cli proxy list --controller 127.0.0.1:9090")
 	fmt.Fprintln(w, "  flclash-cli proxy select --controller 127.0.0.1:9090 GROUP NODE")
+	fmt.Fprintln(w, "  flclash-cli profile link --config ./profile.yaml URL")
 	fmt.Fprintln(w, "  flclash-cli update [--check]")
 	fmt.Fprintln(w, "  flclash-cli version")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  tui, ui           Open the full-screen terminal interface (default)")
 	fmt.Fprintln(w, "  run, start       Start the proxy in the foreground")
+	fmt.Fprintln(w, "  stop             Stop the detached background service")
 	fmt.Fprintln(w, "  check, validate   Validate a Clash/Mihomo YAML configuration")
 	fmt.Fprintln(w, "  proxy             Inspect or change a running core through its API")
+	fmt.Fprintln(w, "  profile           Manage local profile metadata")
 	fmt.Fprintln(w, "  update, upgrade   Check GitHub Releases and securely install an update")
 	fmt.Fprintln(w, "  version           Print the CLI version")
 }
@@ -228,6 +238,42 @@ func proxyCommand(args []string) error {
 	default:
 		return fmt.Errorf("unknown proxy command %q", args[0])
 	}
+}
+
+func profileCommand(args []string) error {
+	if len(args) == 0 || args[0] != "link" {
+		return errors.New("usage: profile link [--config path] [--directory path] URL")
+	}
+	fs := flag.NewFlagSet("profile link", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configArg := fs.String("config", "", "path to the existing profile YAML")
+	directoryArg := fs.String("directory", "", "FlClash data directory")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 1 {
+		return errors.New("usage: profile link [--config path] [--directory path] URL")
+	}
+	paths, err := resolvePaths(*configArg, *directoryArg)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(paths.configPath); err != nil {
+		return err
+	}
+	sourceURL := fs.Args()[0]
+	if _, err := newTUISubscriptionRequest(sourceURL); err != nil {
+		return err
+	}
+	if err := rememberTUISubscriptionSource(
+		paths.homeDir,
+		paths.configPath,
+		sourceURL,
+	); err != nil {
+		return err
+	}
+	fmt.Printf("linked %s to its subscription source\n", filepath.Base(paths.configPath))
+	return nil
 }
 
 type controllerClient struct {
@@ -482,6 +528,19 @@ func (c controllerClient) patchConfig(values map[string]interface{}) error {
 		return err
 	}
 	_, err = c.request(http.MethodPatch, "/configs", strings.NewReader(string(body)))
+	return err
+}
+
+func (c controllerClient) reloadConfigPayload(data []byte) error {
+	body, err := json.Marshal(map[string]string{"payload": string(data)})
+	if err != nil {
+		return err
+	}
+	_, err = c.request(
+		http.MethodPut,
+		"/configs?force=true",
+		strings.NewReader(string(body)),
+	)
 	return err
 }
 

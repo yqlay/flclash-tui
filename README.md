@@ -22,7 +22,7 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 - **全屏 TUI**：固定布局、键盘操作，不会不断向终端追加界面内容
 - **订阅与配置管理**：在界面中导入/更新订阅、切换配置、重命名配置和编辑 YAML
 - **完整代理控制**：查看代理组和 Provider、切换节点、单节点测速及整组测速
-- **服务生命周期管理**：进入界面时默认不占用代理端口；开启系统代理时自动启动 Core
+- **后台 Service**：TUI 与 Core 进程分离；退出界面后代理可以继续运行，再次进入会自动重连
 - **常用设置可视化**：支持模式、Mixed Port、TUN、Allow LAN、IPv6、日志等级、Unified Delay 和 TCP Concurrent
 - **状态与诊断**：显示公网/内网 IP、实时流量、连接、请求、日志、系统内存、本进程和 Core 内存
 - **状态持久化**：保存当前 Profile、代理组选择及配置设置，下次进入时自动恢复
@@ -46,10 +46,10 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 目前 Release 提供 Debian/Ubuntu 的 `amd64` 安装包：
 
 ```bash
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.5/flclash-cli_0.3.5_amd64.deb
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.5/flclash-cli_0.3.5_amd64.deb.sha256
-sha256sum -c flclash-cli_0.3.5_amd64.deb.sha256
-sudo dpkg -i flclash-cli_0.3.5_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.6/flclash-cli_0.3.6_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.6/flclash-cli_0.3.6_amd64.deb.sha256
+sha256sum -c flclash-cli_0.3.6_amd64.deb.sha256
+sudo dpkg -i flclash-cli_0.3.6_amd64.deb
 ```
 
 查看本机 CPU 架构：
@@ -78,20 +78,21 @@ flclash-cli
 
 开启 **System proxy** 时，程序会自动应用当前设置、启动 Service/Core，再设置桌面系统代理，不需要手动先启动核心。停止 Service 时，由当前 TUI 开启的系统代理也会关闭。
 
-`q` 或 `Ctrl+C` 退出时，会停止由本次 TUI 启动的 Service/Core；外部启动的 Core 不受影响。重新进入 TUI 时会恢复上次配置和节点选择，但不会自动启动服务或占用端口。
+`q` 只退出 TUI 并返回 Shell；如果 Service 已启动，代理会继续在后台运行且不占用终端。再次执行 `flclash-cli` 会自动连接该 Service。`Ctrl+C` 则退出 TUI 并停止由 FlClash CLI 管理的 Service/Core。也可以在 Shell 中执行 `flclash-cli stop`。
 
-导入成功后，程序会安全保存该 Profile 的订阅来源。在 **Profiles** 中选中它并按 `U` 即可重新下载并更新。旧版本已经导入但没有保存来源的 Profile，第一次按 `U` 时会提示补充订阅链接。更新会保留端口、模式、TUN、IPv6 等本地设置；下载内容无效或活动配置加载失败时不会静默破坏原配置。
+导入成功后，程序会安全保存该 Profile 与订阅 URL 的绑定。在 **Profiles** 中选中它并按 `U`，程序会直接从已保存的 URL 重新拉取配置，不会再次要求输入链接。活动 Profile 会立即热重载，Service 运行时不会停止监听端口；更新会保留端口、模式、TUN、IPv6 等本地设置，验证或热重载失败时自动回滚。旧版本留下的未绑定 Profile 会被明确标记为本地配置，可用 `flclash-cli profile link --config PROFILE URL` 一次性建立绑定。
 
 ## 基本操作
 
 ```text
 ← 聚焦侧栏       → 打开栏目并聚焦内容       Tab 切换焦点
-↑/↓ 或 j/k       移动选择                  Enter 执行
+↑↓/ws             移动选择                  Enter 打开/执行
 1～7             快速打开对应栏目           r 刷新
-[/]              切换代理组/Provider        d/D 测速
-A                测试当前组全部节点         s 开关系统代理
-c                启动/停止 Service          q 停止并退出
-U                更新选中 Profile 的订阅    n 导入新订阅
+[/]              切换代理组/Provider        Esc 返回代理组
+d                组模式测全组/节点模式测单个 A 测试当前组全部节点
+S                开关系统代理               c 启动/停止 Service
+U                刷新已绑定订阅             n 导入新订阅
+q                仅退出 TUI                 Ctrl+C 停止 Service 并退出
 ```
 
 所有主要功能都可以通过界面中的可选行完成，快捷键只是辅助操作，不要求记忆。
@@ -138,6 +139,18 @@ flclash-cli check --config /path/to/config.yaml
 ```bash
 flclash-cli proxy list --controller 127.0.0.1:9090
 flclash-cli proxy select --controller 127.0.0.1:9090 GROUP NODE
+```
+
+停止由 TUI 留在后台的 Service：
+
+```bash
+flclash-cli stop
+```
+
+为旧版本的本地 Profile 一次性绑定订阅来源：
+
+```bash
+flclash-cli profile link --config ~/.config/flclash/profile.yaml 'https://example.com/subscription'
 ```
 
 一台主机运行多个实例时，应为每个实例指定不同的数据目录、Mixed Port 和 Controller：

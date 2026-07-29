@@ -18,10 +18,10 @@ The binary is written to `dist/flclash-cli`.
 
 ## Install the Debian package
 
-Download `flclash-cli_0.3.5_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
+Download `flclash-cli_0.3.6_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
 
 ```bash
-sudo dpkg -i flclash-cli_0.3.5_amd64.deb
+sudo dpkg -i flclash-cli_0.3.6_amd64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash-cli` and documentation under `/usr/share/doc/flclash-cli`.
@@ -40,11 +40,15 @@ configuration files are never overwritten.
 
 Imported profiles remember their subscription source in the user-only TUI
 state file. Select a profile and press `U` to download and apply its latest
-subscription. Profiles imported by an older version ask for their source URL
-the first time `U` is pressed. Updates preserve local mode, port, TUN, LAN,
-IPv6, unified-delay, TCP-concurrent, and log-level settings. The replacement is
-validated and written atomically; an active managed profile is reloaded, and
-the original file is restored when that reload fails.
+subscription directly from the saved URL; refresh never asks for the URL
+again. Profiles imported by an older version without source metadata remain
+local profiles instead of pretending to support refresh. Link one once with
+`flclash-cli profile link --config PROFILE URL`, or import the subscription as
+a new linked profile. Refresh preserves local mode, port, TUN, LAN, IPv6,
+unified-delay, TCP-concurrent, and log-level settings. The replacement is
+validated and written atomically; an active profile is hot-reloaded without
+stopping running listeners, and the original file is restored when reload
+fails.
 
 To give a downloaded profile a readable file name, select the inactive profile
 in Profiles and press `F2` or `u`. Type the new name in the visible input panel
@@ -68,9 +72,12 @@ FlClash default. Rows show the current state before the available action—for
 example, `Service RUNNING · Enter to stop` means the service is currently
 running.
 
-By default, the TUI uses a private Unix socket for core management, so it does
-not reserve a TCP controller port. Passing `--controller` explicitly opts into
-a TCP controller instead.
+By default, the TUI starts or reconnects to a detached local Service and uses
+private Unix sockets for service and Core management, so it does not reserve a
+TCP controller port. Pressing `q` detaches only the TUI and returns to the
+shell; a running Service keeps proxying in the background. Reopening
+`flclash-cli` reconnects to it. Pressing `Ctrl+C`, or running
+`flclash-cli stop`, stops the managed Service/Core.
 
 No settings shortcut has to be memorized: all settings and lifecycle actions
 are selectable rows. The single-letter keys remain optional accelerators.
@@ -79,26 +86,30 @@ YAML profile. Importing or activating a profile while stopped does not start
 proxy listeners. Subscription downloads identify as a Mihomo client for
 providers that reject generic browser or Go HTTP user agents.
 
-The active profile and last proxy selection for each group are stored in
+The active profile, subscription bindings, and last proxy selection for each group are stored in
 `.flclash-cli-state.json` under the active data directory. The file is written
 atomically with user-only permissions. On the next launch, the TUI restores
 that profile, its YAML settings, and matching proxy-group selections. Runtime
-states are intentionally excluded: reopening the TUI does not automatically
-start Service, enable the desktop system proxy, or occupy the mixed port.
+Service state belongs to the detached Service: after `q`, reopening the TUI
+shows the same running state. After `Ctrl+C` or `flclash-cli stop`, the next
+launch starts with listeners stopped.
 
 The sidebar follows the graphical FlClash information architecture:
 
 - Dashboard: service state, system proxy, TUN, outbound mode, mixed port,
   public-IP network detection, intranet IP, speeds, traffic totals, and
   connection counts. It also refreshes system memory, process RSS, and Go heap
-  once per second. Embedded mode labels RSS as `CLI + Mihomo` because both
-  share one process; `--no-start` mode shows TUI and external-Core RSS
+  once per second. Managed and external modes show TUI and Core RSS
   separately. Press `n` to refresh both IP checks.
-- Proxies: proxy groups and nodes. Press `[`/`]` to switch between Groups and
-  Providers, Enter to switch a node or update a provider, `d`/`D` to test the
-  highlighted node, or `A` to test every node in the current group.
-- Profiles: import a subscription, activate/rename profiles, and edit profile
-  YAML.
+- Proxies: proxy groups and nodes in configuration-file order. In the group
+  list, use `↑↓/ws`, press Enter to open that group's nodes, and press `d` to
+  test every node in the selected group. In node selection, use `↑↓/ws`, press
+  Enter to apply the node, press `d` to test it, and press Esc to return to
+  groups. `A` also tests the current group. Press `[`/`]` to switch between
+  Groups and Providers.
+- Profiles: import a subscription, activate/rename profiles, and press `e` to
+  edit the selected YAML in `$EDITOR`. Active-profile edits are validated and
+  hot-reloaded; invalid edits or failed reloads restore the previous file.
 - Requests: active and recently completed requests observed during the current
   TUI session. Press `x` to clear this local history.
 - Connections: current connections and traffic. Press `d` to close the selected
@@ -117,22 +128,22 @@ Keyboard shortcuts:
 ```text
 ← sidebar      → content       Tab switch focus
 1 dashboard    2 proxies       3 profiles      4 requests
-5 connections  6 logs          7 tools         U update subscription
-↑/↓ or j/k     h/l node        [/] proxy view  d/D delay
-Enter apply    r refresh       R reload        s system proxy
+5 connections  6 logs          7 tools         U refresh subscription
+↑↓/ws move     Enter open/apply Esc back        d delay
+[/] proxy view r refresh       R reload         S system proxy
 c start/stop   x clear/all     d close one     e edit/export
-F2/u rename    n import/check  A test all      q stop & quit
+F2/u rename    n import/check  A test group    q detach TUI
+Ctrl+C stop Service/Core and exit
 ```
 
-Both `q` and `Ctrl+C` stop the Service/Core started by the current TUI process.
-`q` exits normally; `Ctrl+C` interrupts the TUI and then runs the same cleanup
-before exiting. Neither key stops a Core owned by an external process.
+`q` exits only the frontend. `Ctrl+C` stops the managed Service/Core and exits.
+Neither key stops a Core connected through explicit `--no-start` external mode.
 
-The TUI starts with the sidebar focused. Use `↑`/`↓` and Enter to open a page,
+The TUI starts with the sidebar focused. Use `↑↓/ws` and Enter to open a page,
 or press `1`–`7` directly. `←` always focuses the sidebar and `→` always opens
 the highlighted sidebar page and focuses its content. `Tab` also switches
-between the two panels. On Proxies, `h`/`l` changes the node and `[`/`]` changes
-between Groups and Providers. Dashboard and Tools support `↑`/`↓` selection
+between the two panels. On Proxies, Enter opens node selection and Esc returns
+to proxy groups; `[`/`]` changes between Groups and Providers. Dashboard and Tools support `↑↓/ws` selection
 followed by Enter. Action keys are page-scoped, so `e`, `x`, and Enter do not
 trigger unrelated operations on another page.
 
