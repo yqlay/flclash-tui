@@ -18,10 +18,10 @@ The binary is written to `dist/flclash-cli`.
 
 ## Install the Debian package
 
-Download `flclash-cli_0.3.4_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
+Download `flclash-cli_0.3.5_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
 
 ```bash
-sudo dpkg -i flclash-cli_0.3.4_amd64.deb
+sudo dpkg -i flclash-cli_0.3.5_amd64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash-cli` and documentation under `/usr/share/doc/flclash-cli`.
@@ -37,6 +37,14 @@ minimal DIRECT-only configuration automatically. Open Profiles, select the
 visible `+ Import subscription URL` row, and press Enter. Paste the URL and
 press Enter again, then select the downloaded profile and activate it. Existing
 configuration files are never overwritten.
+
+Imported profiles remember their subscription source in the user-only TUI
+state file. Select a profile and press `U` to download and apply its latest
+subscription. Profiles imported by an older version ask for their source URL
+the first time `U` is pressed. Updates preserve local mode, port, TUN, LAN,
+IPv6, unified-delay, TCP-concurrent, and log-level settings. The replacement is
+validated and written atomically; an active managed profile is reloaded, and
+the original file is restored when that reload fails.
 
 To give a downloaded profile a readable file name, select the inactive profile
 in Profiles and press `F2` or `u`. Type the new name in the visible input panel
@@ -109,7 +117,7 @@ Keyboard shortcuts:
 ```text
 ← sidebar      → content       Tab switch focus
 1 dashboard    2 proxies       3 profiles      4 requests
-5 connections  6 logs          7 tools
+5 connections  6 logs          7 tools         U update subscription
 ↑/↓ or j/k     h/l node        [/] proxy view  d/D delay
 Enter apply    r refresh       R reload        s system proxy
 c start/stop   x clear/all     d close one     e edit/export

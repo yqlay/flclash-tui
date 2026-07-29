@@ -376,6 +376,13 @@ func TestTUIProfileRenameKeyAndHintAreVisible(t *testing.T) {
 	if !ok || key != tuiKeyRenameProfile {
 		t.Fatalf("F2 key = (%v, %v)", key, ok)
 	}
+	updateKey, ok := tuiKeyFromTea(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune{'U'},
+	})
+	if !ok || updateKey != tuiKeyUpdateProfile {
+		t.Fatalf("U key = (%v, %v)", updateKey, ok)
+	}
 	snapshot := tuiSnapshot{
 		Page:         tuiPageProfiles,
 		SelectedRow:  0,
@@ -388,7 +395,7 @@ func TestTUIProfileRenameKeyAndHintAreVisible(t *testing.T) {
 	var output strings.Builder
 	drawTUIProfiles(&output, snapshot, 80, 24)
 	plain := stripTUIANSI(output.String())
-	for _, hint := range []string{"F2/u rename", "F2 rename"} {
+	for _, hint := range []string{"U update", "F2/u rename", "F2 rename"} {
 		if !strings.Contains(plain, hint) {
 			t.Fatalf("profiles view does not contain %q:\n%s", hint, plain)
 		}
@@ -1502,18 +1509,360 @@ rules:
 	if model.coreRunning {
 		t.Fatal("subscription import started the core")
 	}
-	if model.snapshot.Status != "Profile downloaded" {
+	if model.snapshot.Status != "Profile downloaded; U updates it from this subscription" {
 		t.Fatalf("subscription status = %q", model.snapshot.Status)
 	}
 	found := false
 	for _, profile := range model.snapshot.Profiles {
 		if strings.HasPrefix(profile.Name, "profile-") {
+			if profile.SubscriptionURL != server.URL {
+				t.Fatalf(
+					"downloaded profile source = %q, want %q",
+					profile.SubscriptionURL,
+					server.URL,
+				)
+			}
 			found = true
 			break
 		}
 	}
 	if !found {
 		t.Fatalf("downloaded profile missing: %+v", model.snapshot.Profiles)
+	}
+}
+
+func TestTUIUpdatesSubscriptionAndPreservesLocalSettings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `mixed-port: 9999
+mode: rule
+allow-lan: false
+ipv6: false
+unified-delay: true
+tcp-concurrent: true
+log-level: info
+tun:
+  enable: false
+proxies:
+  - name: NEW-NODE
+    type: direct
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - NEW-NODE
+rules:
+  - MATCH,PROXY
+`)
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	activePath := filepath.Join(directory, "config.yaml")
+	profilePath := filepath.Join(directory, "work.yaml")
+	if err := os.WriteFile(activePath, []byte(defaultTUIConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := `mixed-port: 17890
+mode: global
+allow-lan: true
+ipv6: true
+unified-delay: false
+tcp-concurrent: false
+log-level: debug
+tun:
+  enable: true
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - DIRECT
+rules:
+  - MATCH,PROXY
+`
+	if err := os.WriteFile(profilePath, []byte(original), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := rememberTUISubscriptionSource(directory, profilePath, server.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	model := newTUIModel(
+		controllerClient{},
+		cliPaths{homeDir: directory, configPath: activePath},
+		nil,
+		true,
+	)
+	model.snapshot.Page = tuiPageProfiles
+	model.snapshot.FocusSidebar = false
+	model.snapshot.Profiles = []tuiProfile{{
+		Name:            "work.yaml",
+		Path:            profilePath,
+		SubscriptionURL: server.URL,
+	}}
+	model.snapshot.SelectedRow = 0
+
+	command := model.handleKey(tuiKeyUpdateProfile)
+	if command == nil {
+		t.Fatal("subscription update did not return an operation")
+	}
+	_, _ = model.Update(command())
+
+	data, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(data)
+	for _, expected := range []string{
+		"name: NEW-NODE",
+		"mixed-port: 17890",
+		"mode: global",
+		"allow-lan: true",
+		"ipv6: true",
+		"unified-delay: false",
+		"tcp-concurrent: false",
+		"log-level: debug",
+		"enable: true",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("updated profile does not contain %q:\n%s", expected, output)
+		}
+	}
+	info, err := os.Stat(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("updated profile mode = %o, want 640", info.Mode().Perm())
+	}
+	if model.snapshot.Status != "Subscription updated: work.yaml" {
+		t.Fatalf("subscription update status = %q", model.snapshot.Status)
+	}
+}
+
+func TestTUIOldProfilePromptsForSubscriptionURLBeforeUpdate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, defaultTUIConfig)
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	activePath := filepath.Join(directory, "config.yaml")
+	profilePath := filepath.Join(directory, "legacy.yaml")
+	for _, path := range []string{activePath, profilePath} {
+		if err := os.WriteFile(path, []byte(defaultTUIConfig), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	model := newTUIModel(
+		controllerClient{},
+		cliPaths{homeDir: directory, configPath: activePath},
+		nil,
+		true,
+	)
+	model.snapshot.Page = tuiPageProfiles
+	model.snapshot.FocusSidebar = false
+	model.snapshot.Profiles = []tuiProfile{{
+		Name: "legacy.yaml",
+		Path: profilePath,
+	}}
+	model.snapshot.SelectedRow = 0
+
+	if command := model.handleKey(tuiKeyUpdateProfile); command != nil {
+		t.Fatal("profile without a source started an update before asking for a URL")
+	}
+	if model.inputMode != tuiInputSubscriptionUpdate {
+		t.Fatalf("input mode = %d, want subscription update", model.inputMode)
+	}
+	model.inputValue = []rune(server.URL)
+	model.inputCursor = len(model.inputValue)
+	command := model.submitInput()
+	if command == nil {
+		t.Fatal("subscription URL did not start an update")
+	}
+	_, _ = model.Update(command())
+
+	sources := loadTUISubscriptionSources(directory)
+	if sources["legacy.yaml"] != server.URL {
+		t.Fatalf("saved legacy profile source = %q", sources["legacy.yaml"])
+	}
+	if model.snapshot.Status != "Subscription updated: legacy.yaml" {
+		t.Fatalf("legacy update status = %q", model.snapshot.Status)
+	}
+}
+
+func TestTUIActiveSubscriptionUpdateReloadsWithoutStartingListeners(t *testing.T) {
+	mixedPort := freeTUITestPort(t)
+	controllerPort := freeTUITestPort(t)
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	original := fmt.Appendf(nil, `mixed-port: %d
+mode: rule
+log-level: silent
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - DIRECT
+rules:
+  - MATCH,PROXY
+`, mixedPort)
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `mixed-port: 9999
+mode: global
+log-level: info
+proxies:
+  - name: UPDATED-DIRECT
+    type: direct
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - UPDATED-DIRECT
+rules:
+  - MATCH,PROXY
+`)
+	}))
+	defer server.Close()
+
+	paths := cliPaths{homeDir: directory, configPath: configPath}
+	controllerAddress := fmt.Sprintf("127.0.0.1:%d", controllerPort)
+	setupParams, err := initializeCore(
+		paths,
+		"https://www.gstatic.com/generate_204",
+		controllerAddress,
+		"",
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		handleShutdown()
+	})
+	client := controllerClient{
+		options: controllerOptions{address: controllerAddress},
+		client:  &http.Client{Timeout: time.Second},
+	}
+	if err := waitForController(client, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := rememberTUISubscriptionSource(directory, configPath, server.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	model := newTUIModel(client, paths, setupParams, true)
+	model.snapshot.Page = tuiPageProfiles
+	model.snapshot.FocusSidebar = false
+	model.snapshot.Profiles = []tuiProfile{{
+		Name:            "config.yaml",
+		Path:            configPath,
+		Current:         true,
+		SubscriptionURL: server.URL,
+	}}
+	model.snapshot.SelectedRow = 0
+	command := model.handleKey(tuiKeyUpdateProfile)
+	if command == nil {
+		t.Fatal("active subscription update did not return an operation")
+	}
+	_, _ = model.Update(command())
+
+	if model.snapshot.Status !=
+		"Subscription updated and active profile reloaded: config.yaml" {
+		t.Fatalf("active update status = %q", model.snapshot.Status)
+	}
+	if model.coreRunning || canConnectTUITestPort(mixedPort) {
+		t.Fatal("active subscription update unexpectedly started proxy listeners")
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(data)
+	if !strings.Contains(output, "name: UPDATED-DIRECT") ||
+		!strings.Contains(output, fmt.Sprintf("mixed-port: %d", mixedPort)) ||
+		!strings.Contains(output, "mode: rule") {
+		t.Fatalf("active updated profile did not preserve settings:\n%s", output)
+	}
+	if err := waitForController(client, 2*time.Second); err != nil {
+		t.Fatalf("controller did not recover after active profile reload: %v", err)
+	}
+	proxyData, err := client.request(http.MethodGet, "/proxies", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(proxyData, []byte("UPDATED-DIRECT")) {
+		t.Fatalf("active core did not reload updated proxies: %s", proxyData)
+	}
+}
+
+func TestTUISubscriptionUpdateRejectsInvalidResponseWithoutChangingProfile(
+	t *testing.T,
+) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "this is not a Mihomo configuration")
+	}))
+	defer server.Close()
+
+	directory := t.TempDir()
+	profilePath := filepath.Join(directory, "work.yaml")
+	original := []byte(defaultTUIConfig)
+	if err := os.WriteFile(profilePath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := updateTUISubscriptionProfile(
+		directory,
+		profilePath,
+		server.URL,
+	); err == nil {
+		t.Fatal("invalid subscription response was accepted")
+	}
+	after, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, original) {
+		t.Fatalf("invalid update changed profile:\n%s", after)
+	}
+}
+
+func TestTUIProfileRenameMovesSavedSubscriptionSource(t *testing.T) {
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "old.yaml")
+	if err := os.WriteFile(sourcePath, []byte(defaultTUIConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const sourceURL = "https://example.test/subscription"
+	if err := rememberTUISubscriptionSource(directory, sourcePath, sourceURL); err != nil {
+		t.Fatal(err)
+	}
+
+	newPath, err := renameTUIProfile(directory, sourcePath, "new.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := loadTUISubscriptionSources(directory)
+	if sources["old.yaml"] != "" || sources["new.yaml"] != sourceURL {
+		t.Fatalf("renamed subscription sources = %+v", sources)
+	}
+	if filepath.Base(newPath) != "new.yaml" {
+		t.Fatalf("renamed path = %q", newPath)
+	}
+}
+
+func TestTUISubscriptionSourceRejectsProfileOutsideDataDirectory(t *testing.T) {
+	directory := t.TempDir()
+	outsidePath := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := rememberTUISubscriptionSource(
+		directory,
+		outsidePath,
+		"https://example.test/subscription",
+	); err == nil {
+		t.Fatal("subscription source accepted a profile outside the data directory")
 	}
 }
 

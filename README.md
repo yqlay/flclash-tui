@@ -20,7 +20,7 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 ## 主要功能
 
 - **全屏 TUI**：固定布局、键盘操作，不会不断向终端追加界面内容
-- **订阅与配置管理**：在界面中导入订阅、切换配置、重命名配置和编辑 YAML
+- **订阅与配置管理**：在界面中导入/更新订阅、切换配置、重命名配置和编辑 YAML
 - **完整代理控制**：查看代理组和 Provider、切换节点、单节点测速及整组测速
 - **服务生命周期管理**：进入界面时默认不占用代理端口；开启系统代理时自动启动 Core
 - **常用设置可视化**：支持模式、Mixed Port、TUN、Allow LAN、IPv6、日志等级、Unified Delay 和 TCP Concurrent
@@ -35,7 +35,7 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 | --- | --- |
 | Dashboard | 服务、系统代理、TUN、模式、端口、网络和内存状态 |
 | Proxies | 代理组、节点、Provider、节点切换和延迟测试 |
-| Profiles | 导入订阅、激活/重命名配置、编辑 YAML |
+| Profiles | 导入/更新订阅、激活/重命名配置、编辑 YAML |
 | Requests | 查看本次运行期间的活动请求和近期请求 |
 | Connections | 查看和关闭当前连接 |
 | Logs | 查看、清空和导出 Core 日志 |
@@ -46,10 +46,10 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 目前 Release 提供 Debian/Ubuntu 的 `amd64` 安装包：
 
 ```bash
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.4/flclash-cli_0.3.4_amd64.deb
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.4/flclash-cli_0.3.4_amd64.deb.sha256
-sha256sum -c flclash-cli_0.3.4_amd64.deb.sha256
-sudo dpkg -i flclash-cli_0.3.4_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.5/flclash-cli_0.3.5_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.5/flclash-cli_0.3.5_amd64.deb.sha256
+sha256sum -c flclash-cli_0.3.5_amd64.deb.sha256
+sudo dpkg -i flclash-cli_0.3.5_amd64.deb
 ```
 
 查看本机 CPU 架构：
@@ -80,6 +80,8 @@ flclash-cli
 
 `q` 或 `Ctrl+C` 退出时，会停止由本次 TUI 启动的 Service/Core；外部启动的 Core 不受影响。重新进入 TUI 时会恢复上次配置和节点选择，但不会自动启动服务或占用端口。
 
+导入成功后，程序会安全保存该 Profile 的订阅来源。在 **Profiles** 中选中它并按 `U` 即可重新下载并更新。旧版本已经导入但没有保存来源的 Profile，第一次按 `U` 时会提示补充订阅链接。更新会保留端口、模式、TUN、IPv6 等本地设置；下载内容无效或活动配置加载失败时不会静默破坏原配置。
+
 ## 基本操作
 
 ```text
@@ -89,6 +91,7 @@ flclash-cli
 [/]              切换代理组/Provider        d/D 测速
 A                测试当前组全部节点         s 开关系统代理
 c                启动/停止 Service          q 停止并退出
+U                更新选中 Profile 的订阅    n 导入新订阅
 ```
 
 所有主要功能都可以通过界面中的可选行完成，快捷键只是辅助操作，不要求记忆。

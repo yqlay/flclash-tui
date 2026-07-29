@@ -159,9 +159,10 @@ type tuiProvider struct {
 }
 
 type tuiProfile struct {
-	Name    string
-	Path    string
-	Current bool
+	Name            string
+	Path            string
+	Current         bool
+	SubscriptionURL string
 }
 
 type tuiSnapshot struct {
@@ -1253,6 +1254,7 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 		return
 	}
 	profiles := make([]tuiProfile, 0, len(entries)+1)
+	subscriptionSources := loadTUISubscriptionSources(paths.homeDir)
 	currentFound := false
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -1265,13 +1267,30 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 		path := filepath.Join(paths.homeDir, entry.Name())
 		current := filepath.Clean(path) == filepath.Clean(paths.configPath)
 		currentFound = currentFound || current
+		subscriptionURL := ""
+		if stateKey, err := tuiProfileStateKey(paths.homeDir, path); err == nil {
+			subscriptionURL = subscriptionSources[stateKey]
+		}
 		profiles = append(profiles, tuiProfile{
-			Name: entry.Name(), Path: path, Current: current,
+			Name:            entry.Name(),
+			Path:            path,
+			Current:         current,
+			SubscriptionURL: subscriptionURL,
 		})
 	}
 	if !currentFound {
+		subscriptionURL := ""
+		if stateKey, err := tuiProfileStateKey(
+			paths.homeDir,
+			paths.configPath,
+		); err == nil {
+			subscriptionURL = subscriptionSources[stateKey]
+		}
 		profiles = append(profiles, tuiProfile{
-			Name: filepath.Base(paths.configPath), Path: paths.configPath, Current: true,
+			Name:            filepath.Base(paths.configPath),
+			Path:            paths.configPath,
+			Current:         true,
+			SubscriptionURL: subscriptionURL,
 		})
 	}
 	sort.Slice(profiles, func(i, j int) bool { return profiles[i].Name < profiles[j].Name })
@@ -1945,6 +1964,7 @@ const (
 	tuiKeyEdit
 	tuiKeyNewProfile
 	tuiKeyRenameProfile
+	tuiKeyUpdateProfile
 	tuiKeyCloseConnection
 	tuiKeyTools
 	tuiKeyBackup
@@ -2024,6 +2044,8 @@ func readTUIKeysSynchronized(reader io.Reader, keys chan<- tuiKey, handled <-cha
 			key = tuiKeyNewProfile
 		case 'u':
 			key = tuiKeyRenameProfile
+		case 'U':
+			key = tuiKeyUpdateProfile
 		case 'd':
 			key = tuiKeyCloseConnection
 		case '[':
@@ -2734,7 +2756,7 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 		"Sections       1-7 open directly · Tab changes focus · [/] changes proxy view",
 		"Dashboard      n refreshes public and intranet IP detection",
 		"Proxies        h/l node · d/D selected delay · A all delays · Enter switch",
-		"Profiles       Enter activate · F2/u rename · e edit YAML · n import URL",
+		"Profiles       Enter activate · U update · F2/u rename · e edit · n import",
 		"Requests       x clears local history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
 		"Core           s system proxy (auto-start) · c start/stop · t TUN · m mode",
@@ -3096,7 +3118,10 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 	tuiTitle(
 		b,
 		"Profiles",
-		fmt.Sprintf("%d available · Enter activate · F2/u rename", len(snapshot.Profiles)),
+		fmt.Sprintf(
+			"%d available · Enter activate · U update · F2/u rename",
+			len(snapshot.Profiles),
+		),
 		width,
 	)
 	limit := maxTUIWidth(height-3, 1)
@@ -3115,11 +3140,15 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 		}
 		index := position - 1
 		profile := snapshot.Profiles[index]
-		label := truncateTUI(profile.Name, width-22)
+		label := truncateTUI(profile.Name, width-42)
 		if profile.Current {
-			label += "  [active]"
+			if index == snapshot.SelectedRow && !snapshot.FocusSidebar {
+				label += "  [active · U update]"
+			} else {
+				label += "  [active]"
+			}
 		} else if index == snapshot.SelectedRow && !snapshot.FocusSidebar {
-			label += "  [Enter activate · F2 rename]"
+			label += "  [Enter activate · U update · F2 rename]"
 		}
 		tuiRow(
 			b,

@@ -17,9 +17,10 @@ const (
 )
 
 type tuiPersistentState struct {
-	Version         int               `json:"version"`
-	ActiveProfile   string            `json:"active_profile,omitempty"`
-	SelectedProxies map[string]string `json:"selected_proxies,omitempty"`
+	Version             int               `json:"version"`
+	ActiveProfile       string            `json:"active_profile,omitempty"`
+	SelectedProxies     map[string]string `json:"selected_proxies,omitempty"`
+	SubscriptionSources map[string]string `json:"subscription_sources,omitempty"`
 }
 
 func loadTUIState(homeDir string) (tuiPersistentState, error) {
@@ -28,8 +29,9 @@ func loadTUIState(homeDir string) (tuiPersistentState, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			return tuiPersistentState{
-				Version:         tuiStateVersion,
-				SelectedProxies: map[string]string{},
+				Version:             tuiStateVersion,
+				SelectedProxies:     map[string]string{},
+				SubscriptionSources: map[string]string{},
 			}, nil
 		}
 		return tuiPersistentState{}, err
@@ -47,6 +49,9 @@ func loadTUIState(homeDir string) (tuiPersistentState, error) {
 	if state.SelectedProxies == nil {
 		state.SelectedProxies = map[string]string{}
 	}
+	if state.SubscriptionSources == nil {
+		state.SubscriptionSources = map[string]string{}
+	}
 	return state, nil
 }
 
@@ -57,6 +62,9 @@ func saveTUIState(homeDir string, state tuiPersistentState) error {
 	state.Version = tuiStateVersion
 	if state.SelectedProxies == nil {
 		state.SelectedProxies = map[string]string{}
+	}
+	if state.SubscriptionSources == nil {
+		state.SubscriptionSources = map[string]string{}
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -101,8 +109,9 @@ func updateTUIState(
 	state, err := loadTUIState(homeDir)
 	if err != nil {
 		state = tuiPersistentState{
-			Version:         tuiStateVersion,
-			SelectedProxies: map[string]string{},
+			Version:             tuiStateVersion,
+			SelectedProxies:     map[string]string{},
+			SubscriptionSources: map[string]string{},
 		}
 	}
 	update(&state)
@@ -133,6 +142,70 @@ func rememberTUIProxySelection(homeDir, group, proxy string) error {
 			state.SelectedProxies = map[string]string{}
 		}
 		state.SelectedProxies[group] = proxy
+	})
+}
+
+func tuiProfileStateKey(homeDir, profilePath string) (string, error) {
+	homeDir = filepath.Clean(homeDir)
+	profilePath = filepath.Clean(profilePath)
+	relative, err := filepath.Rel(homeDir, profilePath)
+	if err != nil ||
+		relative == "." ||
+		relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", errors.New("profile must be inside the TUI data directory")
+	}
+	extension := strings.ToLower(filepath.Ext(relative))
+	if extension != ".yaml" && extension != ".yml" {
+		return "", errors.New("profile must be a YAML file")
+	}
+	return filepath.Clean(relative), nil
+}
+
+func rememberTUISubscriptionSource(homeDir, profilePath, sourceURL string) error {
+	key, err := tuiProfileStateKey(homeDir, profilePath)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(sourceURL) == "" {
+		return errors.New("subscription URL must not be empty")
+	}
+	return updateTUIState(homeDir, func(state *tuiPersistentState) {
+		if state.SubscriptionSources == nil {
+			state.SubscriptionSources = map[string]string{}
+		}
+		state.SubscriptionSources[key] = sourceURL
+	})
+}
+
+func loadTUISubscriptionSources(homeDir string) map[string]string {
+	state, err := loadTUIState(homeDir)
+	if err != nil {
+		return map[string]string{}
+	}
+	sources := make(map[string]string, len(state.SubscriptionSources))
+	for profile, sourceURL := range state.SubscriptionSources {
+		sources[filepath.Clean(profile)] = sourceURL
+	}
+	return sources
+}
+
+func renameTUISubscriptionSource(homeDir, oldPath, newPath string) error {
+	oldKey, err := tuiProfileStateKey(homeDir, oldPath)
+	if err != nil {
+		return err
+	}
+	newKey, err := tuiProfileStateKey(homeDir, newPath)
+	if err != nil {
+		return err
+	}
+	return updateTUIState(homeDir, func(state *tuiPersistentState) {
+		sourceURL, ok := state.SubscriptionSources[oldKey]
+		if !ok {
+			return
+		}
+		delete(state.SubscriptionSources, oldKey)
+		state.SubscriptionSources[newKey] = sourceURL
 	})
 }
 

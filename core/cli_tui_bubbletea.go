@@ -80,6 +80,7 @@ const (
 	tuiInputNone tuiInputMode = iota
 	tuiInputMixedPort
 	tuiInputSubscription
+	tuiInputSubscriptionUpdate
 	tuiInputProfileName
 )
 
@@ -101,6 +102,7 @@ type tuiModel struct {
 	inputCursor         int
 	inputSelectAll      bool
 	renameProfilePath   string
+	updateProfilePath   string
 	pendingMixedPort    *int
 	stagedSettings      *tuiSettings
 	settingsDirty       bool
@@ -422,6 +424,8 @@ func (m *tuiModel) inputPresentation() (string, string) {
 		return "Set mixed port", "Type 0-65535; typing replaces the current value"
 	case tuiInputSubscription:
 		return "Import subscription", "Paste a Clash/Mihomo subscription URL"
+	case tuiInputSubscriptionUpdate:
+		return "Update subscription", "Paste the source URL for the selected profile"
 	case tuiInputProfileName:
 		return "Rename profile", "Type a file name; .yaml is added automatically"
 	default:
@@ -828,6 +832,10 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		if m.snapshot.Page == tuiPageProfiles {
 			m.beginProfileRename()
 		}
+	case tuiKeyUpdateProfile:
+		if m.snapshot.Page == tuiPageProfiles {
+			return m.updateSelectedProfileSubscription()
+		}
 	case tuiKeyProviders:
 		m.snapshot.Page = tuiPageProxies
 		m.snapshot.SelectedMenu = int(tuiPageProxies)
@@ -964,9 +972,17 @@ func (m *tuiModel) moveSelection(delta int) {
 		} else if m.snapshot.SelectedRow < len(m.snapshot.Profiles) {
 			profile := m.snapshot.Profiles[m.snapshot.SelectedRow]
 			if profile.Current {
-				m.snapshot.Status = "Active profile; Enter keeps it active · e edits YAML"
+				if profile.SubscriptionURL != "" {
+					m.snapshot.Status = "Active profile · U updates subscription · e edits YAML"
+				} else {
+					m.snapshot.Status = "Active profile · U sets subscription URL · e edits YAML"
+				}
 			} else {
-				m.snapshot.Status = "Enter activates · F2/u renames · e edits YAML"
+				if profile.SubscriptionURL != "" {
+					m.snapshot.Status = "Enter activates · U updates · F2/u renames · e edits"
+				} else {
+					m.snapshot.Status = "Enter activates · U sets subscription URL · F2/u renames"
+				}
 			}
 		}
 	case tuiPageConnections:
@@ -1700,6 +1716,95 @@ func (m *tuiModel) beginProfileRename() {
 	m.beginInput(tuiInputProfileName)
 }
 
+func (m *tuiModel) updateSelectedProfileSubscription() tea.Cmd {
+	if m.snapshot.SelectedRow < 0 {
+		m.snapshot.Status = "Select a profile before updating its subscription"
+		return nil
+	}
+	if m.snapshot.SelectedRow >= len(m.snapshot.Profiles) {
+		m.snapshot.Status = "Selected profile is no longer available"
+		return nil
+	}
+	profile := m.snapshot.Profiles[m.snapshot.SelectedRow]
+	if profile.SubscriptionURL == "" {
+		m.updateProfilePath = profile.Path
+		m.beginInput(tuiInputSubscriptionUpdate)
+		return nil
+	}
+	return m.startProfileSubscriptionUpdate(profile.Path, profile.SubscriptionURL)
+}
+
+func (m *tuiModel) startProfileSubscriptionUpdate(
+	profilePath,
+	sourceURL string,
+) tea.Cmd {
+	if profilePath == "" {
+		m.snapshot.Status = "Update failed: selected profile path is empty"
+		return nil
+	}
+	return m.startOperation(func(state *tuiOperationState) {
+		isActive := filepath.Clean(profilePath) == filepath.Clean(state.paths.configPath)
+		backup, err := updateTUISubscriptionProfile(
+			state.paths.homeDir,
+			profilePath,
+			sourceURL,
+		)
+		if err != nil {
+			state.snapshot.Status = "Subscription update failed: " + err.Error()
+			return
+		}
+		if err := rememberTUISubscriptionSource(
+			state.paths.homeDir,
+			profilePath,
+			sourceURL,
+		); err != nil {
+			rollbackErr := restoreTUISubscriptionProfile(profilePath, backup)
+			state.snapshot.Status = "Subscription update failed: could not save source: " +
+				err.Error()
+			if rollbackErr != nil {
+				state.snapshot.Status += "; profile rollback failed: " + rollbackErr.Error()
+			}
+			return
+		}
+
+		if isActive && m.ownsCore {
+			if message := handleSetupConfig(state.setupParams); message != "" {
+				rollbackErr := restoreTUISubscriptionProfile(profilePath, backup)
+				restoreMessage := ""
+				if rollbackErr == nil {
+					restoreMessage = handleSetupConfig(state.setupParams)
+				}
+				state.snapshot.Status = "Subscription update failed to apply: " + message
+				switch {
+				case rollbackErr != nil:
+					state.snapshot.Status += "; profile rollback failed: " +
+						rollbackErr.Error()
+				case restoreMessage != "":
+					state.snapshot.Status += "; original profile restored but reload failed: " +
+						restoreMessage
+				default:
+					state.snapshot.Status += "; original profile restored"
+				}
+				return
+			}
+			state.snapshot.Status = "Subscription updated and active profile reloaded: " +
+				filepath.Base(profilePath)
+			syncStoppedTUISettings(state)
+		} else if isActive {
+			state.snapshot.Status = "Subscription updated: " + filepath.Base(profilePath) +
+				"; reload the external core to apply it"
+		} else {
+			state.snapshot.Status = "Subscription updated: " + filepath.Base(profilePath)
+		}
+		refreshTUIProfiles(&state.snapshot, state.paths)
+		state.snapshot.SelectedRow = findTUIProfile(
+			state.snapshot.Profiles,
+			profilePath,
+		)
+		state.profileSelection = profilePath
+	})
+}
+
 func (m *tuiModel) handleInput(message tea.KeyMsg) tea.Cmd {
 	switch message.Type {
 	case tea.KeyCtrlC:
@@ -1814,12 +1919,14 @@ func (m *tuiModel) resetInput() {
 	m.inputMode = tuiInputNone
 	m.clearInputSelection()
 	m.renameProfilePath = ""
+	m.updateProfilePath = ""
 }
 
 func (m *tuiModel) submitInput() tea.Cmd {
 	value := strings.TrimSpace(string(m.inputValue))
 	mode := m.inputMode
 	renameProfilePath := m.renameProfilePath
+	updateProfilePath := m.updateProfilePath
 	m.resetInput()
 	switch mode {
 	case tuiInputMixedPort:
@@ -1859,13 +1966,36 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			return nil
 		}
 		return m.startOperation(func(state *tuiOperationState) {
-			if err := downloadTUIProfile(state.paths.homeDir, value); err != nil {
+			path, err := downloadTUIProfile(state.paths.homeDir, value)
+			if err != nil {
 				state.snapshot.Status = "Add profile failed: " + err.Error()
-			} else {
-				state.snapshot.Status = "Profile downloaded"
-				refreshTUIProfiles(&state.snapshot, state.paths)
+				return
 			}
+			if err := rememberTUISubscriptionSource(
+				state.paths.homeDir,
+				path,
+				value,
+			); err != nil {
+				_ = os.Remove(path)
+				state.snapshot.Status = "Add profile failed: could not save subscription source: " +
+					err.Error()
+				return
+			}
+			state.snapshot.Status = "Profile downloaded; U updates it from this subscription"
+			refreshTUIProfiles(&state.snapshot, state.paths)
+			state.snapshot.SelectedRow = findTUIProfile(state.snapshot.Profiles, path)
+			state.profileSelection = path
 		})
+	case tuiInputSubscriptionUpdate:
+		if value == "" {
+			m.snapshot.Status = "Subscription update cancelled"
+			return nil
+		}
+		if _, err := newTUISubscriptionRequest(value); err != nil {
+			m.snapshot.Status = "Update failed: subscription URL must use http or https"
+			return nil
+		}
+		return m.startProfileSubscriptionUpdate(updateProfilePath, value)
 	case tuiInputProfileName:
 		if value == "" {
 			m.snapshot.Status = "Profile rename cancelled"
@@ -1937,6 +2067,16 @@ func renameTUIProfile(homeDir, sourcePath, requestedName string) (string, error)
 	if err := os.Rename(sourcePath, destinationPath); err != nil {
 		return "", err
 	}
+	if err := renameTUISubscriptionSource(homeDir, sourcePath, destinationPath); err != nil {
+		if rollbackErr := os.Rename(destinationPath, sourcePath); rollbackErr != nil {
+			return "", fmt.Errorf(
+				"save renamed subscription source: %v; file rollback failed: %w",
+				err,
+				rollbackErr,
+			)
+		}
+		return "", fmt.Errorf("save renamed subscription source: %w", err)
+	}
 	return destinationPath, nil
 }
 
@@ -1963,42 +2103,133 @@ func applyTUIMixedPort(snapshot *tuiSnapshot, client controllerClient, selectedP
 	return true
 }
 
-func downloadTUIProfile(homeDir, value string) error {
+func downloadTUIProfile(homeDir, value string) (string, error) {
+	data, err := fetchTUISubscription(value)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(homeDir, fmt.Sprintf("profile-%d.yaml", time.Now().UnixNano()))
+	if err := writeTUIProfileAtomically(path, data, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func fetchTUISubscription(value string) ([]byte, error) {
 	request, err := newTUISubscriptionRequest(value)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	client := &nethttp.Client{Timeout: 30 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("subscription returned %s", response.Status)
+		return nil, fmt.Errorf("subscription returned %s", response.Status)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, tuiSubscriptionMaxBytes+1))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(data) == 0 {
-		return errors.New("subscription response is empty")
+		return nil, errors.New("subscription response is empty")
 	}
 	if len(data) > tuiSubscriptionMaxBytes {
-		return fmt.Errorf("subscription response exceeds %d MiB", tuiSubscriptionMaxBytes>>20)
+		return nil, fmt.Errorf(
+			"subscription response exceeds %d MiB",
+			tuiSubscriptionMaxBytes>>20,
+		)
 	}
-	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+	if message := validateConfigBytes(data); message != "" {
+		return nil, fmt.Errorf("downloaded profile is invalid: %s", message)
+	}
+	return data, nil
+}
+
+func writeTUIProfileAtomically(path string, data []byte, mode os.FileMode) error {
+	temp, err := os.CreateTemp(
+		filepath.Dir(path),
+		"."+filepath.Base(path)+".tmp-*",
+	)
+	if err != nil {
 		return err
 	}
-	path := fmt.Sprintf("%s%cprofile-%d.yaml", homeDir, os.PathSeparator, time.Now().UnixNano())
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(mode.Perm()); err != nil {
+		_ = temp.Close()
 		return err
 	}
-	if message := handleValidateConfig(path); message != "" {
-		_ = os.Remove(path)
-		return fmt.Errorf("downloaded profile is invalid: %s", message)
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
 	}
-	return nil
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+type tuiProfileBackup struct {
+	data []byte
+	mode os.FileMode
+}
+
+func updateTUISubscriptionProfile(
+	homeDir,
+	path,
+	sourceURL string,
+) (tuiProfileBackup, error) {
+	if _, err := tuiProfileStateKey(homeDir, path); err != nil {
+		return tuiProfileBackup{}, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return tuiProfileBackup{}, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return tuiProfileBackup{}, errors.New("profile must be a regular file")
+	}
+	previous, err := os.ReadFile(path)
+	if err != nil {
+		return tuiProfileBackup{}, err
+	}
+	previousSettings := loadTUIConfiguredSettings(path, true)
+	updated, err := fetchTUISubscription(sourceURL)
+	if err != nil {
+		return tuiProfileBackup{}, err
+	}
+	if err := writeTUIProfileAtomically(path, updated, info.Mode()); err != nil {
+		return tuiProfileBackup{}, err
+	}
+	backup := tuiProfileBackup{data: previous, mode: info.Mode()}
+	if previousSettings != nil {
+		if err := persistTUISettings(path, *previousSettings); err != nil {
+			rollbackErr := restoreTUISubscriptionProfile(path, backup)
+			if rollbackErr != nil {
+				return tuiProfileBackup{}, fmt.Errorf(
+					"preserve local settings: %v; profile rollback failed: %w",
+					err,
+					rollbackErr,
+				)
+			}
+			return tuiProfileBackup{}, fmt.Errorf("preserve local settings: %w", err)
+		}
+	}
+	return backup, nil
+}
+
+func restoreTUISubscriptionProfile(path string, backup tuiProfileBackup) error {
+	return writeTUIProfileAtomically(path, backup.data, backup.mode)
 }
 
 func newTUISubscriptionRequest(value string) (*nethttp.Request, error) {
@@ -2092,6 +2323,8 @@ func tuiKeyFromTea(message tea.KeyMsg) (tuiKey, bool) {
 		return tuiKeyNewProfile, true
 	case "f2", "u":
 		return tuiKeyRenameProfile, true
+	case "U":
+		return tuiKeyUpdateProfile, true
 	case "d":
 		return tuiKeyCloseConnection, true
 	case "b":
