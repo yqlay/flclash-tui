@@ -964,7 +964,10 @@ func TestTUIWholeGroupDelayKeyUpdatesVisibleNodeStates(t *testing.T) {
 		Delays: map[string]int{},
 	}}
 
-	command := model.handleKey(tuiKeyDelayTest)
+	command := model.handleTeaKey(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune{'d'},
+	})
 	if command == nil {
 		t.Fatal("d did not test all nodes from proxy-group mode")
 	}

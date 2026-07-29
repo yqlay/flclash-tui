@@ -860,7 +860,10 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		if !m.snapshot.FocusSidebar &&
 			m.snapshot.Page == tuiPageProxies &&
 			m.snapshot.ProxyView == tuiProxyViewGroups {
-			return m.testSelectedProxyDelay()
+			if m.snapshot.ProxyNodeFocus {
+				return m.testSelectedProxyDelay()
+			}
+			return m.testSelectedProxyGroupDelays()
 		}
 		if m.snapshot.Page == tuiPageConnections &&
 			m.snapshot.SelectedConnection >= 0 &&

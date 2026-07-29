@@ -46,10 +46,10 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 目前 Release 提供 Debian/Ubuntu 的 `amd64` 安装包：
 
 ```bash
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.6/flclash-cli_0.3.6_amd64.deb
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.6/flclash-cli_0.3.6_amd64.deb.sha256
-sha256sum -c flclash-cli_0.3.6_amd64.deb.sha256
-sudo dpkg -i flclash-cli_0.3.6_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.7/flclash-cli_0.3.7_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.7/flclash-cli_0.3.7_amd64.deb.sha256
+sha256sum -c flclash-cli_0.3.7_amd64.deb.sha256
+sudo dpkg -i flclash-cli_0.3.7_amd64.deb
 ```
 
 查看本机 CPU 架构：
