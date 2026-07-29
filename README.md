@@ -16,7 +16,7 @@ This is an independent derivative project, not an official FlClash release. See 
 git clone --recurse-submodules https://github.com/yqlay/flclash-cli.git
 cd flclash-cli
 make cli-linux
-./dist/flclash-cli --config ~/.config/flclash/config.yaml
+./dist/flclash-cli
 ```
 
 See [CLI_LINUX.md](CLI_LINUX.md) for TUI pages, keyboard controls, configuration, proxy control, and multi-instance usage.
@@ -24,7 +24,7 @@ See [CLI_LINUX.md](CLI_LINUX.md) for TUI pages, keyboard controls, configuration
 Prebuilt Debian packages are available on the [Releases](https://github.com/yqlay/flclash-cli/releases) page:
 
 ```bash
-sudo dpkg -i flclash-cli_0.2.3_amd64.deb
+sudo dpkg -i flclash-cli_0.3.2_amd64.deb
 ```
 
 ## Original FlClash application
@@ -79,7 +79,18 @@ make cli-linux
 ./dist/flclash-cli --config ~/.config/flclash/config.yaml
 ```
 
-No arguments opens the TUI. It includes dashboard, proxy groups/nodes, connections, traffic, logs, settings, providers, YAML profiles, reload, and Linux system-proxy controls. The `run`, `check`, and `proxy` commands remain available for automation. See [Linux CLI documentation](CLI_LINUX.md).
+No arguments opens the TUI and creates a safe DIRECT-only profile on first
+launch. Import subscriptions from Profiles, then enable `System proxy` on the
+Dashboard; the service starts automatically with the staged port and settings.
+The sidebar follows graphical FlClash: Dashboard, Proxies, Profiles, Requests,
+Connections, Logs, and Tools. Providers are a selectable view inside Proxies,
+while settings and maintenance actions live in Tools. The `run`, `check`, and
+`proxy` commands remain available for automation. See [Linux CLI
+documentation](CLI_LINUX.md).
+
+The TUI remembers the active profile and proxy-group selections. Profile
+settings such as mode, mixed port, TUN, LAN, IPv6, and log level are saved
+immediately and restored on the next launch.
 
 ### Android
 

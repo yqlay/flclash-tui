@@ -190,6 +190,9 @@ func updateConfig(params *UpdateParams) {
 	if params.MixedPort != nil {
 		general.MixedPort = *params.MixedPort
 	}
+	if params.AllowLan != nil {
+		general.AllowLan = *params.AllowLan
+	}
 	if params.Sniffing != nil {
 		general.Sniffing = *params.Sniffing
 		tunnel.SetSniffing(general.Sniffing)
@@ -231,11 +234,21 @@ func updateConfig(params *UpdateParams) {
 
 	if params.Tun != nil {
 		general.Tun.Enable = params.Tun.Enable
-		general.Tun.AutoRoute = *params.Tun.AutoRoute
-		general.Tun.Device = *params.Tun.Device
-		general.Tun.RouteAddress = *params.Tun.RouteAddress
-		general.Tun.DNSHijack = *params.Tun.DNSHijack
-		general.Tun.Stack = *params.Tun.Stack
+		if params.Tun.AutoRoute != nil {
+			general.Tun.AutoRoute = *params.Tun.AutoRoute
+		}
+		if params.Tun.Device != nil {
+			general.Tun.Device = *params.Tun.Device
+		}
+		if params.Tun.RouteAddress != nil {
+			general.Tun.RouteAddress = *params.Tun.RouteAddress
+		}
+		if params.Tun.DNSHijack != nil {
+			general.Tun.DNSHijack = *params.Tun.DNSHijack
+		}
+		if params.Tun.Stack != nil {
+			general.Tun.Stack = *params.Tun.Stack
+		}
 	}
 
 	if params.GeoAutoUpdate != nil {
@@ -269,6 +282,15 @@ func applyConfig(params *SetupParams) error {
 		currentConfig.Controller.ExternalController = *params.ExternalController
 		currentConfig.Controller.ExternalControllerTLS = ""
 		currentConfig.Controller.ExternalControllerUnix = ""
+		currentConfig.Controller.ExternalControllerPipe = ""
+		if params.ExternalControllerSecret != nil {
+			currentConfig.Controller.Secret = *params.ExternalControllerSecret
+		}
+	}
+	if params.ExternalControllerUnix != nil {
+		currentConfig.Controller.ExternalController = ""
+		currentConfig.Controller.ExternalControllerTLS = ""
+		currentConfig.Controller.ExternalControllerUnix = *params.ExternalControllerUnix
 		currentConfig.Controller.ExternalControllerPipe = ""
 		if params.ExternalControllerSecret != nil {
 			currentConfig.Controller.Secret = *params.ExternalControllerSecret

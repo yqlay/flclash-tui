@@ -47,6 +47,12 @@ func cliLogSnapshot() []string {
 	return logs
 }
 
+func clearTUILogs() {
+	cliLogMu.Lock()
+	defer cliLogMu.Unlock()
+	cliLogs = nil
+}
+
 func nextHandle(action *Action, result ActionResult) bool {
 	return false
 }

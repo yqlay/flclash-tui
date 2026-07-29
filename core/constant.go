@@ -21,6 +21,7 @@ type SetupParams struct {
 	SelectedMap              map[string]string `json:"selected-map"`
 	TestURL                  string            `json:"test-url"`
 	ExternalController       *string           `json:"external-controller,omitempty"`
+	ExternalControllerUnix   *string           `json:"external-controller-unix,omitempty"`
 	ExternalControllerSecret *string           `json:"external-controller-secret,omitempty"`
 }
 

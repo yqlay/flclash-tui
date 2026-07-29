@@ -1,0 +1,186 @@
+//go:build linux && !cgo && cli
+
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+const (
+	tuiStateFilename = ".flclash-cli-state.json"
+	tuiStateVersion  = 1
+)
+
+type tuiPersistentState struct {
+	Version         int               `json:"version"`
+	ActiveProfile   string            `json:"active_profile,omitempty"`
+	SelectedProxies map[string]string `json:"selected_proxies,omitempty"`
+}
+
+func loadTUIState(homeDir string) (tuiPersistentState, error) {
+	path := filepath.Join(homeDir, tuiStateFilename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return tuiPersistentState{
+				Version:         tuiStateVersion,
+				SelectedProxies: map[string]string{},
+			}, nil
+		}
+		return tuiPersistentState{}, err
+	}
+	var state tuiPersistentState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return tuiPersistentState{}, fmt.Errorf("parse saved TUI state: %w", err)
+	}
+	if state.Version != tuiStateVersion {
+		return tuiPersistentState{}, fmt.Errorf(
+			"unsupported saved TUI state version %d",
+			state.Version,
+		)
+	}
+	if state.SelectedProxies == nil {
+		state.SelectedProxies = map[string]string{}
+	}
+	return state, nil
+}
+
+func saveTUIState(homeDir string, state tuiPersistentState) error {
+	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+		return err
+	}
+	state.Version = tuiStateVersion
+	if state.SelectedProxies == nil {
+		state.SelectedProxies = map[string]string{}
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	file, err := os.CreateTemp(homeDir, ".flclash-cli-state-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := file.Name()
+	committed := false
+	defer func() {
+		_ = file.Close()
+		if !committed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := file.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, filepath.Join(homeDir, tuiStateFilename)); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func updateTUIState(
+	homeDir string,
+	update func(*tuiPersistentState),
+) error {
+	state, err := loadTUIState(homeDir)
+	if err != nil {
+		state = tuiPersistentState{
+			Version:         tuiStateVersion,
+			SelectedProxies: map[string]string{},
+		}
+	}
+	update(&state)
+	return saveTUIState(homeDir, state)
+}
+
+func rememberTUIActiveProfile(paths cliPaths) error {
+	profile, err := filepath.Rel(paths.homeDir, paths.configPath)
+	if err != nil {
+		return err
+	}
+	if profile == "." ||
+		profile == ".." ||
+		strings.HasPrefix(profile, ".."+string(filepath.Separator)) {
+		return errors.New("active profile must be inside the TUI data directory")
+	}
+	return updateTUIState(paths.homeDir, func(state *tuiPersistentState) {
+		state.ActiveProfile = filepath.Clean(profile)
+	})
+}
+
+func rememberTUIProxySelection(homeDir, group, proxy string) error {
+	if group == "" || proxy == "" {
+		return errors.New("proxy group and selection must not be empty")
+	}
+	return updateTUIState(homeDir, func(state *tuiPersistentState) {
+		if state.SelectedProxies == nil {
+			state.SelectedProxies = map[string]string{}
+		}
+		state.SelectedProxies[group] = proxy
+	})
+}
+
+func restoreTUIActiveProfile(paths cliPaths) (cliPaths, error) {
+	state, err := loadTUIState(paths.homeDir)
+	if err != nil || state.ActiveProfile == "" {
+		return paths, err
+	}
+	if filepath.IsAbs(state.ActiveProfile) {
+		return paths, errors.New("saved active profile must be a relative path")
+	}
+	profilePath := filepath.Clean(filepath.Join(paths.homeDir, state.ActiveProfile))
+	relative, err := filepath.Rel(paths.homeDir, profilePath)
+	if err != nil ||
+		relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return paths, errors.New("saved active profile is outside the TUI data directory")
+	}
+	extension := strings.ToLower(filepath.Ext(profilePath))
+	if extension != ".yaml" && extension != ".yml" {
+		return paths, errors.New("saved active profile is not a YAML file")
+	}
+	info, err := os.Stat(profilePath)
+	if err != nil {
+		return paths, fmt.Errorf("saved active profile: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return paths, errors.New("saved active profile is not a regular file")
+	}
+	data, err := os.ReadFile(profilePath)
+	if err != nil {
+		return paths, err
+	}
+	if message := validateConfigBytes(data); message != "" {
+		return paths, errors.New("saved active profile is invalid: " + message)
+	}
+	paths.configPath = profilePath
+	return paths, nil
+}
+
+func loadTUISelectedProxies(homeDir string) map[string]string {
+	state, err := loadTUIState(homeDir)
+	if err != nil {
+		return map[string]string{}
+	}
+	selected := make(map[string]string, len(state.SelectedProxies))
+	for group, proxy := range state.SelectedProxies {
+		selected[group] = proxy
+	}
+	return selected
+}

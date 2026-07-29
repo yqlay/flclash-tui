@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -21,7 +22,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.2.3"
+const cliVersion = "0.3.2"
 
 type cliPaths struct {
 	homeDir    string
@@ -29,8 +30,9 @@ type cliPaths struct {
 }
 
 type controllerOptions struct {
-	address string
-	secret  string
+	address    string
+	unixSocket string
+	secret     string
 }
 
 func main() {
@@ -52,7 +54,11 @@ func main() {
 		case "help", "--help", "-h":
 			printUsage(os.Stdout)
 		default:
-			err = fmt.Errorf("unknown command %q", os.Args[1])
+			if strings.HasPrefix(os.Args[1], "-") {
+				err = tuiCommand(os.Args[1:])
+			} else {
+				err = fmt.Errorf("unknown command %q", os.Args[1])
+			}
 		}
 	}
 
@@ -222,13 +228,21 @@ func proxyCommand(args []string) error {
 
 type controllerClient struct {
 	options controllerOptions
+	client  *http.Client
+}
+
+func (c controllerClient) httpClient() *http.Client {
+	if c.client != nil {
+		return c.client
+	}
+	if c.options.unixSocket != "" {
+		return controllerHTTPClientForOptions(c.options, controllerRequestTimeout)
+	}
+	return controllerHTTPClient
 }
 
 func (c controllerClient) requestStreamFirst(path string) ([]byte, error) {
-	base := c.options.address
-	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
-		base = "http://" + base
-	}
+	base := c.baseURL()
 	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(base, "/")+path, nil)
 	if err != nil {
 		return nil, err
@@ -236,7 +250,7 @@ func (c controllerClient) requestStreamFirst(path string) ([]byte, error) {
 	if c.options.secret != "" {
 		req.Header.Set("Authorization", "Bearer "+c.options.secret)
 	}
-	resp, err := controllerHTTPClient.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -257,10 +271,7 @@ func bytesTrimSpace(data []byte) []byte {
 }
 
 func (c controllerClient) request(method, path string, body io.Reader) ([]byte, error) {
-	base := c.options.address
-	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
-		base = "http://" + base
-	}
+	base := c.baseURL()
 	req, err := http.NewRequest(method, strings.TrimRight(base, "/")+path, body)
 	if err != nil {
 		return nil, err
@@ -271,7 +282,7 @@ func (c controllerClient) request(method, path string, body io.Reader) ([]byte, 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := controllerHTTPClient.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -289,6 +300,40 @@ func (c controllerClient) request(method, path string, body io.Reader) ([]byte, 
 const controllerRequestTimeout = 5 * time.Second
 
 var controllerHTTPClient = &http.Client{Timeout: controllerRequestTimeout}
+
+func (c controllerClient) baseURL() string {
+	if c.options.unixSocket != "" {
+		return "http://unix"
+	}
+	base := c.options.address
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "http://" + base
+	}
+	return strings.TrimRight(base, "/")
+}
+
+func (c controllerClient) displayAddress() string {
+	if c.options.unixSocket != "" {
+		return "private Unix socket"
+	}
+	return c.options.address
+}
+
+func controllerHTTPClientForOptions(options controllerOptions, timeout time.Duration) *http.Client {
+	if options.unixSocket == "" {
+		return &http.Client{Timeout: timeout}
+	}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			dialer := &net.Dialer{Timeout: timeout}
+			return dialer.DialContext(ctx, "unix", options.unixSocket)
+		},
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+	}
+}
 
 func controllerDialAddress(address string) (string, bool) {
 	base := address
@@ -349,6 +394,14 @@ func (c controllerClient) listProxies() error {
 }
 
 func (c controllerClient) selectProxy(group, proxy string) error {
+	if err := c.setProxy(group, proxy); err != nil {
+		return err
+	}
+	fmt.Printf("selected %q in %q\n", proxy, group)
+	return nil
+}
+
+func (c controllerClient) setProxy(group, proxy string) error {
 	body, err := json.Marshal(map[string]string{"name": proxy})
 	if err != nil {
 		return err
@@ -357,8 +410,31 @@ func (c controllerClient) selectProxy(group, proxy string) error {
 	if _, err := c.request(http.MethodPut, path, strings.NewReader(string(body))); err != nil {
 		return err
 	}
-	fmt.Printf("selected %q in %q\n", proxy, group)
 	return nil
+}
+
+func (c controllerClient) testProxyDelay(
+	proxy,
+	testURL string,
+) (int, error) {
+	query := url.Values{}
+	query.Set("timeout", "5000")
+	query.Set("url", testURL)
+	path := "/proxies/" + url.PathEscape(proxy) + "/delay?" + query.Encode()
+	data, err := c.request(http.MethodGet, path, nil)
+	if err != nil {
+		return 0, err
+	}
+	var result struct {
+		Delay int `json:"delay"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return 0, err
+	}
+	if result.Delay <= 0 {
+		return 0, errors.New("delay test returned no usable result")
+	}
+	return result.Delay, nil
 }
 
 func (c controllerClient) closeAllConnections() error {
