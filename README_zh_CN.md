@@ -24,8 +24,11 @@ make cli-linux
 预编译的 Debian 安装包可在 [Releases](https://github.com/yqlay/flclash-cli/releases) 页面下载：
 
 ```bash
-sudo dpkg -i flclash-cli_0.2.3_amd64.deb
+sudo dpkg -i flclash-cli_0.3.8_amd64.deb
 ```
+
+安装包内置 FlClash 自带的 GeoIP、GeoSite 和 ASN 数据。首次启动或发现
+MMDB 下载残缺时，会先从本地安装资源恢复，无需连接 GitHub。
 
 ## 原始 FlClash 应用
 

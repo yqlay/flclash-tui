@@ -46,10 +46,10 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 目前 Release 提供 Debian/Ubuntu 的 `amd64` 安装包：
 
 ```bash
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.7/flclash-cli_0.3.7_amd64.deb
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.7/flclash-cli_0.3.7_amd64.deb.sha256
-sha256sum -c flclash-cli_0.3.7_amd64.deb.sha256
-sudo dpkg -i flclash-cli_0.3.7_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.8/flclash-cli_0.3.8_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.8/flclash-cli_0.3.8_amd64.deb.sha256
+sha256sum -c flclash-cli_0.3.8_amd64.deb.sha256
+sudo dpkg -i flclash-cli_0.3.8_amd64.deb
 ```
 
 查看本机 CPU 架构：
@@ -68,7 +68,7 @@ dpkg --print-architecture
 flclash-cli
 ```
 
-首次启动会自动创建一个安全的 DIRECT 配置，但不会启动代理服务，也不会占用 Mixed Port。推荐的使用顺序是：
+首次启动会自动创建一个安全的 DIRECT 配置，但不会启动代理服务，也不会占用 Mixed Port。安装包已经包含 FlClash 自带的 `GEOIP.metadb`、`GEOIP.dat`、`GEOSITE.dat` 和 `ASN.mmdb`；缺失或损坏的基础 Geo 数据会在 Core 初始化前从本地安装包恢复，不依赖首次访问 GitHub。推荐的使用顺序是：
 
 1. 进入 **Profiles**。
 2. 选择 **Import subscription URL**，粘贴订阅链接并按 Enter。
@@ -191,7 +191,7 @@ make cli-linux
 ./dist/flclash-cli
 ```
 
-构建产物位于 `dist/flclash-cli`。本仓库保留了上游 FlClash Flutter 工程，因为 CLI 复用了其中的核心集成和平台代码；构建纯 CLI 不需要启动 Flutter 图形界面。
+构建产物位于 `dist/flclash-cli`，离线 Geo 数据位于 `dist/data/`，移动二进制时需将该目录一起移动。本仓库保留了上游 FlClash Flutter 工程，因为 CLI 复用了其中的核心集成和平台代码；构建纯 CLI 不需要启动 Flutter 图形界面。
 
 ## 数据位置
 

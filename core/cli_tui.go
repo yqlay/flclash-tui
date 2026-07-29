@@ -374,6 +374,9 @@ func initializeCore(
 	if err := os.MkdirAll(paths.homeDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
+	if err := ensureTUIBundledGeoData(paths.homeDir); err != nil {
+		return nil, fmt.Errorf("prepare offline Geo data: %w", err)
+	}
 	rawConfig, err := config.UnmarshalRawConfig(configData)
 	if err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)

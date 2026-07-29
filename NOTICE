@@ -17,6 +17,13 @@ license. See the submodule's LICENSE file and upstream repository for details:
 
   https://github.com/chen08209/Clash.Meta
 
+The offline GeoIP, GeoSite, and ASN databases under assets/data are inherited
+from FlClash's bundled application assets. The generated rule databases are
+distributed by MetaCubeX/meta-rules-dat under GNU GPL v3.0 and incorporate data
+from the upstream projects credited by that repository:
+
+  https://github.com/MetaCubeX/meta-rules-dat
+
 No endorsement by the original FlClash or Mihomo maintainers is implied.
 
 The terminal runtime uses Bubble Tea:

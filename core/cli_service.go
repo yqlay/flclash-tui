@@ -25,6 +25,7 @@ const (
 	tuiServiceSocketFilename = ".flclash-cli-service.sock"
 	tuiCoreSocketFilename    = ".flclash-cli-core.sock"
 	tuiServiceLogFilename    = "flclash-cli-service.log"
+	tuiServiceReloadTimeout  = 2 * time.Minute
 )
 
 type tuiServiceRequest struct {
@@ -43,14 +44,16 @@ type tuiServiceStatus struct {
 }
 
 type tuiServiceClient struct {
-	homeDir string
-	timeout time.Duration
+	homeDir       string
+	timeout       time.Duration
+	reloadTimeout time.Duration
 }
 
 func newTUIServiceClient(homeDir string) *tuiServiceClient {
 	return &tuiServiceClient{
-		homeDir: homeDir,
-		timeout: 3 * time.Second,
+		homeDir:       homeDir,
+		timeout:       3 * time.Second,
+		reloadTimeout: tuiServiceReloadTimeout,
 	}
 }
 
@@ -59,12 +62,16 @@ func (c *tuiServiceClient) socketPath() string {
 }
 
 func (c *tuiServiceClient) request(action, configPath string) (tuiServiceStatus, error) {
-	connection, err := net.DialTimeout("unix", c.socketPath(), c.timeout)
+	requestTimeout := c.timeout
+	if action == "reload" {
+		requestTimeout = c.reloadTimeout
+	}
+	connection, err := net.DialTimeout("unix", c.socketPath(), requestTimeout)
 	if err != nil {
 		return tuiServiceStatus{}, err
 	}
 	defer connection.Close()
-	_ = connection.SetDeadline(time.Now().Add(c.timeout))
+	_ = connection.SetDeadline(time.Now().Add(requestTimeout))
 	if err := json.NewEncoder(connection).Encode(tuiServiceRequest{
 		Action:     action,
 		ConfigPath: configPath,
@@ -307,6 +314,11 @@ func runTUIService(paths cliPaths, testURL string) error {
 				})
 				return
 			}
+			if request.Action == "reload" {
+				_ = connection.SetDeadline(
+					time.Now().Add(tuiServiceReloadTimeout + 5*time.Second),
+				)
+			}
 			lock.Lock()
 			defer lock.Unlock()
 			status := tuiServiceStatus{
@@ -379,6 +391,9 @@ func reloadTUIServiceConfig(
 	configPath = filepath.Clean(configPath)
 	if _, err := tuiProfileStateKey(paths.homeDir, configPath); err != nil {
 		return nil, err
+	}
+	if err := ensureTUIBundledGeoData(paths.homeDir); err != nil {
+		return nil, fmt.Errorf("prepare offline Geo data: %w", err)
 	}
 	if message := handleValidateConfig(configPath); message != "" {
 		return nil, errors.New(message)

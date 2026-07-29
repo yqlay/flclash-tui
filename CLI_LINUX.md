@@ -14,17 +14,24 @@ git submodule update --init --recursive
 make cli-linux
 ```
 
-The binary is written to `dist/flclash-cli`.
+The binary is written to `dist/flclash-cli`; bundled Geo databases are copied
+to `dist/data`. Keep that directory beside the binary when moving a source
+build to an offline host.
 
 ## Install the Debian package
 
-Download `flclash-cli_0.3.7_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
+Download `flclash-cli_0.3.8_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
 
 ```bash
-sudo dpkg -i flclash-cli_0.3.7_amd64.deb
+sudo dpkg -i flclash-cli_0.3.8_amd64.deb
 ```
 
-The package installs the executable at `/usr/bin/flclash-cli` and documentation under `/usr/share/doc/flclash-cli`.
+The package installs the executable at `/usr/bin/flclash-cli`, bundled offline
+Geo databases under `/usr/share/flclash-cli/data`, and documentation under
+`/usr/share/doc/flclash-cli`. Before the core starts, missing Geo data is copied
+from the package into the selected FlClash data directory. A valid existing
+database is preserved; an incomplete or invalid MMDB download is repaired from
+the bundled copy. Initial startup therefore does not depend on GitHub access.
 
 ## Run the TUI
 

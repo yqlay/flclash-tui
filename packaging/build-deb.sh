@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.3.7}"
+VERSION="${VERSION:-0.3.8}"
 ARCH="${ARCH:-amd64}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist}"
 PACKAGE_NAME="flclash-cli_${VERSION}_${ARCH}"
@@ -22,9 +22,12 @@ mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${WORK_DIR}/DEBIAN"
 mkdir -p "${WORK_DIR}/usr/bin"
 mkdir -p "${WORK_DIR}/usr/share/doc/flclash-cli"
+mkdir -p "${WORK_DIR}/usr/share/flclash-cli/data"
 chmod 0755 "${WORK_DIR}" "${WORK_DIR}/DEBIAN" "${WORK_DIR}/usr" \
   "${WORK_DIR}/usr/share" "${WORK_DIR}/usr/share/doc" \
-  "${WORK_DIR}/usr/share/doc/flclash-cli"
+  "${WORK_DIR}/usr/share/doc/flclash-cli" \
+  "${WORK_DIR}/usr/share/flclash-cli" \
+  "${WORK_DIR}/usr/share/flclash-cli/data"
 
 (
   cd "${ROOT_DIR}/core"
@@ -41,6 +44,11 @@ install -m 0644 "${ROOT_DIR}/README.md" "${WORK_DIR}/usr/share/doc/flclash-cli/R
 install -m 0644 "${ROOT_DIR}/CLI_LINUX.md" "${WORK_DIR}/usr/share/doc/flclash-cli/CLI_LINUX.md"
 install -m 0644 "${ROOT_DIR}/LICENSE" "${WORK_DIR}/usr/share/doc/flclash-cli/LICENSE"
 install -m 0644 "${ROOT_DIR}/NOTICE" "${WORK_DIR}/usr/share/doc/flclash-cli/NOTICE"
+for geo_file in GEOIP.metadb GEOIP.dat GEOSITE.dat ASN.mmdb; do
+  install -m 0644 \
+    "${ROOT_DIR}/assets/data/${geo_file}" \
+    "${WORK_DIR}/usr/share/flclash-cli/data/${geo_file}"
+done
 
 cat > "${WORK_DIR}/DEBIAN/control" <<EOF
 Package: flclash-cli
@@ -62,6 +70,7 @@ trap 'rm -rf "${TARBALL_STAGE}"; cleanup' EXIT
 mkdir -p "${TARBALL_STAGE}/${PACKAGE_NAME}"
 cp -a "${WORK_DIR}/usr/bin/flclash-cli" "${TARBALL_STAGE}/${PACKAGE_NAME}/"
 cp -a "${WORK_DIR}/usr/share/doc/flclash-cli/." "${TARBALL_STAGE}/${PACKAGE_NAME}/"
+cp -a "${WORK_DIR}/usr/share/flclash-cli/data" "${TARBALL_STAGE}/${PACKAGE_NAME}/"
 tar -C "${TARBALL_STAGE}" -czf "${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}"
 echo "Built ${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz"
 
