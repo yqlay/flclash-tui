@@ -1,16 +1,172 @@
-<div>
+# FlClash CLI
 
-[**简体中文**](README_zh_CN.md)
+[![Release](https://img.shields.io/github/v/release/yqlay/flclash-cli?style=flat-square)](https://github.com/yqlay/flclash-cli/releases)
+[![Downloads](https://img.shields.io/github/downloads/yqlay/flclash-cli/total?style=flat-square)](https://github.com/yqlay/flclash-cli/releases)
+[![License](https://img.shields.io/github/license/yqlay/flclash-cli?style=flat-square)](LICENSE)
 
-</div>
+FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户端。它以全屏终端界面（TUI）提供接近图形客户端的使用体验，同时保留适合脚本、SSH 和服务器环境的命令行功能。
 
-# FlClash CLI for Linux
+本项目基于 [FlClash](https://github.com/chen08209/FlClash) 衍生，复用其 Go/Mihomo 核心，并针对纯终端使用重新设计了配置、订阅、服务控制和状态查看流程。运行 `flclash-cli` 即可进入界面，不要求用户先手写 `config.yaml`。
 
-An unofficial Linux TUI/CLI client derived from [FlClash](https://github.com/chen08209/FlClash). It reuses FlClash's Go/Mihomo core and provides a full-screen terminal interface plus scriptable commands.
+> 本项目是非官方衍生版本，不是 FlClash 官方发布版本，也不代表 FlClash 或 Mihomo 维护者。版权和许可证说明见 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
 
-This is an independent derivative project, not an official FlClash release. See [NOTICE](NOTICE) and [LICENSE](LICENSE) for copyright and license information.
+## 适合哪些场景
 
-## Quick start
+- 通过 SSH 管理 Linux 服务器、工作站或 WSL 环境
+- 不安装桌面环境，只在终端中管理代理
+- 希望在一台主机上运行多个相互隔离的 Mihomo 实例
+- 既需要交互式界面，也需要命令行检查、启动和切换节点
+
+## 主要功能
+
+- **全屏 TUI**：固定布局、键盘操作，不会不断向终端追加界面内容
+- **订阅与配置管理**：在界面中导入订阅、切换配置、重命名配置和编辑 YAML
+- **完整代理控制**：查看代理组和 Provider、切换节点、单节点测速及整组测速
+- **服务生命周期管理**：进入界面时默认不占用代理端口；开启系统代理时自动启动 Core
+- **常用设置可视化**：支持模式、Mixed Port、TUN、Allow LAN、IPv6、日志等级、Unified Delay 和 TCP Concurrent
+- **状态与诊断**：显示公网/内网 IP、实时流量、连接、请求、日志、系统内存、本进程和 Core 内存
+- **状态持久化**：保存当前 Profile、代理组选择及配置设置，下次进入时自动恢复
+- **安全更新**：从本仓库的 GitHub Releases 检查更新，校验 SHA-256 后再安装
+- **脚本化命令**：支持前台运行、配置校验、查询代理组和切换节点
+
+界面包含以下栏目：
+
+| 栏目 | 用途 |
+| --- | --- |
+| Dashboard | 服务、系统代理、TUN、模式、端口、网络和内存状态 |
+| Proxies | 代理组、节点、Provider、节点切换和延迟测试 |
+| Profiles | 导入订阅、激活/重命名配置、编辑 YAML |
+| Requests | 查看本次运行期间的活动请求和近期请求 |
+| Connections | 查看和关闭当前连接 |
+| Logs | 查看、清空和导出 Core 日志 |
+| Tools | 完整设置、备份恢复、Geo 数据库和版本检查 |
+
+## 安装
+
+目前 Release 提供 Debian/Ubuntu 的 `amd64` 安装包：
+
+```bash
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.4/flclash-cli_0.3.4_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.4/flclash-cli_0.3.4_amd64.deb.sha256
+sha256sum -c flclash-cli_0.3.4_amd64.deb.sha256
+sudo dpkg -i flclash-cli_0.3.4_amd64.deb
+```
+
+查看本机 CPU 架构：
+
+```bash
+dpkg --print-architecture
+```
+
+输出为 `amd64` 时可使用上述安装包。其他发行版可以从源码构建。
+
+## 快速开始
+
+安装后直接运行：
+
+```bash
+flclash-cli
+```
+
+首次启动会自动创建一个安全的 DIRECT 配置，但不会启动代理服务，也不会占用 Mixed Port。推荐的使用顺序是：
+
+1. 进入 **Profiles**。
+2. 选择 **Import subscription URL**，粘贴订阅链接并按 Enter。
+3. 选中下载完成的 Profile 并激活。
+4. 在 **Proxies** 中选择需要的节点。
+5. 在 **Dashboard** 中确认模式和端口，然后将 **System proxy** 切换为 ON。
+
+开启 **System proxy** 时，程序会自动应用当前设置、启动 Service/Core，再设置桌面系统代理，不需要手动先启动核心。停止 Service 时，由当前 TUI 开启的系统代理也会关闭。
+
+`q` 或 `Ctrl+C` 退出时，会停止由本次 TUI 启动的 Service/Core；外部启动的 Core 不受影响。重新进入 TUI 时会恢复上次配置和节点选择，但不会自动启动服务或占用端口。
+
+## 基本操作
+
+```text
+← 聚焦侧栏       → 打开栏目并聚焦内容       Tab 切换焦点
+↑/↓ 或 j/k       移动选择                  Enter 执行
+1～7             快速打开对应栏目           r 刷新
+[/]              切换代理组/Provider        d/D 测速
+A                测试当前组全部节点         s 开关系统代理
+c                启动/停止 Service          q 停止并退出
+```
+
+所有主要功能都可以通过界面中的可选行完成，快捷键只是辅助操作，不要求记忆。
+
+## 系统代理与 TUN
+
+- **System proxy**：设置桌面环境的 HTTP/HTTPS 系统代理，当前主要支持 GNOME 和 MATE 的 `gsettings`。
+- **TUN**：在网络层接管更多流量，适合不读取系统代理设置的应用；Linux 下可能需要额外网络权限。
+- **Global 模式**：决定被代理流量统一走所选节点，不等同于自动接管系统全部流量。
+
+`ping` 使用 ICMP，不经过 HTTP/SOCKS 系统代理，因此不能用 `ping google.com` 判断本工具的代理是否可用。可以使用：
+
+```bash
+curl -I --max-time 10 https://www.google.com
+curl -x http://127.0.0.1:7890 -I --max-time 10 https://www.google.com
+```
+
+第二条命令中的端口应替换为界面里显示的 Mixed Port。
+
+## 命令行模式
+
+打开 TUI（默认行为）：
+
+```bash
+flclash-cli
+flclash-cli tui --directory ~/.config/flclash-work
+flclash-cli tui --config /path/to/config.yaml
+```
+
+以前台进程运行 Core：
+
+```bash
+flclash-cli run --config /path/to/config.yaml
+```
+
+检查配置：
+
+```bash
+flclash-cli check --config /path/to/config.yaml
+```
+
+连接已有的 Mihomo Controller：
+
+```bash
+flclash-cli proxy list --controller 127.0.0.1:9090
+flclash-cli proxy select --controller 127.0.0.1:9090 GROUP NODE
+```
+
+一台主机运行多个实例时，应为每个实例指定不同的数据目录、Mixed Port 和 Controller：
+
+```bash
+flclash-cli tui --directory ~/.config/flclash-a
+flclash-cli tui --directory ~/.config/flclash-b
+```
+
+更完整的参数和操作说明见 [CLI_LINUX.md](CLI_LINUX.md)。
+
+## 更新
+
+仅检查是否有新版本：
+
+```bash
+flclash-cli update --check
+```
+
+下载、校验并安装新版本：
+
+```bash
+flclash-cli update
+```
+
+更新器只接受本仓库 GitHub Releases 中与当前 CPU 架构匹配的 Debian 包，并在安装前验证 SHA-256。
+
+> **如果当前版本使用正常，请勿轻易更新。**
+
+## 从源码构建
+
+需要 Go、Git、Make，并需要初始化 Mihomo 子模块：
 
 ```bash
 git clone --recurse-submodules https://github.com/yqlay/flclash-cli.git
@@ -19,184 +175,23 @@ make cli-linux
 ./dist/flclash-cli
 ```
 
-See [CLI_LINUX.md](CLI_LINUX.md) for TUI pages, keyboard controls, configuration, proxy control, and multi-instance usage.
+构建产物位于 `dist/flclash-cli`。本仓库保留了上游 FlClash Flutter 工程，因为 CLI 复用了其中的核心集成和平台代码；构建纯 CLI 不需要启动 Flutter 图形界面。
 
-Prebuilt Debian packages are available on the [Releases](https://github.com/yqlay/flclash-cli/releases) page:
+## 数据位置
 
-```bash
-sudo dpkg -i flclash-cli_0.3.4_amd64.deb
+默认数据目录为：
+
+```text
+~/.config/flclash/
 ```
 
-## Original FlClash application
+其中保存配置文件、下载的 Profile、运行状态、日志和备份。也可以使用 `--directory` 或 `--config` 指定其他位置。多实例运行时，请勿让不同实例共用相同的数据目录和监听端口。
 
-The original Flutter graphical application remains in this repository because the CLI reuses its core integration and platform code. For the upstream GUI project and releases, see [chen08209/FlClash](https://github.com/chen08209/FlClash).
+## 项目关系与许可
 
-## FlClash
+- 上游图形客户端：[chen08209/FlClash](https://github.com/chen08209/FlClash)
+- Mihomo/Clash.Meta Core：以 Git 子模块形式保留在 `core/Clash.Meta`
+- TUI 交互层参考并改编自 [SaladDay/cc-switch-cli](https://github.com/SaladDay/cc-switch-cli)
+- 本项目遵循 [GNU General Public License v3.0](LICENSE)
 
-[![Downloads](https://img.shields.io/github/downloads/chen08209/FlClash/total?style=flat-square&logo=github)](https://github.com/chen08209/FlClash/releases/)[![Last Version](https://img.shields.io/github/release/chen08209/FlClash/all.svg?style=flat-square)](https://github.com/chen08209/FlClash/releases/)[![License](https://img.shields.io/github/license/chen08209/FlClash?style=flat-square)](LICENSE)
-
-[![Channel](https://img.shields.io/badge/Telegram-Channel-blue?style=flat-square&logo=telegram)](https://t.me/FlClash)
-
-A multi-platform proxy client based on ClashMeta, simple and easy to use, open-source and ad-free.
-
-on Desktop:
-<p style="text-align: center;">
-    <img alt="desktop" src="snapshots/desktop.gif">
-</p>
-
-on Mobile:
-<p style="text-align: center;">
-    <img alt="mobile" src="snapshots/mobile.gif">
-</p>
-
-## Features
-
-✈️ Multi-platform: Android, Windows, macOS and Linux
-
-💻 Adaptive multiple screen sizes, Multiple color themes available
-
-💡 Based on Material You Design, [Surfboard](https://github.com/getsurfboard/surfboard)-like UI
-
-☁️ Supports data sync via WebDAV
-
-✨ Support subscription link, Dark mode
-
-## Use
-
-### Linux
-
-⚠️ Make sure to install the following dependencies before using them
-
-   ```bash
-    sudo apt-get install libayatana-appindicator3-dev
-    sudo apt-get install libkeybinder-3.0-dev
-   ```
-
-For terminal-only use without the Flutter GUI, build the Linux CLI:
-
-```bash
-make cli-linux
-./dist/flclash-cli --config ~/.config/flclash/config.yaml
-```
-
-No arguments opens the TUI and creates a safe DIRECT-only profile on first
-launch. Import subscriptions from Profiles, then enable `System proxy` on the
-Dashboard; the service starts automatically with the staged port and settings.
-The sidebar follows graphical FlClash: Dashboard, Proxies, Profiles, Requests,
-Connections, Logs, and Tools. Providers are a selectable view inside Proxies,
-while settings and maintenance actions live in Tools. Dashboard shows public
-and intranet IP detection, and Proxies supports selected-node and whole-group
-delay tests. Dashboard memory information refreshes every second and reports
-system usage plus accurate shared-process or external-Core RSS labels. The
-`run`, `check`, `proxy`, and secure GitHub-backed `update` commands remain
-available for automation. See [Linux CLI documentation](CLI_LINUX.md).
-
-The TUI remembers the active profile and proxy-group selections. Profile
-settings such as mode, mixed port, TUN, LAN, IPv6, unified delay, concurrent
-TCP dialing, and log level are saved immediately and restored on the next
-launch. Missing unified-delay and TCP-concurrent settings adopt the original
-FlClash defaults so delay tests use the same warmed-connection measurement.
-
-Check or install updates from this repository:
-
-```bash
-flclash-cli update --check
-flclash-cli update
-```
-
-The updater downloads the matching Debian package and checksum from GitHub
-Releases and verifies SHA-256 before installation. If the installed version
-works well, do not update lightly.
-
-### Android
-
-Support the following actions
-
-   ```bash
-    com.follow.clash.action.START
-    
-    com.follow.clash.action.STOP
-    
-    com.follow.clash.action.TOGGLE
-   ```
-
-## Download
-
-<a href="https://chen08209.github.io/FlClash-fdroid-repo/repo?fingerprint=789D6D32668712EF7672F9E58DEEB15FBD6DCEEC5AE7A4371EA72F2AAE8A12FD"><img alt="Get it on F-Droid" src="snapshots/get-it-on-fdroid.svg" width="200px"/></a> <a href="https://github.com/chen08209/FlClash/releases"><img alt="Get it on GitHub" src="snapshots/get-it-on-github.svg" width="200px"/></a>
-
-### Homebrew
-
-```bash
-brew tap chen08209/tap
-brew install --cask flclash
-```
-
-## Build
-
-1. Update submodules
-   ```bash
-   git submodule update --init --recursive
-   ```
-
-2. Install `Flutter` and `Golang` environment
-
-3. Build Application
-
-    - android
-
-        1. Install `Android SDK`, `Android NDK`
-
-        2. Set `ANDROID_NDK` environment variable
-
-        3. Run build script
-
-           ```bash
-           dart setup.dart android
-           ```
-
-    - windows
-
-        1. Requires a Windows client
-
-        2. Install `GCC`, `Inno Setup`
-
-        3. Run build script
-
-           ```bash
-           dart setup.dart windows
-           ```
-
-    - linux
-
-        1. Requires a Linux client
-
-        2. Dependencies are auto-installed by setup script, or manually:
-           ```bash
-           sudo apt-get install -y libayatana-appindicator3-dev libkeybinder-3.0-dev
-           ```
-
-        3. Run build script
-
-           ```bash
-           dart setup.dart linux
-           ```
-
-    - macOS
-
-        1. Requires a macOS client
-
-        2. Run build script
-
-           ```bash
-           dart setup.dart macos
-           ```
-
-## Star
-
-The easiest way to support developers is to click on the star (⭐) at the top of the page.
-
-<p style="text-align: center;">
-    <a href="https://api.star-history.com/svg?repos=chen08209/FlClash&Date">
-        <img alt="start" width=50% src="https://api.star-history.com/svg?repos=chen08209/FlClash&Date"/>
-    </a>
-</p>
+各上游项目及第三方组件仍归原作者所有，具体归属、许可证和免责声明请查看 [NOTICE](NOTICE)。
