@@ -77,6 +77,29 @@ type tuiSettings struct {
 	SystemProxy bool
 }
 
+type tuiNetworkInfo struct {
+	PublicIP   string
+	Country    string
+	IntranetIP string
+	Route      string
+	Error      string
+	Loading    bool
+	CheckedAt  time.Time
+}
+
+type tuiMemoryInfo struct {
+	SystemTotal  uint64
+	SystemUsed   uint64
+	ProcessRSS   uint64
+	GoHeap       uint64
+	CoreRSS      uint64
+	ExternalCore bool
+	Error        string
+	CoreError    string
+	UpdatedAt    time.Time
+	CoreUpdated  time.Time
+}
+
 const (
 	tuiSettingsModeRow = iota
 	tuiSettingsMixedPortRow
@@ -138,6 +161,8 @@ type tuiSnapshot struct {
 	Profiles           []tuiProfile
 	Providers          []tuiProvider
 	Settings           tuiSettings
+	Network            tuiNetworkInfo
+	Memory             tuiMemoryInfo
 	UpdatedAt          time.Time
 	Status             string
 	SelectedGroup      int
@@ -1843,6 +1868,7 @@ const (
 	tuiKeyViewPrevious
 	tuiKeyViewNext
 	tuiKeyDelayTest
+	tuiKeyDelayTestAll
 )
 
 func readTUIKeys(reader io.Reader, keys chan<- tuiKey) {
@@ -1928,6 +1954,8 @@ func readTUIKeysSynchronized(reader io.Reader, keys chan<- tuiKey, handled <-cha
 			key = tuiKeyResetTraffic
 		case 'D':
 			key = tuiKeyDelayTest
+		case 'A':
+			key = tuiKeyDelayTestAll
 		case '\r', '\n', ' ':
 			key = tuiKeySelect
 		case 'k':
@@ -2107,9 +2135,9 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 		b.WriteByte('\n')
 	}
 
-	footer := "  ←→ panel  ↑↓ move  Enter apply  ? help  q quit"
+	footer := "  ←→ panel  ↑↓ move  Enter apply  ? help  q stop & quit"
 	if width >= 110 {
-		footer = "  ←→ panel  ↑↓/jk move  h/l node  [/] view  D delay  Enter apply  r refresh  ? help  q quit"
+		footer = "  ←→ panel  ↑↓/jk move  h/l node  d delay  A all  n network  Enter apply  ? help  q stop & quit"
 	}
 	if snapshot.Status != "" && snapshot.Status != "Connected" {
 		statusWidth := maxTUIWidth(width-tuiDisplayWidth(footer)-5, 0)
@@ -2133,7 +2161,7 @@ func renderTUITooSmall(width, height int) string {
 		fmt.Sprintf("  Terminal: %dx%d", width, height),
 		"  Resize to at least 64x14",
 		"",
-		"  q quit",
+		"  q stop & quit",
 	}
 	var b strings.Builder
 	for row := 0; row < height; row++ {
@@ -2461,7 +2489,7 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 	tuiTitle(
 		b,
 		"Proxies  ·  Groups  [1/2]",
-		"↑↓ group · h/l node · D delay · Enter switch · [/] view",
+		"↑↓ group · h/l node · d/D selected delay · A all delays · Enter switch · [/] view",
 		width,
 	)
 	for index := groupStart; index < groupEnd; index++ {
@@ -2472,7 +2500,12 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 	tuiEndPanel(b, width)
 
 	nodeTitle := "Nodes in " + group.Name
-	tuiTitle(b, nodeTitle, fmt.Sprintf("%d nodes", len(group.Nodes)), width)
+	tuiTitle(
+		b,
+		nodeTitle,
+		fmt.Sprintf("%d nodes · d test selected · A test all", len(group.Nodes)),
+		width,
+	)
 	nodeStart, nodeEnd := tuiVisibleRange(len(group.Nodes), snapshot.SelectedNode, nodeLimit)
 	for index := nodeStart; index < nodeEnd; index++ {
 		node := group.Nodes[index]
@@ -2480,10 +2513,28 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 		if node == group.Now {
 			label += "  [current]"
 		}
-		if delay := group.Delays[node]; delay > 0 {
+		color := tuiGreen
+		delay, tested := group.Delays[node]
+		switch {
+		case delay > 0:
 			label += fmt.Sprintf("  %d ms", delay)
+		case delay == -1:
+			label += "  Timeout · d retry"
+			color = tuiDim
+		case delay == -2:
+			label += "  Testing..."
+			color = tuiCyan
+		case !tested:
+			label += "  [d test]"
+			color = tuiDim
 		}
-		tuiRow(b, label, width, index == snapshot.SelectedNode && !snapshot.FocusSidebar, tuiGreen)
+		tuiRow(
+			b,
+			label,
+			width,
+			index == snapshot.SelectedNode && !snapshot.FocusSidebar,
+			color,
+		)
 	}
 	if len(group.Nodes) == 0 {
 		tuiRow(b, "No nodes in this group", width, false, tuiDim)
@@ -2576,13 +2627,14 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 	rows := []string{
 		"Navigation     ← sidebar · → content · ↑/↓ or j/k move · Enter opens/applies",
 		"Sections       1-7 open directly · Tab changes focus · [/] changes proxy view",
-		"Proxies        ↑/↓ group/provider · h/l node · D delay · Enter switch/update",
+		"Dashboard      n refreshes public and intranet IP detection",
+		"Proxies        h/l node · d/D selected delay · A all delays · Enter switch",
 		"Profiles       Enter activate · F2/u rename · e edit YAML · n import URL",
 		"Requests       x clears local history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
 		"Core           s system proxy (auto-start) · c start/stop · t TUN · m mode",
 		"Tools          Enter applies row · a LAN · v IPv6 · p port · z reset traffic",
-		"Other          b backup · B restore · g update Geo databases · q quit",
+		"Exit           q graceful stop & quit · Ctrl+C interrupt, clean up, and stop",
 	}
 	if height < 28 {
 		rows = rows[:minTUI(5, len(rows))]
@@ -2621,9 +2673,42 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 		)
 	}
 	tuiEndPanel(b, width)
-	if height >= 15 {
-		overview := []string{
-			fmt.Sprintf("Config        %s", paths.configPath),
+
+	publicIP := "Checking..."
+	if snapshot.Network.PublicIP != "" {
+		publicIP = snapshot.Network.PublicIP
+		if snapshot.Network.Country != "" {
+			publicIP += "  [" + snapshot.Network.Country + "]"
+		}
+		if snapshot.Network.Loading {
+			publicIP += "  refreshing..."
+		}
+	} else if snapshot.Network.Error != "" && !snapshot.Network.Loading {
+		publicIP = "Unavailable · press n to retry"
+	}
+	intranetIP := snapshot.Network.IntranetIP
+	if intranetIP == "" {
+		if snapshot.Network.Loading {
+			intranetIP = "Detecting..."
+		} else {
+			intranetIP = "No active LAN address"
+		}
+	}
+	networkSubtitle := "n refresh"
+	if snapshot.Network.Route != "" {
+		networkSubtitle += " · " + snapshot.Network.Route
+	}
+	if !snapshot.Network.CheckedAt.IsZero() {
+		networkSubtitle += " · checked " + snapshot.Network.CheckedAt.Format("15:04:05")
+	}
+	tuiTitle(b, "Network detection", networkSubtitle, width)
+	tuiRow(b, "Public IP     "+publicIP, width, false, tuiCyan)
+	tuiRow(b, "Intranet IP   "+intranetIP, width, false, tuiGreen)
+	tuiEndPanel(b, width)
+
+	if height >= 17 {
+		overview := tuiMemoryRows(snapshot)
+		overview = append(overview,
 			fmt.Sprintf(
 				"Network speed ↑ %s/s   ↓ %s/s",
 				formatBytes(snapshot.Traffic.Up),
@@ -2639,13 +2724,68 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 				len(snapshot.Connections),
 				len(snapshot.Requests),
 			),
-		}
-		tuiTitle(b, "Overview", "live status", width)
+			fmt.Sprintf("Config        %s", paths.configPath),
+		)
+		tuiTitle(b, "Overview", "memory refresh 1s · live status", width)
 		for _, row := range overview {
 			tuiRow(b, row, width, false, "")
 		}
 		tuiEndPanel(b, width)
 	}
+}
+
+func tuiMemoryRows(snapshot tuiSnapshot) []string {
+	systemMemory := "Unavailable"
+	if snapshot.Memory.SystemTotal > 0 {
+		percentage := float64(snapshot.Memory.SystemUsed) /
+			float64(snapshot.Memory.SystemTotal) * 100
+		systemMemory = fmt.Sprintf(
+			"%s / %s  %.1f%%",
+			formatTUIUintBytes(snapshot.Memory.SystemUsed),
+			formatTUIUintBytes(snapshot.Memory.SystemTotal),
+			percentage,
+		)
+	}
+	rows := []string{"System memory " + systemMemory}
+	if snapshot.ExternalCore {
+		processMemory := "Measuring..."
+		if snapshot.Memory.ProcessRSS > 0 {
+			processMemory = formatTUIUintBytes(snapshot.Memory.ProcessRSS)
+		}
+		coreMemory := "Measuring..."
+		if snapshot.Memory.CoreRSS > 0 {
+			coreMemory = formatTUIUintBytes(snapshot.Memory.CoreRSS)
+		} else if snapshot.Memory.CoreError != "" {
+			coreMemory = "Unavailable · retrying"
+		}
+		rows = append(
+			rows,
+			"TUI process   "+processMemory,
+			"External Core "+coreMemory,
+		)
+	} else {
+		processMemory := "Measuring..."
+		if snapshot.Memory.ProcessRSS > 0 {
+			processMemory = formatTUIUintBytes(snapshot.Memory.ProcessRSS)
+		}
+		rows = append(
+			rows,
+			"CLI + Mihomo  "+processMemory+" RSS · shared process",
+		)
+	}
+	goHeap := "Measuring..."
+	if snapshot.Memory.GoHeap > 0 {
+		goHeap = formatTUIUintBytes(snapshot.Memory.GoHeap)
+	}
+	return append(rows, "Go heap       "+goHeap)
+}
+
+func formatTUIUintBytes(value uint64) string {
+	const maxInt64 = uint64(^uint64(0) >> 1)
+	if value > maxInt64 {
+		value = maxInt64
+	}
+	return formatBytes(int64(value))
 }
 
 func drawTUIRequests(b *strings.Builder, snapshot tuiSnapshot, width, height int) {

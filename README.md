@@ -24,7 +24,7 @@ See [CLI_LINUX.md](CLI_LINUX.md) for TUI pages, keyboard controls, configuration
 Prebuilt Debian packages are available on the [Releases](https://github.com/yqlay/flclash-cli/releases) page:
 
 ```bash
-sudo dpkg -i flclash-cli_0.3.2_amd64.deb
+sudo dpkg -i flclash-cli_0.3.3_amd64.deb
 ```
 
 ## Original FlClash application
@@ -84,9 +84,12 @@ launch. Import subscriptions from Profiles, then enable `System proxy` on the
 Dashboard; the service starts automatically with the staged port and settings.
 The sidebar follows graphical FlClash: Dashboard, Proxies, Profiles, Requests,
 Connections, Logs, and Tools. Providers are a selectable view inside Proxies,
-while settings and maintenance actions live in Tools. The `run`, `check`, and
-`proxy` commands remain available for automation. See [Linux CLI
-documentation](CLI_LINUX.md).
+while settings and maintenance actions live in Tools. Dashboard shows public
+and intranet IP detection, and Proxies supports selected-node and whole-group
+delay tests. Dashboard memory information refreshes every second and reports
+system usage plus accurate shared-process or external-Core RSS labels. The
+`run`, `check`, and `proxy` commands remain available for automation. See
+[Linux CLI documentation](CLI_LINUX.md).
 
 The TUI remembers the active profile and proxy-group selections. Profile
 settings such as mode, mixed port, TUN, LAN, IPv6, and log level are saved

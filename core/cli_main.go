@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.3.2"
+const cliVersion = "0.3.3"
 
 type cliPaths struct {
 	homeDir    string
@@ -271,6 +271,26 @@ func bytesTrimSpace(data []byte) []byte {
 }
 
 func (c controllerClient) request(method, path string, body io.Reader) ([]byte, error) {
+	return c.requestWithClient(c.httpClient(), method, path, body)
+}
+
+func (c controllerClient) requestWithTimeout(
+	timeout time.Duration,
+	method,
+	path string,
+	body io.Reader,
+) ([]byte, error) {
+	client := *c.httpClient()
+	client.Timeout = timeout
+	return c.requestWithClient(&client, method, path, body)
+}
+
+func (c controllerClient) requestWithClient(
+	client *http.Client,
+	method,
+	path string,
+	body io.Reader,
+) ([]byte, error) {
 	base := c.baseURL()
 	req, err := http.NewRequest(method, strings.TrimRight(base, "/")+path, body)
 	if err != nil {
@@ -282,7 +302,7 @@ func (c controllerClient) request(method, path string, body io.Reader) ([]byte, 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.httpClient().Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +441,12 @@ func (c controllerClient) testProxyDelay(
 	query.Set("timeout", "5000")
 	query.Set("url", testURL)
 	path := "/proxies/" + url.PathEscape(proxy) + "/delay?" + query.Encode()
-	data, err := c.request(http.MethodGet, path, nil)
+	data, err := c.requestWithTimeout(
+		6*time.Second,
+		http.MethodGet,
+		path,
+		nil,
+	)
 	if err != nil {
 		return 0, err
 	}

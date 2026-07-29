@@ -18,10 +18,10 @@ The binary is written to `dist/flclash-cli`.
 
 ## Install the Debian package
 
-Download `flclash-cli_0.3.2_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
+Download `flclash-cli_0.3.3_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
 
 ```bash
-sudo dpkg -i flclash-cli_0.3.2_amd64.deb
+sudo dpkg -i flclash-cli_0.3.3_amd64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash-cli` and documentation under `/usr/share/doc/flclash-cli`.
@@ -77,10 +77,14 @@ start Service, enable the desktop system proxy, or occupy the mixed port.
 The sidebar follows the graphical FlClash information architecture:
 
 - Dashboard: service state, system proxy, TUN, outbound mode, mixed port,
-  speeds, traffic totals, and connection counts.
+  public-IP network detection, intranet IP, speeds, traffic totals, and
+  connection counts. It also refreshes system memory, process RSS, and Go heap
+  once per second. Embedded mode labels RSS as `CLI + Mihomo` because both
+  share one process; `--no-start` mode shows TUI and external-Core RSS
+  separately. Press `n` to refresh both IP checks.
 - Proxies: proxy groups and nodes. Press `[`/`]` to switch between Groups and
-  Providers, Enter to switch a node or update a provider, and `D` to test the
-  highlighted node's delay.
+  Providers, Enter to switch a node or update a provider, `d`/`D` to test the
+  highlighted node, or `A` to test every node in the current group.
 - Profiles: import a subscription, activate/rename profiles, and edit profile
   YAML.
 - Requests: active and recently completed requests observed during the current
@@ -102,11 +106,15 @@ Keyboard shortcuts:
 ← sidebar      → content       Tab switch focus
 1 dashboard    2 proxies       3 profiles      4 requests
 5 connections  6 logs          7 tools
-↑/↓ or j/k     h/l node        [/] proxy view  D delay
+↑/↓ or j/k     h/l node        [/] proxy view  d/D delay
 Enter apply    r refresh       R reload        s system proxy
 c start/stop   x clear/all     d close one     e edit/export
-F2/u rename    n import        ? help          q quit
+F2/u rename    n import/check  A test all      q stop & quit
 ```
+
+Both `q` and `Ctrl+C` stop the Service/Core started by the current TUI process.
+`q` exits normally; `Ctrl+C` interrupts the TUI and then runs the same cleanup
+before exiting. Neither key stops a Core owned by an external process.
 
 The TUI starts with the sidebar focused. Use `↑`/`↓` and Enter to open a page,
 or press `1`–`7` directly. `←` always focuses the sidebar and `→` always opens

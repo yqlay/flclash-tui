@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -391,6 +392,38 @@ func TestTUIProfileRenameKeyAndHintAreVisible(t *testing.T) {
 		if !strings.Contains(plain, hint) {
 			t.Fatalf("profiles view does not contain %q:\n%s", hint, plain)
 		}
+	}
+}
+
+func TestTUIQuitKeysUseGracefulShutdownPath(t *testing.T) {
+	tests := []struct {
+		name string
+		key  tea.KeyMsg
+	}{
+		{
+			name: "q",
+			key:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}},
+		},
+		{
+			name: "ctrl+c",
+			key:  tea.KeyMsg{Type: tea.KeyCtrlC},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			key, ok := tuiKeyFromTea(test.key)
+			if !ok || key != tuiKeyQuit {
+				t.Fatalf("quit key = (%v, %v)", key, ok)
+			}
+			model := newTUIModel(controllerClient{}, cliPaths{}, nil, false)
+			command := model.handleTeaKey(test.key)
+			if command == nil {
+				t.Fatal("quit key did not return a command")
+			}
+			if _, ok := command().(tea.QuitMsg); !ok {
+				t.Fatal("quit key did not terminate the event loop")
+			}
+		})
 	}
 }
 
@@ -815,6 +848,504 @@ func TestControllerClientTestsSelectedProxyDelay(t *testing.T) {
 	}
 	if delay != 42 {
 		t.Fatalf("delay = %d, want 42", delay)
+	}
+}
+
+func TestControllerClientDelayTestOverridesShortRefreshTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		_ *http.Request,
+	) {
+		time.Sleep(60 * time.Millisecond)
+		_, _ = io.WriteString(w, `{"delay":35}`)
+	}))
+	defer server.Close()
+	httpClient := server.Client()
+	httpClient.Timeout = 10 * time.Millisecond
+	client := controllerClient{
+		options: controllerOptions{address: server.URL},
+		client:  httpClient,
+	}
+
+	delay, err := client.testProxyDelay("Node", "https://example.test/204")
+	if err != nil {
+		t.Fatalf("delay test reused the short refresh timeout: %v", err)
+	}
+	if delay != 35 {
+		t.Fatalf("delay = %d, want 35", delay)
+	}
+}
+
+func TestTUIWholeGroupDelayTestCollectsReachableAndTimeoutNodes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		request *http.Request,
+	) {
+		node := strings.TrimSuffix(
+			strings.TrimPrefix(request.URL.Path, "/proxies/"),
+			"/delay",
+		)
+		switch node {
+		case "fast":
+			_, _ = io.WriteString(w, `{"delay":18}`)
+		case "slow":
+			_, _ = io.WriteString(w, `{"delay":240}`)
+		default:
+			http.Error(w, "unreachable", http.StatusGatewayTimeout)
+		}
+	}))
+	defer server.Close()
+	client := controllerClient{
+		options: controllerOptions{address: server.URL},
+		client:  server.Client(),
+	}
+
+	delays := testTUIProxyDelays(
+		client,
+		[]string{"fast", "slow", "dead"},
+		"https://example.test/204",
+	)
+	if delays["fast"] != 18 || delays["slow"] != 240 || delays["dead"] != -1 {
+		t.Fatalf("whole-group delays = %#v", delays)
+	}
+}
+
+func TestTUIWholeGroupDelayKeyUpdatesVisibleNodeStates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		request *http.Request,
+	) {
+		if strings.Contains(request.URL.Path, "dead") {
+			http.Error(w, "unreachable", http.StatusGatewayTimeout)
+			return
+		}
+		_, _ = io.WriteString(w, `{"delay":27}`)
+	}))
+	defer server.Close()
+	model := newTUIModel(
+		controllerClient{
+			options: controllerOptions{address: server.URL},
+			client:  server.Client(),
+		},
+		cliPaths{},
+		nil,
+		false,
+	)
+	model.snapshot.Page = tuiPageProxies
+	model.snapshot.ProxyView = tuiProxyViewGroups
+	model.snapshot.FocusSidebar = false
+	model.snapshot.Groups = []tuiGroup{{
+		Name:   "Proxy",
+		Nodes:  []string{"fast", "dead"},
+		Delays: map[string]int{},
+	}}
+
+	command := model.handleKey(tuiKeyDelayTestAll)
+	if command == nil {
+		t.Fatal("A did not start the whole-group delay test")
+	}
+	for _, node := range model.snapshot.Groups[0].Nodes {
+		if model.snapshot.Groups[0].Delays[node] != -2 {
+			t.Fatalf("%s was not marked Testing", node)
+		}
+	}
+	_, _ = model.Update(command())
+	if model.snapshot.Groups[0].Delays["fast"] != 27 ||
+		model.snapshot.Groups[0].Delays["dead"] != -1 {
+		t.Fatalf("visible node delays = %#v", model.snapshot.Groups[0].Delays)
+	}
+	if !strings.Contains(model.snapshot.Status, "1/2 reachable") {
+		t.Fatalf("whole-group status = %q", model.snapshot.Status)
+	}
+}
+
+func TestTUINetworkDetectionUsesConfiguredMixedPortProxy(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.URL.Host != "public-ip.invalid" {
+			t.Fatalf("proxy target host = %q", request.URL.Host)
+		}
+		_, _ = io.WriteString(w, `{"ip":"203.0.113.8","country_code":"SG"}`)
+	}))
+	defer proxy.Close()
+	proxyPort := proxy.Listener.Addr().(*net.TCPAddr).Port
+
+	result := detectTUIPublicIP(
+		newTUINetworkHTTPClient(proxyPort),
+		[]string{"http://public-ip.invalid/json"},
+	)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.IP != "203.0.113.8" || result.Country != "SG" {
+		t.Fatalf("public IP result = %+v", result)
+	}
+}
+
+func TestTUIPublicIPDetectionAcceptsOriginalFlClashResponseShapes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		request *http.Request,
+	) {
+		switch request.URL.Path {
+		case "/invalid":
+			http.Error(w, "failed", http.StatusServiceUnavailable)
+		default:
+			_, _ = io.WriteString(w, `{"query":"198.51.100.9","countryCode":"US"}`)
+		}
+	}))
+	defer server.Close()
+
+	result := detectTUIPublicIP(
+		server.Client(),
+		[]string{server.URL + "/invalid", server.URL + "/valid"},
+	)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.IP != "198.51.100.9" || result.Country != "US" {
+		t.Fatalf("public IP result = %+v", result)
+	}
+}
+
+func TestTUIIntranetIPPrefersPrivateWiFiIPv4(t *testing.T) {
+	selected, ok := selectTUIIntranetIP([]tuiLocalIPCandidate{
+		{Interface: "eth0", Address: net.ParseIP("2001:db8::8")},
+		{Interface: "docker0", Address: net.ParseIP("172.17.0.1")},
+		{Interface: "wlp2s0", Address: net.ParseIP("192.168.1.23")},
+		{Interface: "eth0", Address: net.ParseIP("198.51.100.4")},
+	})
+	if !ok {
+		t.Fatal("no intranet IP was selected")
+	}
+	if selected.Interface != "wlp2s0" ||
+		selected.Address.String() != "192.168.1.23" {
+		t.Fatalf("selected intranet IP = %+v", selected)
+	}
+}
+
+func TestTUIDashboardRendersPublicAndIntranetIP(t *testing.T) {
+	snapshot := populatedTUISnapshot(tuiPageDashboard)
+	snapshot.Network = tuiNetworkInfo{
+		PublicIP:   "203.0.113.8",
+		Country:    "SG",
+		IntranetIP: "192.168.1.23 (wlp2s0)",
+		Route:      "PROXY 127.0.0.1:7890",
+		CheckedAt:  time.Date(2026, 7, 29, 12, 34, 56, 0, time.Local),
+	}
+	var output strings.Builder
+	drawTUIDashboard(
+		&output,
+		snapshot,
+		cliPaths{configPath: "/tmp/config.yaml"},
+		100,
+		26,
+	)
+	plain := stripTUIANSI(output.String())
+	for _, expected := range []string{
+		"Network detection",
+		"Public IP",
+		"203.0.113.8",
+		"[SG]",
+		"Intranet IP",
+		"192.168.1.23 (wlp2s0)",
+		"PROXY 127.0.0.1:7890",
+		"n refresh",
+	} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("Dashboard does not contain %q:\n%s", expected, plain)
+		}
+	}
+}
+
+func TestTUINetworkCheckDiscardsResultFromOldRoute(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Settings.MixedPort = 7890
+	model.coreRunning = true
+	model.networkCheckActive = true
+
+	_, command := model.Update(tuiNetworkResultMsg{
+		route: "direct",
+		info: tuiNetworkInfo{
+			PublicIP:  "198.51.100.2",
+			Route:     "DIRECT",
+			CheckedAt: time.Now(),
+		},
+	})
+	if command == nil {
+		t.Fatal("route change did not schedule a fresh network check")
+	}
+	if !model.networkCheckActive {
+		t.Fatal("fresh network check is not marked active")
+	}
+	if model.snapshot.Network.PublicIP != "" {
+		t.Fatal("stale direct-route IP replaced the proxy-route result")
+	}
+}
+
+func TestTUIMemoryRefreshIntervalIsOneSecond(t *testing.T) {
+	if tuiMemoryRefreshInterval != time.Second {
+		t.Fatalf("memory refresh interval = %s, want 1s", tuiMemoryRefreshInterval)
+	}
+	if tuiRefreshInterval != time.Second {
+		t.Fatalf("TUI tick interval = %s, want 1s", tuiRefreshInterval)
+	}
+}
+
+func TestTUIParsesLinuxSystemMemoryUsingMemAvailable(t *testing.T) {
+	total, available, err := parseTUISystemMemory([]byte(`MemTotal:       8192000 kB
+MemFree:        1000000 kB
+MemAvailable:   3072000 kB
+Buffers:         100000 kB
+Cached:          500000 kB
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 8192000*1024 || available != 3072000*1024 {
+		t.Fatalf("memory = total %d available %d", total, available)
+	}
+}
+
+func TestTUIParsesLinuxSystemMemoryFallback(t *testing.T) {
+	total, available, err := parseTUISystemMemory([]byte(`MemTotal: 4096 kB
+MemFree: 512 kB
+Buffers: 128 kB
+Cached: 1024 kB
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 4096*1024 || available != (512+128+1024)*1024 {
+		t.Fatalf("fallback memory = total %d available %d", total, available)
+	}
+}
+
+func TestTUIReadsProcessRSSFromLinuxStatm(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "statm")
+	if err := os.WriteFile(path, []byte("100 25 3 2 0 0 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rss, err := readTUIProcessRSS(path, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rss != 25*4096 {
+		t.Fatalf("RSS = %d, want %d", rss, 25*4096)
+	}
+}
+
+func TestTUILocalMemorySampleIncludesSystemProcessAndGoHeap(t *testing.T) {
+	info := sampleTUIMemory(tuiMemoryInfo{}, false)
+	if info.SystemTotal == 0 || info.SystemUsed == 0 {
+		t.Fatalf("system memory was not sampled: %+v", info)
+	}
+	if info.ProcessRSS == 0 {
+		t.Fatalf("process RSS was not sampled: %+v", info)
+	}
+	if info.GoHeap == 0 {
+		t.Fatalf("Go heap was not sampled: %+v", info)
+	}
+	if info.ExternalCore {
+		t.Fatal("embedded sample was marked as external")
+	}
+	if info.UpdatedAt.IsZero() {
+		t.Fatal("memory sample has no timestamp")
+	}
+}
+
+func TestTUIMemoryRefreshPreservesNewerExternalCoreSample(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, false)
+	newer := time.Now()
+	model.memoryRefreshActive = true
+	model.snapshot.Memory = tuiMemoryInfo{
+		CoreRSS:     222 << 20,
+		CoreUpdated: newer,
+	}
+	_, _ = model.Update(tuiMemoryResultMsg{
+		info: tuiMemoryInfo{
+			SystemTotal: 8 << 30,
+			SystemUsed:  4 << 30,
+			ProcessRSS:  20 << 20,
+			CoreRSS:     111 << 20,
+			CoreUpdated: newer.Add(-time.Second),
+			UpdatedAt:   newer,
+		},
+	})
+	if model.memoryRefreshActive {
+		t.Fatal("memory refresh remained active after receiving a sample")
+	}
+	if model.snapshot.Memory.CoreRSS != 222<<20 {
+		t.Fatalf("newer external Core RSS was overwritten: %+v", model.snapshot.Memory)
+	}
+	if model.snapshot.Memory.SystemTotal != 8<<30 {
+		t.Fatalf("local memory sample was not applied: %+v", model.snapshot.Memory)
+	}
+}
+
+func TestTUIExternalCoreMemoryErrorKeepsLastRSS(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, false)
+	model.snapshot.Memory.CoreRSS = 256 << 20
+	_, command := model.Update(tuiCoreMemoryMsg{
+		update: tuiCoreMemoryUpdate{
+			Error:     "temporary disconnect",
+			UpdatedAt: time.Now(),
+		},
+	})
+	if command != nil {
+		t.Fatal("model without a monitor scheduled another monitor read")
+	}
+	if model.snapshot.Memory.CoreRSS != 256<<20 {
+		t.Fatalf("temporary error erased the last Core RSS: %+v", model.snapshot.Memory)
+	}
+	if model.snapshot.Memory.CoreError != "temporary disconnect" {
+		t.Fatalf("Core memory error = %q", model.snapshot.Memory.CoreError)
+	}
+}
+
+func TestTUIExternalCoreMemoryStreamIgnoresInitialZero(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.URL.Path != "/memory" {
+			t.Fatalf("memory path = %q", request.URL.Path)
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("test response does not support flushing")
+		}
+		_, _ = io.WriteString(w, "{\"inuse\":0,\"oslimit\":0}\n")
+		flusher.Flush()
+		_, _ = io.WriteString(w, "{\"inuse\":98765432,\"oslimit\":0}\n")
+		flusher.Flush()
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	values := make(chan uint64, 1)
+	errors := make(chan error, 1)
+	go func() {
+		errors <- streamTUICoreMemory(
+			ctx,
+			controllerClient{
+				options: controllerOptions{address: server.URL},
+				client:  server.Client(),
+			},
+			func(value uint64) {
+				values <- value
+				cancel()
+			},
+		)
+	}()
+	select {
+	case value := <-values:
+		if value != 98765432 {
+			t.Fatalf("external Core RSS = %d", value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("external Core memory stream did not produce a value")
+	}
+	select {
+	case <-errors:
+	case <-time.After(time.Second):
+		t.Fatal("external Core memory stream did not stop after cancellation")
+	}
+}
+
+func TestTUIDashboardRendersEmbeddedAndExternalMemory(t *testing.T) {
+	base := populatedTUISnapshot(tuiPageDashboard)
+	base.Memory = tuiMemoryInfo{
+		SystemTotal: 8 << 30,
+		SystemUsed:  4 << 30,
+		ProcessRSS:  120 << 20,
+		GoHeap:      48 << 20,
+		UpdatedAt:   time.Now(),
+	}
+	var embedded strings.Builder
+	drawTUIDashboard(
+		&embedded,
+		base,
+		cliPaths{configPath: "/tmp/config.yaml"},
+		100,
+		26,
+	)
+	embeddedPlain := stripTUIANSI(embedded.String())
+	for _, expected := range []string{
+		"memory refresh 1s",
+		"System memory 4.0 GB / 8.0 GB  50.0%",
+		"CLI + Mihomo  120.0 MB RSS · shared process",
+		"Go heap       48.0 MB",
+	} {
+		if !strings.Contains(embeddedPlain, expected) {
+			t.Fatalf("embedded Dashboard does not contain %q:\n%s", expected, embeddedPlain)
+		}
+	}
+
+	externalSnapshot := base
+	externalSnapshot.ExternalCore = true
+	externalSnapshot.Memory.ExternalCore = true
+	externalSnapshot.Memory.CoreRSS = 256 << 20
+	externalSnapshot.Memory.CoreUpdated = time.Now()
+	var external strings.Builder
+	drawTUIDashboard(
+		&external,
+		externalSnapshot,
+		cliPaths{configPath: "/tmp/config.yaml"},
+		100,
+		26,
+	)
+	externalPlain := stripTUIANSI(external.String())
+	for _, expected := range []string{
+		"TUI process   120.0 MB",
+		"External Core 256.0 MB",
+	} {
+		if !strings.Contains(externalPlain, expected) {
+			t.Fatalf("external Dashboard does not contain %q:\n%s", expected, externalPlain)
+		}
+	}
+}
+
+func TestTUIProxiesExposeSelectedAndWholeGroupDelayTests(t *testing.T) {
+	snapshot := populatedTUISnapshot(tuiPageProxies)
+	snapshot.FocusSidebar = false
+	snapshot.SelectedGroup = 0
+	snapshot.SelectedNode = 0
+	snapshot.Groups = []tuiGroup{{
+		Name:  "Proxy",
+		Type:  "Selector",
+		Now:   "fast",
+		Nodes: []string{"fast", "slow", "dead", "new"},
+		Delays: map[string]int{
+			"fast": 18,
+			"slow": -2,
+			"dead": -1,
+		},
+	}}
+	var output strings.Builder
+	drawTUIProxies(&output, snapshot, 100, 24)
+	plain := stripTUIANSI(output.String())
+	for _, expected := range []string{
+		"d/D selected delay",
+		"A all delays",
+		"18 ms",
+		"Testing...",
+		"Timeout · d retry",
+		"[d test]",
+	} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("Proxies does not contain %q:\n%s", expected, plain)
+		}
+	}
+	key, ok := tuiKeyFromTea(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune{'A'},
+	})
+	if !ok || key != tuiKeyDelayTestAll {
+		t.Fatalf("A key = (%v, %v)", key, ok)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 )
 
 const tuiRefreshInterval = time.Second
+const tuiNetworkRefreshInterval = time.Minute
 
 const (
 	tuiSubscriptionUserAgent = "mihomo"
@@ -33,6 +35,19 @@ const (
 
 type tuiTickMsg time.Time
 type tuiReloadSignalMsg struct{}
+
+type tuiNetworkResultMsg struct {
+	info  tuiNetworkInfo
+	route string
+}
+
+type tuiMemoryResultMsg struct {
+	info tuiMemoryInfo
+}
+
+type tuiCoreMemoryMsg struct {
+	update tuiCoreMemoryUpdate
+}
 
 type tuiRefreshResultMsg struct {
 	sequence uint64
@@ -69,27 +84,31 @@ const (
 )
 
 type tuiModel struct {
-	snapshot           tuiSnapshot
-	client             controllerClient
-	paths              cliPaths
-	setupParams        []byte
-	ownsCore           bool
-	coreRunning        bool
-	systemProxyManaged bool
-	width              int
-	height             int
-	refreshSequence    uint64
-	refreshInFlight    bool
-	busy               bool
-	inputMode          tuiInputMode
-	inputValue         []rune
-	inputCursor        int
-	inputSelectAll     bool
-	renameProfilePath  string
-	pendingMixedPort   *int
-	stagedSettings     *tuiSettings
-	settingsDirty      bool
-	systemProxyToggle  func(*tuiSnapshot) bool
+	snapshot            tuiSnapshot
+	client              controllerClient
+	paths               cliPaths
+	setupParams         []byte
+	ownsCore            bool
+	coreRunning         bool
+	systemProxyManaged  bool
+	width               int
+	height              int
+	refreshSequence     uint64
+	refreshInFlight     bool
+	busy                bool
+	inputMode           tuiInputMode
+	inputValue          []rune
+	inputCursor         int
+	inputSelectAll      bool
+	renameProfilePath   string
+	pendingMixedPort    *int
+	stagedSettings      *tuiSettings
+	settingsDirty       bool
+	systemProxyToggle   func(*tuiSnapshot) bool
+	networkCheckActive  bool
+	memoryRefreshActive bool
+	coreMemoryUpdates   <-chan tuiCoreMemoryUpdate
+	stopCoreMemory      func()
 }
 
 func newTUIModel(
@@ -163,6 +182,8 @@ func runTUI(client controllerClient, paths cliPaths, setupParams []byte, ownsCor
 	defer handleStopLog()
 
 	model := newTUIModel(client, paths, setupParams, ownsCore)
+	model.startCoreMemoryMonitor()
+	defer model.stopCoreMemoryMonitor()
 	program := tea.NewProgram(
 		model,
 		tea.WithAltScreen(),
@@ -194,7 +215,13 @@ func runTUI(client controllerClient, paths cliPaths, setupParams []byte, ownsCor
 }
 
 func (m *tuiModel) Init() tea.Cmd {
-	return tea.Batch(tuiTickCommand(), m.startRefresh())
+	return tea.Batch(
+		tuiTickCommand(),
+		m.startRefresh(),
+		m.startNetworkCheck(true),
+		m.startMemoryRefresh(),
+		m.waitCoreMemoryUpdate(),
+	)
 }
 
 func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -204,9 +231,45 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = message.Height
 		return m, nil
 	case tuiTickMsg:
-		return m, tea.Batch(tuiTickCommand(), m.startRefresh())
+		return m, tea.Batch(
+			tuiTickCommand(),
+			m.startRefresh(),
+			m.startNetworkCheck(false),
+			m.startMemoryRefresh(),
+		)
 	case tuiReloadSignalMsg:
 		return m, m.handleKey(tuiKeyReload)
+	case tuiNetworkResultMsg:
+		m.networkCheckActive = false
+		if message.route != m.networkCheckRoute() {
+			return m, m.startNetworkCheck(true)
+		}
+		m.snapshot.Network = message.info
+		return m, nil
+	case tuiMemoryResultMsg:
+		m.memoryRefreshActive = false
+		if m.snapshot.Memory.CoreUpdated.After(message.info.CoreUpdated) {
+			message.info.CoreRSS = m.snapshot.Memory.CoreRSS
+			message.info.CoreError = m.snapshot.Memory.CoreError
+			message.info.CoreUpdated = m.snapshot.Memory.CoreUpdated
+		}
+		m.snapshot.Memory = message.info
+		return m, nil
+	case tuiCoreMemoryMsg:
+		if message.update.Closed {
+			m.coreMemoryUpdates = nil
+			return m, nil
+		}
+		m.snapshot.Memory.ExternalCore = !m.ownsCore
+		if message.update.RSS > 0 {
+			m.snapshot.Memory.CoreRSS = message.update.RSS
+			m.snapshot.Memory.CoreError = ""
+		}
+		if message.update.Error != "" {
+			m.snapshot.Memory.CoreError = message.update.Error
+		}
+		m.snapshot.Memory.CoreUpdated = message.update.UpdatedAt
+		return m, m.waitCoreMemoryUpdate()
 	case tuiRefreshResultMsg:
 		if message.sequence != m.refreshSequence {
 			return m, nil
@@ -223,6 +286,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tuiOperationResultMsg:
+		previousRoute := m.networkCheckRoute()
 		m.busy = false
 		m.snapshot = mergeTUIOperation(m.snapshot, message.state.snapshot)
 		m.paths = message.state.paths
@@ -238,7 +302,11 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				message.state.profileSelection,
 			)
 		}
-		return m, m.startRefresh()
+		commands := []tea.Cmd{m.startRefresh()}
+		if m.networkCheckRoute() != previousRoute {
+			commands = append(commands, m.startNetworkCheck(true))
+		}
+		return m, tea.Batch(commands...)
 	case tuiEditorResultMsg:
 		m.busy = false
 		if message.err != nil {
@@ -555,6 +623,15 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	updated.ProxyView = current.ProxyView
 	updated.FocusSidebar = current.FocusSidebar
 	updated.ShowHelp = current.ShowHelp
+	if current.Network.Loading ||
+		current.Network.CheckedAt.After(updated.Network.CheckedAt) {
+		updated.Network = current.Network
+	}
+	if current.Memory.UpdatedAt.After(updated.Memory.UpdatedAt) ||
+		current.Memory.CoreUpdated.After(updated.Memory.CoreUpdated) {
+		updated.Memory = current.Memory
+	}
+	mergeTUIGroupDelays(current.Groups, updated.Groups)
 
 	updated.SelectedGroup = findTUIGroup(updated.Groups, selectedGroupName)
 	if selectedGroupName == "" {
@@ -602,6 +679,29 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 		updated.SelectedRow = clampTUISelection(current.SelectedRow, len(updated.Profiles))
 	}
 	return updated
+}
+
+func mergeTUIGroupDelays(current, updated []tuiGroup) {
+	currentByName := make(map[string]tuiGroup, len(current))
+	for _, group := range current {
+		currentByName[group.Name] = group
+	}
+	for index := range updated {
+		previous, ok := currentByName[updated[index].Name]
+		if !ok || len(previous.Delays) == 0 {
+			continue
+		}
+		delays := make(map[string]int, len(updated[index].Delays)+len(previous.Delays))
+		for node, delay := range updated[index].Delays {
+			delays[node] = delay
+		}
+		for node, delay := range previous.Delays {
+			if _, exists := delays[node]; !exists {
+				delays[node] = delay
+			}
+		}
+		updated[index].Delays = delays
+	}
 }
 
 func findTUIProfile(profiles []tuiProfile, path string) int {
@@ -666,6 +766,11 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			})
 		}
 	case tuiKeyCloseConnection:
+		if !m.snapshot.FocusSidebar &&
+			m.snapshot.Page == tuiPageProxies &&
+			m.snapshot.ProxyView == tuiProxyViewGroups {
+			return m.testSelectedProxyDelay()
+		}
 		if m.snapshot.Page == tuiPageConnections &&
 			m.snapshot.SelectedConnection >= 0 &&
 			m.snapshot.SelectedConnection < len(m.snapshot.Connections) {
@@ -714,6 +819,8 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeyNewProfile:
 		if m.snapshot.Page == tuiPageProfiles {
 			m.beginInput(tuiInputSubscription)
+		} else if m.snapshot.Page == tuiPageDashboard {
+			return m.startNetworkCheck(true)
 		}
 	case tuiKeyRenameProfile:
 		if m.snapshot.Page == tuiPageProfiles {
@@ -758,6 +865,12 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			m.snapshot.Page == tuiPageProxies &&
 			m.snapshot.ProxyView == tuiProxyViewGroups {
 			return m.testSelectedProxyDelay()
+		}
+	case tuiKeyDelayTestAll:
+		if !m.snapshot.FocusSidebar &&
+			m.snapshot.Page == tuiPageProxies &&
+			m.snapshot.ProxyView == tuiProxyViewGroups {
+			return m.testSelectedProxyGroupDelays()
 		}
 	case tuiKeyViewPrevious, tuiKeyViewNext:
 		if !m.snapshot.FocusSidebar && m.snapshot.Page == tuiPageProxies {
@@ -1330,30 +1443,135 @@ func (m *tuiModel) testSelectedProxyDelay() tea.Cmd {
 		m.snapshot.Status = "Select a proxy node first"
 		return nil
 	}
+	groupName := group.Name
 	node := group.Nodes[m.snapshot.SelectedNode]
-	testURL := "https://www.gstatic.com/generate_204"
-	params := defaultSetupParams()
-	if len(m.setupParams) > 0 && UnmarshalJson(m.setupParams, params) == nil &&
-		params.TestURL != "" {
-		testURL = params.TestURL
-	}
+	testURL := m.tuiDelayTestURL()
+	setTUIGroupDelay(&m.snapshot, groupName, node, -2)
 	return m.startOperation(func(state *tuiOperationState) {
 		delay, err := m.client.testProxyDelay(node, testURL)
 		if err != nil {
-			state.snapshot.Status = "Delay test failed: " + err.Error()
+			setTUIGroupDelay(&state.snapshot, groupName, node, -1)
+			state.snapshot.Status = node + " delay: Timeout · " + err.Error()
 			return
 		}
-		if state.snapshot.SelectedGroup >= 0 &&
-			state.snapshot.SelectedGroup < len(state.snapshot.Groups) {
-			delays := state.snapshot.Groups[state.snapshot.SelectedGroup].Delays
-			if delays == nil {
-				delays = map[string]int{}
-				state.snapshot.Groups[state.snapshot.SelectedGroup].Delays = delays
-			}
-			delays[node] = delay
-		}
+		setTUIGroupDelay(&state.snapshot, groupName, node, delay)
 		state.snapshot.Status = fmt.Sprintf("%s delay: %d ms", node, delay)
 	})
+}
+
+func (m *tuiModel) testSelectedProxyGroupDelays() tea.Cmd {
+	if m.snapshot.SelectedGroup < 0 ||
+		m.snapshot.SelectedGroup >= len(m.snapshot.Groups) {
+		m.snapshot.Status = "Select a proxy group first"
+		return nil
+	}
+	group := m.snapshot.Groups[m.snapshot.SelectedGroup]
+	if len(group.Nodes) == 0 {
+		m.snapshot.Status = "Selected proxy group has no nodes"
+		return nil
+	}
+	nodes := append([]string(nil), group.Nodes...)
+	testingDelays := make(map[string]int, len(nodes))
+	for _, node := range nodes {
+		testingDelays[node] = -2
+	}
+	setTUIGroupDelays(&m.snapshot, group.Name, testingDelays)
+	testURL := m.tuiDelayTestURL()
+	return m.startOperation(func(state *tuiOperationState) {
+		delays := testTUIProxyDelays(m.client, nodes, testURL)
+		successes := 0
+		for _, delay := range delays {
+			if delay > 0 {
+				successes++
+			}
+		}
+		setTUIGroupDelays(&state.snapshot, group.Name, delays)
+		state.snapshot.Status = fmt.Sprintf(
+			"%s delays complete: %d/%d reachable",
+			group.Name,
+			successes,
+			len(nodes),
+		)
+	})
+}
+
+func (m *tuiModel) tuiDelayTestURL() string {
+	testURL := "https://www.gstatic.com/generate_204"
+	params := defaultSetupParams()
+	if len(m.setupParams) > 0 &&
+		UnmarshalJson(m.setupParams, params) == nil &&
+		params.TestURL != "" {
+		testURL = params.TestURL
+	}
+	return testURL
+}
+
+func testTUIProxyDelays(
+	client controllerClient,
+	nodes []string,
+	testURL string,
+) map[string]int {
+	const parallelism = 16
+	delays := make(map[string]int, len(nodes))
+	var mutex sync.Mutex
+	var waitGroup sync.WaitGroup
+	limit := make(chan struct{}, parallelism)
+	for _, node := range nodes {
+		node := node
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			limit <- struct{}{}
+			delay, err := client.testProxyDelay(node, testURL)
+			<-limit
+			if err != nil {
+				delay = -1
+			}
+			mutex.Lock()
+			delays[node] = delay
+			mutex.Unlock()
+		}()
+	}
+	waitGroup.Wait()
+	return delays
+}
+
+func setTUIGroupDelay(
+	snapshot *tuiSnapshot,
+	groupName,
+	node string,
+	delay int,
+) {
+	setTUIGroupDelays(snapshot, groupName, map[string]int{node: delay})
+}
+
+func setTUIGroupDelays(
+	snapshot *tuiSnapshot,
+	groupName string,
+	updates map[string]int,
+) {
+	groupIndex := -1
+	for index, group := range snapshot.Groups {
+		if group.Name == groupName {
+			groupIndex = index
+			break
+		}
+	}
+	if groupIndex < 0 {
+		return
+	}
+	groups := append([]tuiGroup(nil), snapshot.Groups...)
+	group := groups[groupIndex]
+	delays := make(map[string]int, len(group.Delays)+len(updates))
+	for name, value := range group.Delays {
+		delays[name] = value
+	}
+	for node, delay := range updates {
+		delays[node] = delay
+	}
+	group.Delays = delays
+	groups[groupIndex] = group
+	snapshot.Groups = groups
 }
 
 func (m *tuiModel) startEditor(path string) tea.Cmd {
@@ -1758,6 +1976,8 @@ func tuiKeyFromTea(message tea.KeyMsg) (tuiKey, bool) {
 		return tuiKeyViewNext, true
 	case "D":
 		return tuiKeyDelayTest, true
+	case "A":
+		return tuiKeyDelayTestAll, true
 	case "enter", " ":
 		return tuiKeySelect, true
 	case "1":
