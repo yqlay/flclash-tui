@@ -18,10 +18,10 @@ The binary is written to `dist/flclash-cli`.
 
 ## Install the Debian package
 
-Download `flclash-cli_0.3.3_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
+Download `flclash-cli_0.3.4_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
 
 ```bash
-sudo dpkg -i flclash-cli_0.3.3_amd64.deb
+sudo dpkg -i flclash-cli_0.3.4_amd64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash-cli` and documentation under `/usr/share/doc/flclash-cli`.
@@ -52,9 +52,13 @@ the service, and then enables the desktop proxy; there is no separate manual
 start step. If desktop proxy setup fails, the automatic service start is rolled
 back. Stopping the service also disables a system proxy owned by that TUI
 instance. Tools contains the complete settings list (`Mixed port`, `TUN`,
-`Allow LAN`, `IPv6`, `Mode`, and `Log level`) plus YAML and maintenance
-actions. Rows show the current state before the available action—for example,
-`Service RUNNING · Enter to stop` means the service is currently running.
+`Allow LAN`, `IPv6`, `Unified delay`, `TCP concurrent`, `Mode`, and `Log
+level`) plus YAML and maintenance actions. Unified delay defaults to the
+original FlClash warmed-connection measurement instead of including every
+first-connection and TLS setup cost. TCP concurrent also follows the original
+FlClash default. Rows show the current state before the available action—for
+example, `Service RUNNING · Enter to stop` means the service is currently
+running.
 
 By default, the TUI uses a private Unix socket for core management, so it does
 not reserve a TCP controller port. Passing `--controller` explicitly opts into
@@ -94,7 +98,7 @@ The sidebar follows the graphical FlClash information architecture:
 - Logs: latest captured core events. Press `e` to export them under the active
   data directory's `logs/` folder or `x` to clear the view.
 - Tools: all core settings, current-YAML editing, backup/restore, Geo database
-  updates, and traffic-counter reset.
+  updates, traffic-counter reset, and a GitHub Release update check.
 
 The terminal runtime uses Bubble Tea's model-update-view event loop. Controller
 polling and long-running actions execute outside the input loop, while the
@@ -166,3 +170,25 @@ to localhost.
 TUN mode is exposed on Dashboard and Tools and may require elevated Linux
 network permissions. Desktop system-proxy support currently targets GNOME and
 MATE `gsettings`, matching the Linux integration used by FlClash.
+
+## Update from GitHub Releases
+
+Check the latest public release without changing the installed version:
+
+```bash
+flclash-cli update --check
+```
+
+Download, verify, and install an available update:
+
+```bash
+flclash-cli update
+```
+
+The updater connects to `yqlay/flclash-cli` on GitHub, selects the Debian
+package for the current CPU architecture, downloads its `.sha256` file, and
+refuses installation if verification fails. Installation uses `sudo dpkg -i`
+and may request the system password. For unattended use, `--yes` confirms the
+warning; `--download-only` verifies the package but does not install it.
+
+**If the current version works well, do not update lightly. / 当前版本使用正常时，请勿轻易更新。**

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.3.3}"
+VERSION="${VERSION:-0.3.4}"
 ARCH="${ARCH:-amd64}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist}"
 PACKAGE_NAME="flclash-cli_${VERSION}_${ARCH}"

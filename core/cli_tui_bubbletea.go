@@ -163,12 +163,14 @@ func loadTUIConfiguredSettings(path string, ownsCore bool) *tuiSettings {
 		return nil
 	}
 	return &tuiSettings{
-		Mode:       rawConfig.Mode.String(),
-		MixedPort:  rawConfig.MixedPort,
-		AllowLAN:   rawConfig.AllowLan,
-		IPv6:       rawConfig.IPv6,
-		LogLevel:   rawConfig.LogLevel.String(),
-		TunEnabled: rawConfig.Tun.Enable,
+		Mode:          rawConfig.Mode.String(),
+		MixedPort:     rawConfig.MixedPort,
+		AllowLAN:      rawConfig.AllowLan,
+		IPv6:          rawConfig.IPv6,
+		UnifiedDelay:  rawConfig.UnifiedDelay,
+		TCPConcurrent: rawConfig.TCPConcurrent,
+		LogLevel:      rawConfig.LogLevel.String(),
+		TunEnabled:    rawConfig.Tun.Enable,
 	}
 }
 
@@ -903,7 +905,8 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				}
 			})
 		}
-	case tuiKeyAllowLAN, tuiKeyIPv6, tuiKeyTun, tuiKeyMode, tuiKeyLogLevel:
+	case tuiKeyAllowLAN, tuiKeyIPv6, tuiKeyUnifiedDelay, tuiKeyTCPConcurrent,
+		tuiKeyTun, tuiKeyMode, tuiKeyLogLevel:
 		if m.snapshot.Page == tuiPageTools ||
 			(m.snapshot.Page == tuiPageDashboard &&
 				(key == tuiKeyTun || key == tuiKeyMode)) {
@@ -1026,6 +1029,10 @@ func (m *tuiModel) stageTUISetting(key tuiKey) {
 		m.snapshot.Settings.AllowLAN = !m.snapshot.Settings.AllowLAN
 	case tuiKeyIPv6:
 		m.snapshot.Settings.IPv6 = !m.snapshot.Settings.IPv6
+	case tuiKeyUnifiedDelay:
+		m.snapshot.Settings.UnifiedDelay = !m.snapshot.Settings.UnifiedDelay
+	case tuiKeyTCPConcurrent:
+		m.snapshot.Settings.TCPConcurrent = !m.snapshot.Settings.TCPConcurrent
 	case tuiKeyTun:
 		m.snapshot.Settings.TunEnabled = !m.snapshot.Settings.TunEnabled
 	case tuiKeyMode:
@@ -1124,6 +1131,18 @@ func persistTUISettings(path string, settings tuiSettings) error {
 	setTUIYAMLScalar(root, "mixed-port", strconv.Itoa(settings.MixedPort), "!!int")
 	setTUIYAMLScalar(root, "allow-lan", strconv.FormatBool(settings.AllowLAN), "!!bool")
 	setTUIYAMLScalar(root, "ipv6", strconv.FormatBool(settings.IPv6), "!!bool")
+	setTUIYAMLScalar(
+		root,
+		"unified-delay",
+		strconv.FormatBool(settings.UnifiedDelay),
+		"!!bool",
+	)
+	setTUIYAMLScalar(
+		root,
+		"tcp-concurrent",
+		strconv.FormatBool(settings.TCPConcurrent),
+		"!!bool",
+	)
 	setTUIYAMLScalar(root, "log-level", settings.LogLevel, "!!str")
 	tun := tuiYAMLMappingValue(root, "tun")
 	if tun == nil {
@@ -1176,6 +1195,41 @@ func persistTUISettings(path string, settings tuiSettings) error {
 	return nil
 }
 
+func ensureTUIFlClashDefaults(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return fmt.Errorf("parse YAML: %w", err)
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
+		return errors.New("configuration root must be a YAML mapping")
+	}
+	root := document.Content[0]
+	missingIPv6 := tuiYAMLMappingValue(root, "ipv6") == nil
+	missingUnifiedDelay := tuiYAMLMappingValue(root, "unified-delay") == nil
+	missingTCPConcurrent := tuiYAMLMappingValue(root, "tcp-concurrent") == nil
+	if !missingIPv6 && !missingUnifiedDelay && !missingTCPConcurrent {
+		return nil
+	}
+	settings := loadTUIConfiguredSettings(path, true)
+	if settings == nil {
+		return errors.New("could not load current settings")
+	}
+	if missingIPv6 {
+		settings.IPv6 = false
+	}
+	if missingUnifiedDelay {
+		settings.UnifiedDelay = true
+	}
+	if missingTCPConcurrent {
+		settings.TCPConcurrent = true
+	}
+	return persistTUISettings(path, *settings)
+}
+
 func tuiYAMLMappingValue(mapping *yaml.Node, key string) *yaml.Node {
 	for index := 0; index+1 < len(mapping.Content); index += 2 {
 		if mapping.Content[index].Value == key {
@@ -1212,11 +1266,13 @@ func ensureTUIProxyPortFree(port int) error {
 
 func stageTUICoreSettings(settings tuiSettings) string {
 	data, err := json.Marshal(map[string]interface{}{
-		"mode":       settings.Mode,
-		"mixed-port": settings.MixedPort,
-		"allow-lan":  settings.AllowLAN,
-		"ipv6":       settings.IPv6,
-		"log-level":  settings.LogLevel,
+		"mode":           settings.Mode,
+		"mixed-port":     settings.MixedPort,
+		"allow-lan":      settings.AllowLAN,
+		"ipv6":           settings.IPv6,
+		"unified-delay":  settings.UnifiedDelay,
+		"tcp-concurrent": settings.TCPConcurrent,
+		"log-level":      settings.LogLevel,
 		"tun": map[string]bool{
 			"enable": settings.TunEnabled,
 		},
@@ -1364,6 +1420,8 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			return m.runTool(3)
 		case tuiToolsResetTrafficRow:
 			return m.runTool(4)
+		case tuiToolsUpdateRow:
+			return m.runTool(5)
 		}
 	}
 	return nil
@@ -1379,6 +1437,10 @@ func (m *tuiModel) selectTUISetting(index int) tea.Cmd {
 		return m.handleKey(tuiKeyAllowLAN)
 	case tuiSettingsIPv6Row:
 		return m.handleKey(tuiKeyIPv6)
+	case tuiSettingsUnifiedDelayRow:
+		return m.handleKey(tuiKeyUnifiedDelay)
+	case tuiSettingsTCPConcurrentRow:
+		return m.handleKey(tuiKeyTCPConcurrent)
 	case tuiSettingsLogLevelRow:
 		return m.handleKey(tuiKeyLogLevel)
 	case tuiSettingsTunRow:
@@ -1392,6 +1454,10 @@ func (m *tuiModel) selectTUISetting(index int) tea.Cmd {
 }
 
 func (m *tuiModel) runTool(index int) tea.Cmd {
+	if index == 5 {
+		m.snapshot.Update.Loading = true
+		m.snapshot.Update.Error = ""
+	}
 	return m.startOperation(func(state *tuiOperationState) {
 		switch index {
 		case 1:
@@ -1427,6 +1493,8 @@ func (m *tuiModel) runTool(index int) tea.Cmd {
 			} else {
 				state.snapshot.Status = "Traffic reset requires a core started by this process"
 			}
+		case 5:
+			checkTUIUpdate(&state.snapshot)
 		}
 	})
 }

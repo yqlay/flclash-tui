@@ -68,13 +68,15 @@ type tuiRequest struct {
 }
 
 type tuiSettings struct {
-	Mode        string
-	MixedPort   int
-	AllowLAN    bool
-	IPv6        bool
-	LogLevel    string
-	TunEnabled  bool
-	SystemProxy bool
+	Mode          string
+	MixedPort     int
+	AllowLAN      bool
+	IPv6          bool
+	UnifiedDelay  bool
+	TCPConcurrent bool
+	LogLevel      string
+	TunEnabled    bool
+	SystemProxy   bool
 }
 
 type tuiNetworkInfo struct {
@@ -100,11 +102,22 @@ type tuiMemoryInfo struct {
 	CoreUpdated  time.Time
 }
 
+type tuiUpdateInfo struct {
+	LatestVersion string
+	ReleaseURL    string
+	Available     bool
+	Loading       bool
+	Error         string
+	CheckedAt     time.Time
+}
+
 const (
 	tuiSettingsModeRow = iota
 	tuiSettingsMixedPortRow
 	tuiSettingsAllowLANRow
 	tuiSettingsIPv6Row
+	tuiSettingsUnifiedDelayRow
+	tuiSettingsTCPConcurrentRow
 	tuiSettingsLogLevelRow
 	tuiSettingsTunRow
 	tuiSettingsServiceRow
@@ -127,6 +140,7 @@ const (
 	tuiToolsRestoreRow
 	tuiToolsGeoUpdateRow
 	tuiToolsResetTrafficRow
+	tuiToolsUpdateRow
 	tuiToolsRowCount
 )
 
@@ -163,6 +177,7 @@ type tuiSnapshot struct {
 	Settings           tuiSettings
 	Network            tuiNetworkInfo
 	Memory             tuiMemoryInfo
+	Update             tuiUpdateInfo
 	UpdatedAt          time.Time
 	Status             string
 	SelectedGroup      int
@@ -204,12 +219,14 @@ type tuiProxyResponse struct {
 }
 
 type tuiConfigResponse struct {
-	Mode      string `json:"mode"`
-	MixedPort int    `json:"mixed-port"`
-	AllowLAN  bool   `json:"allow-lan"`
-	IPv6      bool   `json:"ipv6"`
-	LogLevel  string `json:"log-level"`
-	Tun       struct {
+	Mode          string `json:"mode"`
+	MixedPort     int    `json:"mixed-port"`
+	AllowLAN      bool   `json:"allow-lan"`
+	IPv6          bool   `json:"ipv6"`
+	UnifiedDelay  bool   `json:"unified-delay"`
+	TCPConcurrent bool   `json:"tcp-concurrent"`
+	LogLevel      string `json:"log-level"`
+	Tun           struct {
 		Enable bool `json:"enable"`
 	} `json:"tun"`
 }
@@ -228,6 +245,9 @@ const defaultTUIConfig = `mixed-port: 7890
 allow-lan: false
 mode: rule
 log-level: info
+ipv6: false
+unified-delay: true
+tcp-concurrent: true
 proxy-groups:
   - name: PROXY
     type: select
@@ -264,6 +284,11 @@ func tuiCommand(args []string) error {
 	}
 	if err := ensureTUIConfig(paths, *configArg == ""); err != nil {
 		return err
+	}
+	if !*noStartArg {
+		if err := ensureTUIFlClashDefaults(paths.configPath); err != nil {
+			return fmt.Errorf("apply FlClash defaults: %w", err)
+		}
 	}
 	_ = rememberTUIActiveProfile(paths)
 	originalLogOutput := logrus.StandardLogger().Out
@@ -786,6 +811,10 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 						updateTUISettings(&snapshot, client, tuiKeyAllowLAN)
 					case tuiSettingsIPv6Row:
 						updateTUISettings(&snapshot, client, tuiKeyIPv6)
+					case tuiSettingsUnifiedDelayRow:
+						updateTUISettings(&snapshot, client, tuiKeyUnifiedDelay)
+					case tuiSettingsTCPConcurrentRow:
+						updateTUISettings(&snapshot, client, tuiKeyTCPConcurrent)
 					case tuiSettingsLogLevelRow:
 						updateTUISettings(&snapshot, client, tuiKeyLogLevel)
 					case tuiSettingsTunRow:
@@ -805,9 +834,12 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 						executeTUITool(3, &snapshot, paths, setupParams, client, ownsCore, &oldState)
 					case tuiToolsResetTrafficRow:
 						executeTUITool(4, &snapshot, paths, setupParams, client, ownsCore, &oldState)
+					case tuiToolsUpdateRow:
+						executeTUITool(5, &snapshot, paths, setupParams, client, ownsCore, &oldState)
 					}
 				}
-			case tuiKeyAllowLAN, tuiKeyIPv6, tuiKeyTun, tuiKeyMode, tuiKeyLogLevel, tuiKeyPortUp, tuiKeyPortDown:
+			case tuiKeyAllowLAN, tuiKeyIPv6, tuiKeyUnifiedDelay, tuiKeyTCPConcurrent,
+				tuiKeyTun, tuiKeyMode, tuiKeyLogLevel, tuiKeyPortUp, tuiKeyPortDown:
 				if snapshot.Page == tuiPageTools || snapshot.Page == tuiPageDashboard {
 					updateTUISettings(&snapshot, client, key)
 				}
@@ -896,7 +928,49 @@ func executeTUITool(
 		} else {
 			snapshot.Status = "Traffic reset requires a core started by this process"
 		}
+	case 5:
+		checkTUIUpdate(snapshot)
 	}
+}
+
+func checkTUIUpdate(snapshot *tuiSnapshot) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	release, err := fetchLatestCLIRelease(
+		ctx,
+		cliUpdateHTTPClient,
+		cliLatestReleaseAPIURL,
+	)
+	snapshot.Update.Loading = false
+	snapshot.Update.CheckedAt = time.Now()
+	if err != nil {
+		snapshot.Update.Error = err.Error()
+		snapshot.Status = "Update check failed: " + err.Error()
+		return
+	}
+	latestVersion := normalizeCLIVersion(release.TagName)
+	if latestVersion == "" {
+		snapshot.Update.Error = "invalid release version " + release.TagName
+		snapshot.Status = "Update check failed: invalid release version"
+		return
+	}
+	snapshot.Update.Error = ""
+	snapshot.Update.LatestVersion = latestVersion
+	snapshot.Update.ReleaseURL = release.HTMLURL
+	snapshot.Update.Available = isNewerCLIVersion(latestVersion, cliVersion)
+	if snapshot.Update.Available {
+		snapshot.Status = fmt.Sprintf(
+			"v%s available · %s · quit and run: flclash-cli update",
+			latestVersion,
+			cliUpdateWarning,
+		)
+		return
+	}
+	snapshot.Status = fmt.Sprintf(
+		"v%s is current · %s",
+		cliVersion,
+		cliUpdateWarning,
+	)
 }
 
 func restoreLatestTUIConfig(configPath string) (string, error) {
@@ -1086,7 +1160,9 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 		if json.Unmarshal(config, &value) == nil {
 			snapshot.Settings = tuiSettings{
 				Mode: value.Mode, MixedPort: value.MixedPort, AllowLAN: value.AllowLAN,
-				IPv6: value.IPv6, LogLevel: value.LogLevel, TunEnabled: value.Tun.Enable,
+				IPv6: value.IPv6, UnifiedDelay: value.UnifiedDelay,
+				TCPConcurrent: value.TCPConcurrent, LogLevel: value.LogLevel,
+				TunEnabled:  value.Tun.Enable,
 				SystemProxy: systemProxyEnabled,
 			}
 		}
@@ -1280,6 +1356,10 @@ func switchTUIProfile(
 	}
 	if message := handleValidateConfig(profile.Path); message != "" {
 		snapshot.Status = "Profile invalid: " + message
+		return
+	}
+	if err := ensureTUIFlClashDefaults(profile.Path); err != nil {
+		snapshot.Status = "Profile defaults failed: " + err.Error()
 		return
 	}
 	previousPaths := *paths
@@ -1480,6 +1560,10 @@ func updateTUISettings(snapshot *tuiSnapshot, client controllerClient, key tuiKe
 		patch["allow-lan"] = !snapshot.Settings.AllowLAN
 	case tuiKeyIPv6:
 		patch["ipv6"] = !snapshot.Settings.IPv6
+	case tuiKeyUnifiedDelay:
+		patch["unified-delay"] = !snapshot.Settings.UnifiedDelay
+	case tuiKeyTCPConcurrent:
+		patch["tcp-concurrent"] = !snapshot.Settings.TCPConcurrent
 	case tuiKeyTun:
 		patch["tun"] = map[string]bool{"enable": !snapshot.Settings.TunEnabled}
 	case tuiKeyMode:
@@ -1848,6 +1932,8 @@ const (
 	tuiKeyCloseConnections
 	tuiKeyAllowLAN
 	tuiKeyIPv6
+	tuiKeyUnifiedDelay
+	tuiKeyTCPConcurrent
 	tuiKeyTun
 	tuiKeyMode
 	tuiKeyLogLevel
@@ -2571,6 +2657,7 @@ func drawTUITools(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 		"Restore       Restore newest configuration backup",
 		"Resources     Update Mihomo Geo databases",
 		"Traffic       Reset traffic counters",
+		tuiUpdateRow(snapshot.Update),
 	}...)
 	tuiTitle(
 		b,
@@ -2591,6 +2678,24 @@ func drawTUITools(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 		)
 	}
 	tuiEndPanel(b, width)
+}
+
+func tuiUpdateRow(info tuiUpdateInfo) string {
+	switch {
+	case info.Loading:
+		return "Update        Checking GitHub Releases..."
+	case info.Error != "":
+		return "Update        Check failed · Enter to retry"
+	case info.LatestVersion != "" && info.Available:
+		return fmt.Sprintf(
+			"Update        v%s available · run flclash-cli update",
+			info.LatestVersion,
+		)
+	case info.LatestVersion != "":
+		return fmt.Sprintf("Update        v%s is latest · keep it if stable", cliVersion)
+	default:
+		return "Update        Enter checks GitHub · if stable, do not update lightly"
+	}
 }
 
 func minTUI(left, right int) int {
@@ -2945,6 +3050,14 @@ func tuiSettingsRows(snapshot tuiSnapshot) []string {
 		fmt.Sprintf("Mixed port    %d", snapshot.Settings.MixedPort),
 		fmt.Sprintf("Allow LAN     %s", tuiOnOff(snapshot.Settings.AllowLAN)),
 		fmt.Sprintf("IPv6          %s", tuiOnOff(snapshot.Settings.IPv6)),
+		fmt.Sprintf(
+			"Unified delay %s · warm connection, matches FlClash",
+			tuiOnOff(snapshot.Settings.UnifiedDelay),
+		),
+		fmt.Sprintf(
+			"TCP concurrent %s · race available addresses",
+			tuiOnOff(snapshot.Settings.TCPConcurrent),
+		),
 		fmt.Sprintf("Log level     %s", snapshot.Settings.LogLevel),
 		fmt.Sprintf("TUN           %s", tuiOnOff(snapshot.Settings.TunEnabled)),
 		fmt.Sprintf("Service       %s", tuiServiceLabel(snapshot)),

@@ -649,10 +649,13 @@ func TestTUIToolsExposeSettingsAndMaintenance(t *testing.T) {
 	for _, expected := range []string{
 		"Mode          rule",
 		"Mixed port    7891",
+		"Unified delay",
+		"TCP concurrent",
 		"System proxy",
 		"Edit current YAML",
 		"Update Mihomo Geo databases",
 		"Reset traffic counters",
+		"if stable, do not update lightly",
 	} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("Tools does not contain %q:\n%s", expected, plain)
@@ -1535,12 +1538,14 @@ rules:
 		t.Fatal(err)
 	}
 	settings := tuiSettings{
-		Mode:       "global",
-		MixedPort:  17890,
-		AllowLAN:   true,
-		IPv6:       false,
-		LogLevel:   "debug",
-		TunEnabled: true,
+		Mode:          "global",
+		MixedPort:     17890,
+		AllowLAN:      true,
+		IPv6:          false,
+		UnifiedDelay:  true,
+		TCPConcurrent: true,
+		LogLevel:      "debug",
+		TunEnabled:    true,
 	}
 	if err := persistTUISettings(path, settings); err != nil {
 		t.Fatal(err)
@@ -1556,6 +1561,8 @@ rules:
 		"mode: global",
 		"allow-lan: true",
 		"ipv6: false",
+		"unified-delay: true",
+		"tcp-concurrent: true",
 		"log-level: debug",
 		"enable: true",
 		"name: example",
@@ -1708,6 +1715,8 @@ func TestTUIInitializationDefersProxyListener(t *testing.T) {
 allow-lan: false
 mode: rule
 log-level: silent
+unified-delay: true
+tcp-concurrent: true
 proxy-groups:
   - name: PROXY
     type: select
@@ -1747,6 +1756,13 @@ rules:
 	}
 	if isRunning {
 		t.Fatal("core listener state is running before the TUI start action")
+	}
+	if !currentConfig.General.UnifiedDelay ||
+		!currentConfig.General.TCPConcurrent {
+		t.Fatalf(
+			"FlClash delay defaults were not applied: %+v",
+			currentConfig.General,
+		)
 	}
 
 	model := newTUIModel(client, paths, setupParams, true)
@@ -1791,7 +1807,9 @@ rules:
 	}
 	if !currentConfig.General.AllowLan ||
 		currentConfig.General.IPv6 == initialIPv6 ||
-		currentConfig.General.Mode.String() != "global" {
+		currentConfig.General.Mode.String() != "global" ||
+		!currentConfig.General.UnifiedDelay ||
+		!currentConfig.General.TCPConcurrent {
 		t.Fatalf("staged core settings were not applied: %+v", currentConfig.General)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -2386,6 +2404,15 @@ func TestEnsureTUIConfigCreatesMinimalConfig(t *testing.T) {
 	if message := validateConfigBytes(data); message != "" {
 		t.Fatalf("generated config is invalid: %s", message)
 	}
+	for _, expected := range []string{
+		"ipv6: false",
+		"unified-delay: true",
+		"tcp-concurrent: true",
+	} {
+		if !strings.Contains(string(data), expected) {
+			t.Fatalf("generated config does not contain %q:\n%s", expected, data)
+		}
+	}
 	if err := ensureTUIConfig(paths, true); err != nil {
 		t.Fatal(err)
 	}
@@ -2395,6 +2422,41 @@ func TestEnsureTUIConfigCreatesMinimalConfig(t *testing.T) {
 	}
 	if string(second) != string(data) {
 		t.Fatal("existing config was overwritten")
+	}
+}
+
+func TestEnsureTUIFlClashDefaultsMigratesOnlyMissingSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	configData := `mixed-port: 7891
+mode: rule
+ipv6: true
+unified-delay: false
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - DIRECT
+rules:
+  - MATCH,PROXY
+`
+	if err := os.WriteFile(path, []byte(configData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureTUIFlClashDefaults(path); err != nil {
+		t.Fatal(err)
+	}
+	settings := loadTUIConfiguredSettings(path, true)
+	if settings == nil {
+		t.Fatal("migrated settings could not be loaded")
+	}
+	if !settings.IPv6 {
+		t.Fatal("explicit IPv6 setting was overwritten")
+	}
+	if settings.UnifiedDelay {
+		t.Fatal("explicit unified-delay setting was overwritten")
+	}
+	if !settings.TCPConcurrent {
+		t.Fatal("missing tcp-concurrent did not receive FlClash default")
 	}
 }
 

@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.3.3"
+const cliVersion = "0.3.4"
 
 type cliPaths struct {
 	homeDir    string
@@ -49,6 +49,8 @@ func main() {
 			err = checkCommand(os.Args[2:])
 		case "proxy":
 			err = proxyCommand(os.Args[2:])
+		case "update", "upgrade":
+			err = updateCommand(os.Args[2:])
 		case "version", "--version", "-v":
 			fmt.Printf("FlClash CLI %s (Mihomo core)\n", cliVersion)
 		case "help", "--help", "-h":
@@ -80,6 +82,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  flclash-cli check --config ./config.yaml")
 	fmt.Fprintln(w, "  flclash-cli proxy list --controller 127.0.0.1:9090")
 	fmt.Fprintln(w, "  flclash-cli proxy select --controller 127.0.0.1:9090 GROUP NODE")
+	fmt.Fprintln(w, "  flclash-cli update [--check]")
 	fmt.Fprintln(w, "  flclash-cli version")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
@@ -87,6 +90,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  run, start       Start the proxy in the foreground")
 	fmt.Fprintln(w, "  check, validate   Validate a Clash/Mihomo YAML configuration")
 	fmt.Fprintln(w, "  proxy             Inspect or change a running core through its API")
+	fmt.Fprintln(w, "  update, upgrade   Check GitHub Releases and securely install an update")
 	fmt.Fprintln(w, "  version           Print the CLI version")
 }
 

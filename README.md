@@ -24,7 +24,7 @@ See [CLI_LINUX.md](CLI_LINUX.md) for TUI pages, keyboard controls, configuration
 Prebuilt Debian packages are available on the [Releases](https://github.com/yqlay/flclash-cli/releases) page:
 
 ```bash
-sudo dpkg -i flclash-cli_0.3.3_amd64.deb
+sudo dpkg -i flclash-cli_0.3.4_amd64.deb
 ```
 
 ## Original FlClash application
@@ -88,12 +88,25 @@ while settings and maintenance actions live in Tools. Dashboard shows public
 and intranet IP detection, and Proxies supports selected-node and whole-group
 delay tests. Dashboard memory information refreshes every second and reports
 system usage plus accurate shared-process or external-Core RSS labels. The
-`run`, `check`, and `proxy` commands remain available for automation. See
-[Linux CLI documentation](CLI_LINUX.md).
+`run`, `check`, `proxy`, and secure GitHub-backed `update` commands remain
+available for automation. See [Linux CLI documentation](CLI_LINUX.md).
 
 The TUI remembers the active profile and proxy-group selections. Profile
-settings such as mode, mixed port, TUN, LAN, IPv6, and log level are saved
-immediately and restored on the next launch.
+settings such as mode, mixed port, TUN, LAN, IPv6, unified delay, concurrent
+TCP dialing, and log level are saved immediately and restored on the next
+launch. Missing unified-delay and TCP-concurrent settings adopt the original
+FlClash defaults so delay tests use the same warmed-connection measurement.
+
+Check or install updates from this repository:
+
+```bash
+flclash-cli update --check
+flclash-cli update
+```
+
+The updater downloads the matching Debian package and checksum from GitHub
+Releases and verifies SHA-256 before installation. If the installed version
+works well, do not update lightly.
 
 ### Android
 
