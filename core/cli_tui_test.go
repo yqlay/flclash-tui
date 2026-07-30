@@ -39,6 +39,16 @@ func TestTUIFormatting(t *testing.T) {
 	if got := tuiDisplayWidth("🚀"); got != 2 {
 		t.Fatalf("emoji display width = %d", got)
 	}
+	longWord := "/run/user/1000/flclash/a-very-long-session-name"
+	wrapped := tuiWrapText(longWord, 12)
+	if strings.Join(wrapped, "") != longWord {
+		t.Fatalf("wrapped long word lost content: %q", wrapped)
+	}
+	for _, line := range wrapped {
+		if tuiDisplayWidth(line) > 12 {
+			t.Fatalf("wrapped line is too wide: %q", line)
+		}
+	}
 }
 
 func TestTUIRenderingFitsTerminalWidth(t *testing.T) {
@@ -48,8 +58,12 @@ func TestTUIRenderingFitsTerminalWidth(t *testing.T) {
 		height int
 	}{
 		{width: 40, height: 8},
+		{width: 44, height: 10},
+		{width: 50, height: 12},
 		{width: 64, height: 14},
 		{width: 72, height: 20},
+		{width: 87, height: 21},
+		{width: 88, height: 22},
 		{width: 80, height: 24},
 		{width: 120, height: 30},
 	} {
@@ -71,6 +85,100 @@ func TestTUIRenderingFitsTerminalWidth(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestTUICompactDashboardCanScrollEverySection(t *testing.T) {
+	model := newTUIModel(
+		controllerClient{},
+		cliPaths{
+			homeDir:    "/tmp/flclash",
+			configPath: "/tmp/flclash/config.yaml",
+		},
+		nil,
+		true,
+	)
+	model.width = 50
+	model.height = 12
+	model.snapshot = populatedTUISnapshot(tuiPageDashboard)
+	model.snapshot.FocusSidebar = false
+	model.snapshot.Frontends = []cliProcessOwner{{PID: 101}, {PID: 202}}
+
+	first := stripTUIANSI(model.View())
+	if !strings.Contains(first, "Service") ||
+		strings.Contains(first, "TUI frontends") {
+		t.Fatalf("first compact viewport is wrong:\n%s", first)
+	}
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	network := stripTUIANSI(model.View())
+	if !strings.Contains(network, "Public IP") ||
+		!strings.Contains(network, "Route latency") ||
+		(!strings.Contains(network, "Overview") &&
+			!strings.Contains(network, "System memory")) {
+		t.Fatalf("PageDown did not reveal network section:\n%s", network)
+	}
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	overview := stripTUIANSI(model.View())
+	if !strings.Contains(overview, "Go heap") ||
+		!strings.Contains(overview, "Network speed") {
+		t.Fatalf("second PageDown did not reveal overview:\n%s", overview)
+	}
+	for count := 0; count < 4; count++ {
+		_, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
+	last := stripTUIANSI(model.View())
+	if !strings.Contains(last, "TUI frontends") ||
+		!strings.Contains(last, "Config") {
+		t.Fatalf("last compact viewport is inaccessible:\n%s", last)
+	}
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if model.snapshot.DashboardScroll != 0 {
+		t.Fatalf(
+			"dashboard action selection did not return to controls: %d",
+			model.snapshot.DashboardScroll,
+		)
+	}
+}
+
+func TestTUICompactNavigationTracksSelectedPage(t *testing.T) {
+	snapshot := populatedTUISnapshot(tuiPageTools)
+	snapshot.FocusSidebar = true
+	snapshot.SelectedMenu = int(tuiPageTools)
+	output := stripTUIANSI(renderTUIAtSize(
+		snapshot,
+		cliPaths{},
+		"private Unix socket",
+		true,
+		true,
+		44,
+		10,
+	))
+	if !strings.Contains(output, "Navigation") ||
+		!strings.Contains(output, "7  Tools") {
+		t.Fatalf("compact navigation hid selected page:\n%s", output)
+	}
+}
+
+func TestTUIExistingFrontendNoticeIsVisibleAndDismissible(t *testing.T) {
+	model := newTUIModel(
+		controllerClient{},
+		cliPaths{},
+		nil,
+		true,
+	)
+	model.width = 44
+	model.height = 10
+	model.snapshot.StartupNotice =
+		"Attached to shared backend · 1 other TUI frontend: PID 123 /dev/pts/2"
+	output := stripTUIANSI(model.View())
+	if !strings.Contains(output, "Shared backend") ||
+		!strings.Contains(output, "PID 123") {
+		t.Fatalf("frontend startup notice is not visible:\n%s", output)
+	}
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if model.snapshot.StartupNotice != "" {
+		t.Fatal("frontend startup notice was not dismissed")
 	}
 }
 
@@ -1898,6 +2006,11 @@ func TestTUIBackgroundServiceHotReloadsSubscriptionWithoutStoppingListeners(
 	t.Cleanup(func() {
 		_ = os.RemoveAll(directory)
 	})
+	previousRuntimeDirectory := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = directory
+	t.Cleanup(func() {
+		cliRuntimeDirectoryOverride = previousRuntimeDirectory
+	})
 	configPath := filepath.Join(directory, "config.yaml")
 	original := fmt.Appendf(nil, `mixed-port: %d
 mode: rule
@@ -1946,6 +2059,7 @@ rules:
 		serviceDone <- runTUIService(
 			paths,
 			"https://www.gstatic.com/generate_204",
+			nil,
 		)
 	}()
 	service := newTUIServiceClient(directory)
@@ -1981,6 +2095,23 @@ rules:
 	})
 	if status.Running {
 		t.Fatal("new background service unexpectedly started listeners")
+	}
+	stoppedModel := newTUIModel(
+		controllerClient{},
+		paths,
+		nil,
+		true,
+	)
+	stoppedModel.service = service
+	stoppedModel.coreRunning = false
+	stoppedModel.shutdown()
+	stoppedStatus, err := service.status()
+	if err != nil || stoppedStatus.Running {
+		t.Fatalf(
+			"q-style detach stopped an idle shared service: %+v, %v",
+			stoppedStatus,
+			err,
+		)
 	}
 	status, err = service.start()
 	if err != nil {

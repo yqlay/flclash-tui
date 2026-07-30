@@ -10,26 +10,26 @@ FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 
 > 本项目是非官方衍生版本，不是 FlClash 官方发布版本，也不代表 FlClash 或 Mihomo 维护者。版权和许可证说明见 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
 
-## v0.3.11 最新更新
+## v0.3.12 最新更新
 
-- 修复 Dashboard 中 **Network speed** 和 **Traffic total** 始终显示为零的问题；TUI 现在持续订阅 Mihomo 的流量流，每秒更新瞬时速度与累计流量。
-- `flclash update` 下载新版安装包时显示实时进度条、完成百分比、已下载容量和当前速度；慢速连接的更新超时也由 2 分钟延长到 30 分钟。
-- 现有仓库重命名为 `flclash-tui`，启动命令统一为 `flclash`，安装包统一为 `flclash-tui_<版本>_<架构>.deb`。
-- 新 Debian 包会替换旧的 `flclash-cli` 包，但保留已有数据目录、Profile、设置和后台服务兼容状态。
-- Release 同时提供 Linux `amd64` 和 `arm64` 的 `.deb`、便携 `.tar.gz` 及 SHA256 校验文件。
+- 新增响应式终端布局：宽度不足时自动切换为单栏导航，Dashboard 在高度不足时变成可滚动视图；最低可用尺寸降低到 `44×10`。
+- Dashboard 可通过 `PgUp/PgDn` 或鼠标滚轮查看被窗口隐藏的网络、内存、实时速度、累计流量和配置路径。
+- 每个 Linux 用户严格只运行一个 FlClash Service/Core 后端；不同终端可以同时打开多个 TUI，共享同一后端、Profile、端口和节点状态。
+- 打开额外 TUI 时会先显示已有前端的 PID 与终端，Dashboard 也会实时显示当前前端数量。`q` 只退出当前前端，`Ctrl+C` 停止共享后端并使所有前端断开。
+- 更新器不再依赖唯一固定的安装包文件名：支持旧、新及后续 FlClash 包名、统一 `SHA256SUMS` 和同名 `.sha256`，并在安装前校验 Release 来源及 Debian 包内的包名、版本和架构。
 
-完整安装包与更新说明见 [FlClash TUI v0.3.11 Release](https://github.com/yqlay/flclash-tui/releases/tag/v0.3.11)。
+完整安装包与更新说明见 [FlClash TUI v0.3.12 Release](https://github.com/yqlay/flclash-tui/releases/tag/v0.3.12)。
 
 ## 适合哪些场景
 
 - 通过 SSH 管理 Linux 服务器、工作站或 WSL 环境
 - 不安装桌面环境，只在终端中管理代理
-- 希望在一台主机上运行多个相互隔离的 Mihomo 实例
+- 希望从多个 SSH/终端窗口共同管理同一个代理后端
 - 既需要交互式界面，也需要命令行检查、启动和切换节点
 
 ## 主要功能
 
-- **全屏 TUI**：固定布局、键盘操作，不会不断向终端追加界面内容
+- **全屏 TUI**：响应式布局、键盘操作，不会不断向终端追加界面内容
 - **订阅与配置管理**：在界面中导入/更新订阅、切换配置、重命名配置和编辑 YAML
 - **完整代理控制**：查看代理组和 Provider、切换节点，并对单节点或整组执行延迟与下载速度测试
 - **后台 Service**：TUI 与 Core 进程分离；退出界面后代理可以继续运行，再次进入会自动重连
@@ -58,19 +58,19 @@ FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 AMD64：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.11/flclash-tui_0.3.11_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.11/flclash-tui_0.3.11_amd64.deb.sha256
-sha256sum -c flclash-tui_0.3.11_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.3.11_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.12/flclash-tui_0.3.12_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.12/flclash-tui_0.3.12_amd64.deb.sha256
+sha256sum -c flclash-tui_0.3.12_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.3.12_amd64.deb
 ```
 
 ARM64：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.11/flclash-tui_0.3.11_arm64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.11/flclash-tui_0.3.11_arm64.deb.sha256
-sha256sum -c flclash-tui_0.3.11_arm64.deb.sha256
-sudo dpkg -i flclash-tui_0.3.11_arm64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.12/flclash-tui_0.3.12_arm64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.12/flclash-tui_0.3.12_arm64.deb.sha256
+sha256sum -c flclash-tui_0.3.12_arm64.deb.sha256
+sudo dpkg -i flclash-tui_0.3.12_arm64.deb
 ```
 
 查看本机 CPU 架构：
@@ -100,7 +100,11 @@ flclash
 
 开启 **System proxy** 时，程序会自动应用当前设置、启动 Service/Core，再设置桌面系统代理，不需要手动先启动核心。停止 Service 时，由当前 TUI 开启的系统代理也会关闭。
 
-`q` 只退出 TUI 并返回 Shell；如果 Service 已启动，代理会继续在后台运行且不占用终端。再次执行 `flclash` 会自动连接该 Service。`Ctrl+C` 则退出 TUI 并停止由 FlClash TUI 管理的 Service/Core。也可以在 Shell 中执行 `flclash stop`。
+每个 Linux 用户只会运行一个 FlClash Service/Core。可以在多个终端执行
+`flclash`，所有 TUI 都连接同一个后端；新前端会显示其他前端的 PID 和
+TTY。`q` 只退出当前 TUI 并返回 Shell，后台代理和其他 TUI 不受影响。
+`Ctrl+C` 会停止共享 Service/Core，因此其他前端也会显示后端已断开。也可以
+在 Shell 中执行 `flclash stop`。
 
 导入成功后，程序会安全保存该 Profile 与订阅 URL 的绑定。在 **Profiles** 中选中它并按 `U`，程序会直接从已保存的 URL 重新拉取配置，不会再次要求输入链接。活动 Profile 会立即热重载，Service 运行时不会停止监听端口；更新会保留端口、模式、TUN、IPv6 等本地设置，验证或热重载失败时自动回滚。旧版本留下的未绑定 Profile 会被明确标记为本地配置，可用 `flclash profile link --config PROFILE URL` 一次性建立绑定。
 
@@ -109,6 +113,7 @@ flclash
 ```text
 ← 聚焦侧栏       → 打开栏目并聚焦内容       Tab 切换焦点
 ↑↓/ws             移动选择                  Enter 打开/执行
+PgUp/PgDn         滚动紧凑 Dashboard         鼠标滚轮同样可用
 1～7             快速打开对应栏目           r 刷新
 [/]              切换代理组/Provider        Esc 返回代理组
 d                Dashboard 测当前路由延迟；Proxies 测全组/单节点延迟
@@ -180,12 +185,9 @@ flclash stop
 flclash profile link --config ~/.config/flclash/profile.yaml 'https://example.com/subscription'
 ```
 
-一台主机运行多个实例时，应为每个实例指定不同的数据目录、Mixed Port 和 Controller：
-
-```bash
-flclash tui --directory ~/.config/flclash-a
-flclash tui --directory ~/.config/flclash-b
-```
+`--directory` 和 `--config` 用于选择数据或配置位置，不会创建第二个后端。
+如果当前用户已有后端，普通 `flclash` 会直接重连；显式指定了不同目录或配置
+时会提示先停止现有后端，避免悄悄启动第二套端口和系统代理。
 
 更完整的参数和操作说明见 [CLI_LINUX.md](CLI_LINUX.md)。
 
@@ -203,7 +205,10 @@ flclash update --check
 flclash update
 ```
 
-更新器只接受本仓库 GitHub Releases 中与当前 CPU 架构匹配的 Debian 包，并在安装前验证 SHA-256。
+更新器从本仓库 GitHub Release 元数据中识别当前 CPU 架构的 Debian 包，
+兼容包名调整、仓库重命名后的 Release 地址、同名 `.sha256` 和统一
+`SHA256SUMS`。安装前会同时验证 Release 来源、SHA-256，以及 Debian 包内的
+包名、版本和架构。
 
 > **如果当前版本使用正常，请勿轻易更新。**
 
@@ -228,7 +233,10 @@ make cli-linux
 ~/.config/flclash/
 ```
 
-其中保存配置文件、下载的 Profile、运行状态、日志和备份。也可以使用 `--directory` 或 `--config` 指定其他位置。多实例运行时，请勿让不同实例共用相同的数据目录和监听端口。
+其中保存配置文件、下载的 Profile、运行状态、日志和备份。也可以使用
+`--directory` 或 `--config` 指定其他位置。Service 管理 socket 和用户级
+后端锁固定保存在 `/run/user/<UID>/flclash/`（无用户运行目录时使用带 UID 的
+安全临时目录），因此改变数据目录或 `XDG_CONFIG_HOME` 也不能绕过单后端限制。
 
 ## 项目关系与许可
 

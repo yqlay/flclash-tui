@@ -26,6 +26,7 @@ import (
 )
 
 const (
+	cliGitHubOwner            = "yqlay"
 	cliGitHubRepository       = "yqlay/flclash-tui"
 	cliLatestReleaseAPIURL    = "https://api.github.com/repos/" + cliGitHubRepository + "/releases/latest"
 	cliUpdateWarning          = "If this version works well, do not update lightly. / 当前版本使用正常时，请勿轻易更新。"
@@ -143,6 +144,13 @@ func updateCommand(args []string) error {
 	}
 	if err := verifyCLIUpdateChecksum(debPath, checksumPath); err != nil {
 		return fmt.Errorf("verify update: %w", err)
+	}
+	if err := validateCLIUpdateDebianPackage(
+		debPath,
+		latestVersion,
+		runtime.GOARCH,
+	); err != nil {
+		return fmt.Errorf("validate update package: %w", err)
 	}
 	fmt.Printf("Verified SHA-256: %s\n", debPath)
 	if *downloadOnly {
@@ -268,38 +276,66 @@ func selectCLIUpdateAssets(
 	version,
 	goArch string,
 ) (cliReleaseAsset, cliReleaseAsset, error) {
-	debArch := map[string]string{
-		"amd64": "amd64",
-		"arm64": "arm64",
-		"386":   "i386",
-	}[goArch]
+	debArch := cliDebianArchitecture(goArch)
 	if debArch == "" {
 		return cliReleaseAsset{}, cliReleaseAsset{}, fmt.Errorf(
 			"automatic update is not supported on architecture %s",
 			goArch,
 		)
 	}
-	debName := fmt.Sprintf("flclash-tui_%s_%s.deb", version, debArch)
-	checksumName := debName + ".sha256"
 	var debAsset cliReleaseAsset
-	var checksumAsset cliReleaseAsset
+	bestDebScore := -1
 	for _, asset := range release.Assets {
-		switch asset.Name {
-		case debName:
+		score := scoreCLIUpdateDebAsset(asset.Name, version, goArch)
+		if score > bestDebScore {
 			debAsset = asset
-		case checksumName:
-			checksumAsset = asset
+			bestDebScore = score
+		} else if score >= 0 && score == bestDebScore {
+			return cliReleaseAsset{}, cliReleaseAsset{}, fmt.Errorf(
+				"release %s contains multiple equally suitable %s packages",
+				release.TagName,
+				debArch,
+			)
 		}
 	}
-	if debAsset.DownloadURL == "" || checksumAsset.DownloadURL == "" {
+	if bestDebScore < 0 || debAsset.DownloadURL == "" {
 		return cliReleaseAsset{}, cliReleaseAsset{}, fmt.Errorf(
-			"release %s does not contain %s and its checksum",
+			"release %s does not contain a recognizable FlClash %s Debian package",
 			release.TagName,
-			debName,
+			debArch,
 		)
 	}
+	var checksumAsset cliReleaseAsset
+	bestChecksumScore := -1
+	for _, asset := range release.Assets {
+		score := scoreCLIUpdateChecksumAsset(asset.Name, debAsset.Name)
+		if score > bestChecksumScore {
+			checksumAsset = asset
+			bestChecksumScore = score
+		} else if score >= 0 && score == bestChecksumScore {
+			return cliReleaseAsset{}, cliReleaseAsset{}, fmt.Errorf(
+				"release %s contains ambiguous checksum assets for %s",
+				release.TagName,
+				debAsset.Name,
+			)
+		}
+	}
+	if bestChecksumScore < 0 || checksumAsset.DownloadURL == "" {
+		return cliReleaseAsset{}, cliReleaseAsset{}, fmt.Errorf(
+			"release %s does not contain a SHA-256 checksum for %s",
+			release.TagName,
+			debAsset.Name,
+		)
+	}
+	repository, err := trustedCLIReleaseRepository(release)
+	if err != nil {
+		return cliReleaseAsset{}, cliReleaseAsset{}, err
+	}
 	for _, asset := range []cliReleaseAsset{debAsset, checksumAsset} {
-		if err := validateCLIUpdateAssetURL(asset.DownloadURL); err != nil {
+		if err := validateCLIUpdateAssetURLForRepository(
+			asset.DownloadURL,
+			repository,
+		); err != nil {
 			return cliReleaseAsset{}, cliReleaseAsset{}, fmt.Errorf(
 				"release asset %s: %w",
 				asset.Name,
@@ -310,12 +346,123 @@ func selectCLIUpdateAssets(
 	return debAsset, checksumAsset, nil
 }
 
+func cliDebianArchitecture(goArch string) string {
+	return map[string]string{
+		"amd64": "amd64",
+		"arm64": "arm64",
+		"386":   "i386",
+	}[goArch]
+}
+
+func scoreCLIUpdateDebAsset(name, version, goArch string) int {
+	lowerName := strings.ToLower(strings.TrimSpace(name))
+	if !strings.HasSuffix(lowerName, ".deb") ||
+		!strings.Contains(lowerName, "flclash") ||
+		!cliUpdateAssetMatchesArchitecture(lowerName, goArch) {
+		return -1
+	}
+	score := 10
+	if strings.Contains(lowerName, strings.ToLower(version)) {
+		score += 20
+	}
+	switch {
+	case lowerName == fmt.Sprintf(
+		"flclash-tui_%s_%s.deb",
+		strings.ToLower(version),
+		cliDebianArchitecture(goArch),
+	):
+		score += 200
+	case strings.HasPrefix(lowerName, "flclash-tui"):
+		score += 100
+	case strings.HasPrefix(lowerName, "flclash-cli"):
+		score += 90
+	default:
+		score += 50
+	}
+	return score
+}
+
+func cliUpdateAssetMatchesArchitecture(name, goArch string) bool {
+	aliases := map[string][]string{
+		"amd64": {"amd64", "x86_64", "x64"},
+		"arm64": {"arm64", "aarch64"},
+		"386":   {"i386", "386", "x86"},
+	}[goArch]
+	normalized := strings.NewReplacer(
+		"x86_64", "amd64",
+		"-", " ",
+		"_", " ",
+		".", " ",
+	).Replace(strings.ToLower(name))
+	fields := strings.Fields(normalized)
+	for _, alias := range aliases {
+		alias = strings.ReplaceAll(alias, "x86_64", "amd64")
+		for _, field := range fields {
+			if field == alias {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func scoreCLIUpdateChecksumAsset(name, debName string) int {
+	lowerName := strings.ToLower(strings.TrimSpace(name))
+	lowerDebName := strings.ToLower(debName)
+	switch {
+	case lowerName == lowerDebName+".sha256":
+		return 200
+	case strings.Contains(lowerName, lowerDebName) &&
+		(strings.Contains(lowerName, "sha256") ||
+			strings.Contains(lowerName, "checksum")):
+		return 150
+	case lowerName == "sha256sums" ||
+		lowerName == "sha256sums.txt" ||
+		lowerName == "checksums.txt" ||
+		lowerName == "checksums.sha256":
+		return 100
+	default:
+		return -1
+	}
+}
+
+func trustedCLIReleaseRepository(release cliRelease) (string, error) {
+	if release.HTMLURL == "" {
+		return cliGitHubRepository, nil
+	}
+	parsed, err := url.Parse(release.HTMLURL)
+	if err != nil ||
+		!strings.EqualFold(parsed.Hostname(), "github.com") {
+		return "", errors.New(
+			"release page is outside the trusted GitHub host",
+		)
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) < 2 ||
+		!strings.EqualFold(segments[0], cliGitHubOwner) {
+		return "", errors.New(
+			"release page is outside the trusted GitHub owner",
+		)
+	}
+	return segments[0] + "/" + segments[1], nil
+}
+
 func validateCLIUpdateAssetURL(value string) error {
+	return validateCLIUpdateAssetURLForRepository(
+		value,
+		cliGitHubRepository,
+	)
+}
+
+func validateCLIUpdateAssetURLForRepository(
+	value,
+	repository string,
+) error {
 	parsed, err := url.Parse(value)
 	if err != nil {
 		return errors.New("download URL is invalid")
 	}
-	expectedPrefix := "/" + cliGitHubRepository + "/releases/download/"
+	expectedPrefix := "/" + repository + "/releases/download/"
 	if parsed.Scheme != "https" ||
 		!strings.EqualFold(parsed.Hostname(), "github.com") ||
 		!strings.HasPrefix(parsed.EscapedPath(), expectedPrefix) {
@@ -546,11 +693,33 @@ func verifyCLIUpdateChecksum(debPath, checksumPath string) error {
 	if err != nil {
 		return err
 	}
-	fields := strings.Fields(string(checksumData))
-	if len(fields) < 1 || len(fields[0]) != sha256.Size*2 {
+	var expectedHex string
+	validHashes := make([]string, 0, 1)
+	debName := filepath.Base(debPath)
+	for _, line := range strings.Split(string(checksumData), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || len(fields[0]) != sha256.Size*2 {
+			continue
+		}
+		if _, decodeErr := hex.DecodeString(fields[0]); decodeErr != nil {
+			continue
+		}
+		validHashes = append(validHashes, fields[0])
+		if len(fields) >= 2 {
+			checksumName := strings.TrimPrefix(fields[1], "*")
+			if filepath.Base(checksumName) == debName {
+				expectedHex = fields[0]
+				break
+			}
+		}
+	}
+	if expectedHex == "" && len(validHashes) == 1 {
+		expectedHex = validHashes[0]
+	}
+	if expectedHex == "" {
 		return errors.New("checksum file is malformed")
 	}
-	expected, err := hex.DecodeString(fields[0])
+	expected, err := hex.DecodeString(expectedHex)
 	if err != nil {
 		return errors.New("checksum file is malformed")
 	}
@@ -567,6 +736,68 @@ func verifyCLIUpdateChecksum(debPath, checksumPath string) error {
 		return errors.New("SHA-256 checksum mismatch")
 	}
 	return nil
+}
+
+func validateCLIUpdateDebianPackage(
+	path,
+	version,
+	goArch string,
+) error {
+	debArch := cliDebianArchitecture(goArch)
+	if debArch == "" {
+		return fmt.Errorf("unsupported architecture %s", goArch)
+	}
+	packageName, err := readCLIDebianField(path, "Package")
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(strings.ToLower(packageName), "flclash") {
+		return fmt.Errorf("unexpected Debian package %q", packageName)
+	}
+	packageArchitecture, err := readCLIDebianField(path, "Architecture")
+	if err != nil {
+		return err
+	}
+	if packageArchitecture != debArch {
+		return fmt.Errorf(
+			"package architecture is %s, expected %s",
+			packageArchitecture,
+			debArch,
+		)
+	}
+	packageVersion, err := readCLIDebianField(path, "Version")
+	if err != nil {
+		return err
+	}
+	if packageVersion != version &&
+		!strings.HasPrefix(packageVersion, version+"-") &&
+		!strings.HasPrefix(packageVersion, version+"+") &&
+		!strings.HasPrefix(packageVersion, version+"~") {
+		return fmt.Errorf(
+			"package version is %s, expected release %s",
+			packageVersion,
+			version,
+		)
+	}
+	return nil
+}
+
+func readCLIDebianField(path, field string) (string, error) {
+	command := exec.Command("dpkg-deb", "--field", path, field)
+	output, err := command.Output()
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return "", errors.New(
+				"dpkg-deb is required to validate the update",
+			)
+		}
+		return "", fmt.Errorf("read Debian %s field: %w", field, err)
+	}
+	value := strings.TrimSpace(string(output))
+	if value == "" {
+		return "", fmt.Errorf("Debian package has no %s field", field)
+	}
+	return value, nil
 }
 
 func equalCLIBytes(left, right []byte) bool {

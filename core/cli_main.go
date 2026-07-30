@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.3.11"
+const cliVersion = "0.3.12"
 
 type cliPaths struct {
 	homeDir    string
@@ -117,6 +117,15 @@ func runCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+	backendLock, err := acquireCLIBackendLock(cliProcessOwner{
+		Kind:       "foreground",
+		HomeDir:    paths.homeDir,
+		ConfigPath: paths.configPath,
+	})
+	if err != nil {
+		return err
+	}
+	defer backendLock.release()
 	if _, err := startCore(paths, *testURL, "", ""); err != nil {
 		return err
 	}

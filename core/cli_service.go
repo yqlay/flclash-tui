@@ -42,6 +42,7 @@ type tuiServiceStatus struct {
 	Error      string          `json:"error,omitempty"`
 	PID        int             `json:"pid"`
 	Version    string          `json:"version"`
+	HomeDir    string          `json:"home_dir"`
 	ConfigPath string          `json:"config_path"`
 	CoreSocket string          `json:"core_socket"`
 	Running    bool            `json:"running"`
@@ -56,8 +57,16 @@ type tuiServiceClient struct {
 }
 
 func newTUIServiceClient(homeDir string) *tuiServiceClient {
+	runtimeDirectory, err := cliRuntimeDirectory()
+	if err == nil {
+		homeDir = runtimeDirectory
+	}
+	return newTUIServiceClientAt(homeDir)
+}
+
+func newTUIServiceClientAt(socketDirectory string) *tuiServiceClient {
 	return &tuiServiceClient{
-		homeDir:       homeDir,
+		homeDir:       socketDirectory,
 		timeout:       3 * time.Second,
 		reloadTimeout: tuiServiceReloadTimeout,
 	}
@@ -182,13 +191,26 @@ func (c *tuiServiceClient) testRouteDelay(
 func ensureTUIService(
 	paths cliPaths,
 	testURL string,
+	explicitConfig bool,
+	explicitDirectory bool,
 ) (*tuiServiceClient, tuiServiceStatus, error) {
 	client := newTUIServiceClient(paths.homeDir)
 	if status, err := client.status(); err == nil {
 		if status.Version == cliVersion {
+			if err := validateTUIServiceTarget(
+				paths,
+				status,
+				explicitConfig,
+				explicitDirectory,
+			); err != nil {
+				return nil, tuiServiceStatus{}, err
+			}
 			return client, status, nil
 		}
 		wasRunning := status.Running
+		if status.HomeDir != "" {
+			paths.homeDir = status.HomeDir
+		}
 		if _, pathErr := tuiProfileStateKey(
 			paths.homeDir,
 			status.ConfigPath,
@@ -210,7 +232,13 @@ func ensureTUIService(
 			time.Sleep(50 * time.Millisecond)
 		}
 		if err := spawnTUIService(paths, testURL); err != nil {
-			return nil, tuiServiceStatus{}, err
+			return waitForCompetingTUIService(
+				client,
+				paths,
+				explicitConfig,
+				explicitDirectory,
+				err,
+			)
 		}
 		status, err = waitForTUIService(client, 30*time.Second)
 		if err != nil {
@@ -227,11 +255,169 @@ func ensureTUIService(
 		}
 		return client, status, nil
 	}
+	if legacyClient, legacyStatus, found := findLegacyTUIService(
+		paths,
+	); found {
+		if legacyStatus.HomeDir == "" {
+			legacyStatus.HomeDir = filepath.Dir(
+				legacyStatus.ConfigPath,
+			)
+		}
+		if err := validateTUIServiceTarget(
+			paths,
+			legacyStatus,
+			explicitConfig,
+			explicitDirectory,
+		); err != nil {
+			return nil, tuiServiceStatus{}, err
+		}
+		wasRunning := legacyStatus.Running
+		if legacyStatus.ConfigPath != "" {
+			paths.configPath = legacyStatus.ConfigPath
+		}
+		if legacyStatus.HomeDir != "" {
+			paths.homeDir = legacyStatus.HomeDir
+		}
+		if err := legacyClient.shutdown(); err != nil {
+			return nil, tuiServiceStatus{}, fmt.Errorf(
+				"stop legacy background service: %w",
+				err,
+			)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, statusErr := legacyClient.status(); statusErr != nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if err := spawnTUIService(paths, testURL); err != nil {
+			return waitForCompetingTUIService(
+				client,
+				paths,
+				explicitConfig,
+				explicitDirectory,
+				err,
+			)
+		}
+		status, err := waitForTUIService(client, 30*time.Second)
+		if err != nil {
+			return nil, tuiServiceStatus{}, err
+		}
+		if wasRunning {
+			status, err = client.start()
+			if err != nil {
+				return nil, tuiServiceStatus{}, fmt.Errorf(
+					"restart listeners after service migration: %w",
+					err,
+				)
+			}
+		}
+		return client, status, nil
+	}
 	if err := spawnTUIService(paths, testURL); err != nil {
-		return nil, tuiServiceStatus{}, err
+		return waitForCompetingTUIService(
+			client,
+			paths,
+			explicitConfig,
+			explicitDirectory,
+			err,
+		)
 	}
 	status, err := waitForTUIService(client, 30*time.Second)
 	if err != nil {
+		return nil, tuiServiceStatus{}, err
+	}
+	if err := validateTUIServiceTarget(
+		paths,
+		status,
+		explicitConfig,
+		explicitDirectory,
+	); err != nil {
+		return nil, tuiServiceStatus{}, err
+	}
+	return client, status, nil
+}
+
+func findLegacyTUIService(
+	paths cliPaths,
+) (*tuiServiceClient, tuiServiceStatus, bool) {
+	runtimeSocket, _ := cliServiceSocketPath()
+	directories := []string{paths.homeDir}
+	if configRoot, err := os.UserConfigDir(); err == nil {
+		directories = append(
+			directories,
+			filepath.Join(configRoot, "flclash"),
+		)
+	}
+	seen := map[string]bool{}
+	for _, directory := range directories {
+		directory = filepath.Clean(directory)
+		socketPath := filepath.Join(
+			directory,
+			tuiServiceSocketFilename,
+		)
+		if seen[directory] ||
+			filepath.Clean(socketPath) == filepath.Clean(runtimeSocket) {
+			continue
+		}
+		seen[directory] = true
+		client := newTUIServiceClientAt(directory)
+		status, err := client.status()
+		if err == nil {
+			return client, status, true
+		}
+	}
+	return nil, tuiServiceStatus{}, false
+}
+
+func validateTUIServiceTarget(
+	paths cliPaths,
+	status tuiServiceStatus,
+	explicitConfig bool,
+	explicitDirectory bool,
+) error {
+	if !explicitConfig && !explicitDirectory {
+		return nil
+	}
+	sameHome := status.HomeDir == "" ||
+		filepath.Clean(status.HomeDir) == filepath.Clean(paths.homeDir)
+	sameConfig := status.ConfigPath == "" ||
+		filepath.Clean(status.ConfigPath) == filepath.Clean(paths.configPath)
+	if sameHome && (!explicitConfig || sameConfig) {
+		return nil
+	}
+	return fmt.Errorf(
+		"the per-user FlClash backend is already using %q; "+
+			"stop it before opening explicit config %q",
+		status.ConfigPath,
+		paths.configPath,
+	)
+}
+
+func waitForCompetingTUIService(
+	client *tuiServiceClient,
+	paths cliPaths,
+	explicitConfig bool,
+	explicitDirectory bool,
+	spawnErr error,
+) (*tuiServiceClient, tuiServiceStatus, error) {
+	var busyErr *cliLockBusyError
+	if !errors.As(spawnErr, &busyErr) ||
+		(busyErr.owner.Kind != "service" &&
+			busyErr.owner.Kind != "service-starting") {
+		return nil, tuiServiceStatus{}, spawnErr
+	}
+	status, err := waitForTUIService(client, 30*time.Second)
+	if err != nil {
+		return nil, tuiServiceStatus{}, spawnErr
+	}
+	if err := validateTUIServiceTarget(
+		paths,
+		status,
+		explicitConfig,
+		explicitDirectory,
+	); err != nil {
 		return nil, tuiServiceStatus{}, err
 	}
 	return client, status, nil
@@ -270,6 +456,15 @@ func spawnTUIService(paths cliPaths, testURL string) error {
 	if err != nil {
 		return err
 	}
+	backendLock, err := acquireCLIBackendLock(cliProcessOwner{
+		Kind:       "service-starting",
+		HomeDir:    paths.homeDir,
+		ConfigPath: paths.configPath,
+	})
+	if err != nil {
+		_ = logFile.Close()
+		return err
+	}
 	command := exec.Command(
 		executable,
 		"_service",
@@ -279,15 +474,20 @@ func spawnTUIService(paths cliPaths, testURL string) error {
 		paths.configPath,
 		"--test-url",
 		testURL,
+		"--lock-fd",
+		"3",
 	)
 	command.Stdin = nil
 	command.Stdout = logFile
 	command.Stderr = logFile
+	command.ExtraFiles = []*os.File{backendLock.file}
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := command.Start(); err != nil {
+		backendLock.release()
 		_ = logFile.Close()
 		return err
 	}
+	backendLock.closeTransferredCopy()
 	_ = logFile.Close()
 	return command.Process.Release()
 }
@@ -302,6 +502,7 @@ func serviceCommand(args []string) error {
 		"https://www.gstatic.com/generate_204",
 		"URL used by proxy-group delay tests",
 	)
+	lockFDArg := fs.Int("lock-fd", -1, "inherited backend lock descriptor")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -309,24 +510,82 @@ func serviceCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	return runTUIService(paths, *testURLArg)
-}
-
-func runTUIService(paths cliPaths, testURL string) error {
-	if err := os.MkdirAll(paths.homeDir, 0o700); err != nil {
-		return err
-	}
-	managerSocket := filepath.Join(paths.homeDir, tuiServiceSocketFilename)
-	coreSocket := filepath.Join(paths.homeDir, tuiCoreSocketFilename)
-	if existing := newTUIServiceClient(paths.homeDir); serviceIsAvailable(existing) {
-		return errors.New("background service is already running")
-	}
-	for _, socketPath := range []string{managerSocket, coreSocket} {
-		if err := removeStaleTUIServiceSocket(paths.homeDir, socketPath); err != nil {
+	var backendLock *cliFileLock
+	if *lockFDArg >= 0 {
+		lockFile := os.NewFile(
+			uintptr(*lockFDArg),
+			"flclash-backend-lock",
+		)
+		backendLock, err = adoptCLIBackendLock(
+			lockFile,
+			cliProcessOwner{
+				Kind:       "service",
+				HomeDir:    paths.homeDir,
+				ConfigPath: paths.configPath,
+			},
+		)
+		if err != nil {
 			return err
 		}
 	}
-	setupParams, err := initializeCore(paths, testURL, "", coreSocket, "", false)
+	return runTUIService(paths, *testURLArg, backendLock)
+}
+
+func runTUIService(
+	paths cliPaths,
+	testURL string,
+	backendLock *cliFileLock,
+) error {
+	if err := os.MkdirAll(paths.homeDir, 0o700); err != nil {
+		return err
+	}
+	runtimeDirectory, err := ensureCLIRuntimeDirectory()
+	if err != nil {
+		return err
+	}
+	managerSocket := filepath.Join(
+		runtimeDirectory,
+		tuiServiceSocketFilename,
+	)
+	coreSocket := filepath.Join(paths.homeDir, tuiCoreSocketFilename)
+	if backendLock == nil {
+		backendLock, err = acquireCLIBackendLock(cliProcessOwner{
+			Kind:       "service",
+			HomeDir:    paths.homeDir,
+			ConfigPath: paths.configPath,
+		})
+		if err != nil {
+			return err
+		}
+	} else if err := backendLock.setOwner(cliProcessOwner{
+		Kind:       "service",
+		HomeDir:    paths.homeDir,
+		ConfigPath: paths.configPath,
+	}); err != nil {
+		backendLock.release()
+		return err
+	}
+	defer backendLock.release()
+	if err := removeStaleTUIServiceSocket(
+		runtimeDirectory,
+		managerSocket,
+	); err != nil {
+		return err
+	}
+	if err := removeStaleTUIServiceSocket(
+		paths.homeDir,
+		coreSocket,
+	); err != nil {
+		return err
+	}
+	setupParams, err := initializeCore(
+		paths,
+		testURL,
+		"",
+		coreSocket,
+		"",
+		false,
+	)
 	if err != nil {
 		return err
 	}
@@ -401,6 +660,7 @@ func runTUIService(paths cliPaths, testURL string) error {
 				OK:         true,
 				PID:        os.Getpid(),
 				Version:    cliVersion,
+				HomeDir:    paths.homeDir,
 				ConfigPath: paths.configPath,
 				CoreSocket: coreSocket,
 				Running:    running,
@@ -626,11 +886,6 @@ func reloadTUIServiceConfig(
 	}
 	_ = os.Chmod(coreSocket, 0o600)
 	return setupParams, nil
-}
-
-func serviceIsAvailable(client *tuiServiceClient) bool {
-	_, err := client.status()
-	return err == nil
 }
 
 func removeStaleTUIServiceSocket(homeDir, socketPath string) error {
