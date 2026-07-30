@@ -1,4 +1,4 @@
-FlClash CLI - Copyright and attribution notice
+FlClash TUI - Copyright and attribution notice
 
 This repository is an unofficial derivative work based on FlClash:
 
@@ -6,7 +6,7 @@ This repository is an unofficial derivative work based on FlClash:
   Original copyright holder: chen08209 and FlClash contributors
   Original license: GNU General Public License v3.0
 
-The Linux CLI entry point and related documentation in this repository were
+The Linux terminal entry point and related documentation in this repository were
 added as derivative work. The original FlClash source, including its Flutter
 application and platform integrations, remains subject to the original
 copyright and GPL-3.0 terms.

@@ -21,17 +21,20 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 const (
-	cliGitHubRepository       = "yqlay/flclash-cli"
+	cliGitHubRepository       = "yqlay/flclash-tui"
 	cliLatestReleaseAPIURL    = "https://api.github.com/repos/" + cliGitHubRepository + "/releases/latest"
 	cliUpdateWarning          = "If this version works well, do not update lightly. / 当前版本使用正常时，请勿轻易更新。"
 	cliUpdateMaxMetadataBytes = 1 << 20
 	cliUpdateMaxAssetBytes    = 256 << 20
+	cliUpdateTimeout          = 30 * time.Minute
 )
 
-var cliUpdateHTTPClient = &http.Client{Timeout: 2 * time.Minute}
+var cliUpdateHTTPClient = &http.Client{Timeout: cliUpdateTimeout}
 
 type cliReleaseAsset struct {
 	Name        string `json:"name"`
@@ -61,7 +64,7 @@ func updateCommand(args []string) error {
 		return errors.New("update does not accept positional arguments")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), cliUpdateTimeout)
 	defer cancel()
 	release, err := fetchLatestCLIRelease(
 		ctx,
@@ -77,7 +80,7 @@ func updateCommand(args []string) error {
 	}
 	if !isNewerCLIVersion(latestVersion, cliVersion) {
 		fmt.Printf(
-			"FlClash CLI %s is already up to date (latest: %s).\n",
+			"FlClash TUI %s is already up to date (latest: %s).\n",
 			cliVersion,
 			latestVersion,
 		)
@@ -120,7 +123,14 @@ func updateCommand(args []string) error {
 	debPath := filepath.Join(updateDirectory, debAsset.Name)
 	checksumPath := filepath.Join(updateDirectory, checksumAsset.Name)
 	fmt.Printf("Downloading %s...\n", debAsset.Name)
-	if err := downloadCLIUpdateAsset(ctx, cliUpdateHTTPClient, debAsset, debPath); err != nil {
+	if err := downloadCLIUpdateAssetWithProgress(
+		ctx,
+		cliUpdateHTTPClient,
+		debAsset,
+		debPath,
+		os.Stdout,
+		isCLIProgressTerminal(os.Stdout),
+	); err != nil {
 		return err
 	}
 	if err := downloadCLIUpdateAsset(
@@ -142,7 +152,7 @@ func updateCommand(args []string) error {
 	if err := installCLIUpdate(debPath); err != nil {
 		return err
 	}
-	fmt.Printf("FlClash CLI %s installed. Start flclash-cli again to use it.\n", latestVersion)
+	fmt.Printf("FlClash TUI %s installed. Start flclash again to use it.\n", latestVersion)
 	return nil
 }
 
@@ -156,7 +166,7 @@ func fetchLatestCLIRelease(
 		return cliRelease{}, err
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("User-Agent", "flclash-cli/"+cliVersion)
+	request.Header.Set("User-Agent", "flclash/"+cliVersion)
 	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	response, err := client.Do(request)
 	if err != nil {
@@ -269,7 +279,7 @@ func selectCLIUpdateAssets(
 			goArch,
 		)
 	}
-	debName := fmt.Sprintf("flclash-cli_%s_%s.deb", version, debArch)
+	debName := fmt.Sprintf("flclash-tui_%s_%s.deb", version, debArch)
 	checksumName := debName + ".sha256"
 	var debAsset cliReleaseAsset
 	var checksumAsset cliReleaseAsset
@@ -319,7 +329,7 @@ func cliUpdateDirectory() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve user cache directory: %w", err)
 	}
-	return filepath.Join(cacheDirectory, "flclash-cli", "updates"), nil
+	return filepath.Join(cacheDirectory, "flclash-tui", "updates"), nil
 }
 
 func downloadCLIUpdateAsset(
@@ -327,6 +337,24 @@ func downloadCLIUpdateAsset(
 	client *http.Client,
 	asset cliReleaseAsset,
 	target string,
+) error {
+	return downloadCLIUpdateAssetWithProgress(
+		ctx,
+		client,
+		asset,
+		target,
+		nil,
+		false,
+	)
+}
+
+func downloadCLIUpdateAssetWithProgress(
+	ctx context.Context,
+	client *http.Client,
+	asset cliReleaseAsset,
+	target string,
+	progressOutput io.Writer,
+	interactiveProgress bool,
 ) error {
 	if asset.DownloadURL == "" {
 		return fmt.Errorf("asset %s has no download URL", asset.Name)
@@ -336,7 +364,7 @@ func downloadCLIUpdateAsset(
 		return err
 	}
 	request.Header.Set("Accept", "application/octet-stream")
-	request.Header.Set("User-Agent", "flclash-cli/"+cliVersion)
+	request.Header.Set("User-Agent", "flclash/"+cliVersion)
 	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("download %s: %w", asset.Name, err)
@@ -359,19 +387,34 @@ func downloadCLIUpdateAsset(
 		_ = temp.Close()
 		return err
 	}
+	total := asset.Size
+	if total <= 0 {
+		total = response.ContentLength
+	}
+	progress := newCLIDownloadProgress(
+		progressOutput,
+		total,
+		interactiveProgress,
+	)
 	written, copyErr := io.Copy(
 		temp,
-		io.LimitReader(response.Body, cliUpdateMaxAssetBytes+1),
+		io.TeeReader(
+			io.LimitReader(response.Body, cliUpdateMaxAssetBytes+1),
+			progress,
+		),
 	)
 	if copyErr != nil {
+		progress.finish(false)
 		_ = temp.Close()
 		return fmt.Errorf("download %s: %w", asset.Name, copyErr)
 	}
 	if written > cliUpdateMaxAssetBytes {
+		progress.finish(false)
 		_ = temp.Close()
 		return fmt.Errorf("download %s: asset exceeded size limit", asset.Name)
 	}
 	if asset.Size > 0 && written != asset.Size {
+		progress.finish(false)
 		_ = temp.Close()
 		return fmt.Errorf(
 			"download %s: received %d bytes, expected %d",
@@ -380,6 +423,7 @@ func downloadCLIUpdateAsset(
 			asset.Size,
 		)
 	}
+	progress.finish(true)
 	if err := temp.Sync(); err != nil {
 		_ = temp.Close()
 		return err
@@ -391,6 +435,110 @@ func downloadCLIUpdateAsset(
 		return err
 	}
 	return nil
+}
+
+type cliDownloadProgress struct {
+	output      io.Writer
+	total       int64
+	written     int64
+	startedAt   time.Time
+	lastDrawnAt time.Time
+	interactive bool
+	finished    bool
+}
+
+func newCLIDownloadProgress(
+	output io.Writer,
+	total int64,
+	interactive bool,
+) *cliDownloadProgress {
+	now := time.Now()
+	return &cliDownloadProgress{
+		output:      output,
+		total:       total,
+		startedAt:   now,
+		lastDrawnAt: now,
+		interactive: interactive,
+	}
+}
+
+func (p *cliDownloadProgress) Write(data []byte) (int, error) {
+	p.written += int64(len(data))
+	now := time.Now()
+	if p.interactive && now.Sub(p.lastDrawnAt) >= 100*time.Millisecond {
+		p.draw(now, false)
+	}
+	return len(data), nil
+}
+
+func (p *cliDownloadProgress) finish(success bool) {
+	if p.finished || p.output == nil {
+		return
+	}
+	p.finished = true
+	now := time.Now()
+	if success {
+		p.draw(now, true)
+		return
+	}
+	if p.interactive {
+		_, _ = fmt.Fprintln(p.output)
+	}
+}
+
+func (p *cliDownloadProgress) draw(now time.Time, complete bool) {
+	if p.output == nil {
+		return
+	}
+	elapsed := now.Sub(p.startedAt)
+	if elapsed <= 0 {
+		elapsed = time.Nanosecond
+	}
+	speed := float64(p.written) / elapsed.Seconds()
+	const barWidth = 28
+	if p.total > 0 {
+		ratio := float64(p.written) / float64(p.total)
+		if ratio > 1 {
+			ratio = 1
+		}
+		filled := int(ratio * barWidth)
+		bar := strings.Repeat("=", filled) + strings.Repeat(".", barWidth-filled)
+		prefix := "\r"
+		if !p.interactive {
+			prefix = ""
+		}
+		_, _ = fmt.Fprintf(
+			p.output,
+			"%s[%s] %6.1f%%  %s/%s  %s/s",
+			prefix,
+			bar,
+			ratio*100,
+			formatBytes(p.written),
+			formatBytes(p.total),
+			formatBytes(int64(speed)),
+		)
+	} else {
+		prefix := "\r"
+		if !p.interactive {
+			prefix = ""
+		}
+		_, _ = fmt.Fprintf(
+			p.output,
+			"%sDownloaded %s  %s/s",
+			prefix,
+			formatBytes(p.written),
+			formatBytes(int64(speed)),
+		)
+	}
+	p.lastDrawnAt = now
+	if complete {
+		_, _ = fmt.Fprintln(p.output)
+	}
+}
+
+func isCLIProgressTerminal(output io.Writer) bool {
+	file, ok := output.(*os.File)
+	return ok && term.IsTerminal(int(file.Fd()))
 }
 
 func verifyCLIUpdateChecksum(debPath, checksumPath string) error {

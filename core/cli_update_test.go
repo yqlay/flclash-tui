@@ -22,7 +22,7 @@ func TestFetchLatestCLIRelease(t *testing.T) {
 		writer http.ResponseWriter,
 		request *http.Request,
 	) {
-		if request.UserAgent() != "flclash-cli/"+cliVersion {
+		if request.UserAgent() != "flclash/"+cliVersion {
 			t.Fatalf("user agent = %q", request.UserAgent())
 		}
 		if request.Header.Get("Accept") != "application/vnd.github+json" {
@@ -30,11 +30,11 @@ func TestFetchLatestCLIRelease(t *testing.T) {
 		}
 		_, _ = io.WriteString(writer, `{
 			"tag_name":"v9.8.7",
-			"name":"FlClash CLI v9.8.7",
+			"name":"FlClash TUI v9.8.7",
 			"html_url":"https://github.example/releases/v9.8.7",
 			"assets":[
 				{
-					"name":"flclash-cli_9.8.7_amd64.deb",
+					"name":"flclash-tui_9.8.7_amd64.deb",
 					"browser_download_url":"https://github.example/update.deb",
 					"size":123
 				}
@@ -88,12 +88,12 @@ func TestSelectCLIUpdateAssets(t *testing.T) {
 		TagName: "v0.3.4",
 		Assets: []cliReleaseAsset{
 			{
-				Name:        "flclash-cli_0.3.4_amd64.deb",
-				DownloadURL: "https://github.com/yqlay/flclash-cli/releases/download/v0.3.4/flclash-cli_0.3.4_amd64.deb",
+				Name:        "flclash-tui_0.3.4_amd64.deb",
+				DownloadURL: "https://github.com/yqlay/flclash-tui/releases/download/v0.3.4/flclash-tui_0.3.4_amd64.deb",
 			},
 			{
-				Name:        "flclash-cli_0.3.4_amd64.deb.sha256",
-				DownloadURL: "https://github.com/yqlay/flclash-cli/releases/download/v0.3.4/flclash-cli_0.3.4_amd64.deb.sha256",
+				Name:        "flclash-tui_0.3.4_amd64.deb.sha256",
+				DownloadURL: "https://github.com/yqlay/flclash-tui/releases/download/v0.3.4/flclash-tui_0.3.4_amd64.deb.sha256",
 			},
 		},
 	}
@@ -127,7 +127,7 @@ func TestDownloadAndVerifyCLIUpdate(t *testing.T) {
 		case "/update.deb.sha256":
 			_, _ = fmt.Fprintf(
 				writer,
-				"%x  flclash-cli_9.8.7_amd64.deb\n",
+				"%x  flclash-tui_9.8.7_amd64.deb\n",
 				checksum,
 			)
 		default:
@@ -155,7 +155,7 @@ func TestDownloadAndVerifyCLIUpdate(t *testing.T) {
 	}
 	checksumData := fmt.Appendf(
 		nil,
-		"%x  flclash-cli_9.8.7_amd64.deb\n",
+		"%x  flclash-tui_9.8.7_amd64.deb\n",
 		checksum,
 	)
 	if err := downloadCLIUpdateAsset(
@@ -178,6 +178,30 @@ func TestDownloadAndVerifyCLIUpdate(t *testing.T) {
 	}
 	if err := verifyCLIUpdateChecksum(debPath, checksumPath); err == nil {
 		t.Fatal("tampered update passed checksum verification")
+	}
+}
+
+func TestCLIUpdateProgressShowsBarPercentageAndSpeed(t *testing.T) {
+	var output bytes.Buffer
+	progress := newCLIDownloadProgress(&output, 1024, false)
+	progress.startedAt = time.Now().Add(-time.Second)
+	if _, err := progress.Write(make([]byte, 1024)); err != nil {
+		t.Fatal(err)
+	}
+	progress.finish(true)
+
+	line := strings.TrimSpace(output.String())
+	for _, expected := range []string{
+		"[============================]",
+		"100.0%",
+		"1.0 KB/1.0 KB",
+	} {
+		if !strings.Contains(line, expected) {
+			t.Fatalf("progress does not contain %q: %q", expected, line)
+		}
+	}
+	if !strings.HasSuffix(line, "/s") {
+		t.Fatalf("download speed is not on the right side: %q", line)
 	}
 }
 

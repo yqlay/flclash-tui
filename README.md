@@ -1,24 +1,24 @@
-# FlClash CLI
+# FlClash TUI
 
-[![Release](https://img.shields.io/github/v/release/yqlay/flclash-cli?style=flat-square)](https://github.com/yqlay/flclash-cli/releases)
-[![Downloads](https://img.shields.io/github/downloads/yqlay/flclash-cli/total?style=flat-square)](https://github.com/yqlay/flclash-cli/releases)
-[![License](https://img.shields.io/github/license/yqlay/flclash-cli?style=flat-square)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/yqlay/flclash-tui?style=flat-square)](https://github.com/yqlay/flclash-tui/releases)
+[![Downloads](https://img.shields.io/github/downloads/yqlay/flclash-tui/total?style=flat-square)](https://github.com/yqlay/flclash-tui/releases)
+[![License](https://img.shields.io/github/license/yqlay/flclash-tui?style=flat-square)](LICENSE)
 
-FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户端。它以全屏终端界面（TUI）提供接近图形客户端的使用体验，同时保留适合脚本、SSH 和服务器环境的命令行功能。
+FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户端。它以全屏终端界面（TUI）提供接近图形客户端的使用体验，同时保留适合脚本、SSH 和服务器环境的命令行功能。
 
-本项目基于 [FlClash](https://github.com/chen08209/FlClash) 衍生，复用其 Go/Mihomo 核心，并针对纯终端使用重新设计了配置、订阅、服务控制和状态查看流程。运行 `flclash-cli` 即可进入界面，不要求用户先手写 `config.yaml`。
+本项目基于 [FlClash](https://github.com/chen08209/FlClash) 衍生，复用其 Go/Mihomo 核心，并针对纯终端使用重新设计了配置、订阅、服务控制和状态查看流程。运行 `flclash` 即可进入界面，不要求用户先手写 `config.yaml`。
 
 > 本项目是非官方衍生版本，不是 FlClash 官方发布版本，也不代表 FlClash 或 Mihomo 维护者。版权和许可证说明见 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
 
-## v0.3.10 最新更新
+## v0.3.11 最新更新
 
-- Dashboard 中按 `d` 测试当前代理路由延迟，按 `v` 测试当前代理路由下载速度。
-- Proxies 中保留单节点和整组延迟测试，并支持对单节点或整组逐个执行下载测速。
-- 下载测速最多传输 `100 MB`、持续最多 `5 秒`；5 秒内完成时按实际耗时计算，否则按 5 秒内实际下载量计算。
-- 修复 Cloudflare 测速接口因单次请求精确达到 100 MB 而返回 `403 Forbidden` 的问题；程序会自动拆分请求，用户无需更换测速地址。
+- 修复 Dashboard 中 **Network speed** 和 **Traffic total** 始终显示为零的问题；TUI 现在持续订阅 Mihomo 的流量流，每秒更新瞬时速度与累计流量。
+- `flclash update` 下载新版安装包时显示实时进度条、完成百分比、已下载容量和当前速度；慢速连接的更新超时也由 2 分钟延长到 30 分钟。
+- 现有仓库重命名为 `flclash-tui`，启动命令统一为 `flclash`，安装包统一为 `flclash-tui_<版本>_<架构>.deb`。
+- 新 Debian 包会替换旧的 `flclash-cli` 包，但保留已有数据目录、Profile、设置和后台服务兼容状态。
 - Release 同时提供 Linux `amd64` 和 `arm64` 的 `.deb`、便携 `.tar.gz` 及 SHA256 校验文件。
 
-完整安装包与更新说明见 [FlClash CLI v0.3.10 Release](https://github.com/yqlay/flclash-cli/releases/tag/v0.3.10)。
+完整安装包与更新说明见 [FlClash TUI v0.3.11 Release](https://github.com/yqlay/flclash-tui/releases/tag/v0.3.11)。
 
 ## 适合哪些场景
 
@@ -58,19 +58,19 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 AMD64：
 
 ```bash
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.10/flclash-cli_0.3.10_amd64.deb
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.10/flclash-cli_0.3.10_amd64.deb.sha256
-sha256sum -c flclash-cli_0.3.10_amd64.deb.sha256
-sudo dpkg -i flclash-cli_0.3.10_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.11/flclash-tui_0.3.11_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.11/flclash-tui_0.3.11_amd64.deb.sha256
+sha256sum -c flclash-tui_0.3.11_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.3.11_amd64.deb
 ```
 
 ARM64：
 
 ```bash
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.10/flclash-cli_0.3.10_arm64.deb
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.10/flclash-cli_0.3.10_arm64.deb.sha256
-sha256sum -c flclash-cli_0.3.10_arm64.deb.sha256
-sudo dpkg -i flclash-cli_0.3.10_arm64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.11/flclash-tui_0.3.11_arm64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.11/flclash-tui_0.3.11_arm64.deb.sha256
+sha256sum -c flclash-tui_0.3.11_arm64.deb.sha256
+sudo dpkg -i flclash-tui_0.3.11_arm64.deb
 ```
 
 查看本机 CPU 架构：
@@ -87,7 +87,7 @@ dpkg --print-architecture
 安装后直接运行：
 
 ```bash
-flclash-cli
+flclash
 ```
 
 首次启动会自动创建一个安全的 DIRECT 配置，但不会启动代理服务，也不会占用 Mixed Port。安装包已经包含 FlClash 自带的 `GEOIP.metadb`、`GEOIP.dat`、`GEOSITE.dat` 和 `ASN.mmdb`；缺失或损坏的基础 Geo 数据会在 Core 初始化前从本地安装包恢复，不依赖首次访问 GitHub。推荐的使用顺序是：
@@ -100,9 +100,9 @@ flclash-cli
 
 开启 **System proxy** 时，程序会自动应用当前设置、启动 Service/Core，再设置桌面系统代理，不需要手动先启动核心。停止 Service 时，由当前 TUI 开启的系统代理也会关闭。
 
-`q` 只退出 TUI 并返回 Shell；如果 Service 已启动，代理会继续在后台运行且不占用终端。再次执行 `flclash-cli` 会自动连接该 Service。`Ctrl+C` 则退出 TUI 并停止由 FlClash CLI 管理的 Service/Core。也可以在 Shell 中执行 `flclash-cli stop`。
+`q` 只退出 TUI 并返回 Shell；如果 Service 已启动，代理会继续在后台运行且不占用终端。再次执行 `flclash` 会自动连接该 Service。`Ctrl+C` 则退出 TUI 并停止由 FlClash TUI 管理的 Service/Core。也可以在 Shell 中执行 `flclash stop`。
 
-导入成功后，程序会安全保存该 Profile 与订阅 URL 的绑定。在 **Profiles** 中选中它并按 `U`，程序会直接从已保存的 URL 重新拉取配置，不会再次要求输入链接。活动 Profile 会立即热重载，Service 运行时不会停止监听端口；更新会保留端口、模式、TUN、IPv6 等本地设置，验证或热重载失败时自动回滚。旧版本留下的未绑定 Profile 会被明确标记为本地配置，可用 `flclash-cli profile link --config PROFILE URL` 一次性建立绑定。
+导入成功后，程序会安全保存该 Profile 与订阅 URL 的绑定。在 **Profiles** 中选中它并按 `U`，程序会直接从已保存的 URL 重新拉取配置，不会再次要求输入链接。活动 Profile 会立即热重载，Service 运行时不会停止监听端口；更新会保留端口、模式、TUN、IPv6 等本地设置，验证或热重载失败时自动回滚。旧版本留下的未绑定 Profile 会被明确标记为本地配置，可用 `flclash profile link --config PROFILE URL` 一次性建立绑定。
 
 ## 基本操作
 
@@ -144,47 +144,47 @@ curl -x http://127.0.0.1:7890 -I --max-time 10 https://www.google.com
 打开 TUI（默认行为）：
 
 ```bash
-flclash-cli
-flclash-cli tui --directory ~/.config/flclash-work
-flclash-cli tui --config /path/to/config.yaml
+flclash
+flclash tui --directory ~/.config/flclash-work
+flclash tui --config /path/to/config.yaml
 ```
 
 以前台进程运行 Core：
 
 ```bash
-flclash-cli run --config /path/to/config.yaml
+flclash run --config /path/to/config.yaml
 ```
 
 检查配置：
 
 ```bash
-flclash-cli check --config /path/to/config.yaml
+flclash check --config /path/to/config.yaml
 ```
 
 连接已有的 Mihomo Controller：
 
 ```bash
-flclash-cli proxy list --controller 127.0.0.1:9090
-flclash-cli proxy select --controller 127.0.0.1:9090 GROUP NODE
+flclash proxy list --controller 127.0.0.1:9090
+flclash proxy select --controller 127.0.0.1:9090 GROUP NODE
 ```
 
 停止由 TUI 留在后台的 Service：
 
 ```bash
-flclash-cli stop
+flclash stop
 ```
 
 为旧版本的本地 Profile 一次性绑定订阅来源：
 
 ```bash
-flclash-cli profile link --config ~/.config/flclash/profile.yaml 'https://example.com/subscription'
+flclash profile link --config ~/.config/flclash/profile.yaml 'https://example.com/subscription'
 ```
 
 一台主机运行多个实例时，应为每个实例指定不同的数据目录、Mixed Port 和 Controller：
 
 ```bash
-flclash-cli tui --directory ~/.config/flclash-a
-flclash-cli tui --directory ~/.config/flclash-b
+flclash tui --directory ~/.config/flclash-a
+flclash tui --directory ~/.config/flclash-b
 ```
 
 更完整的参数和操作说明见 [CLI_LINUX.md](CLI_LINUX.md)。
@@ -194,13 +194,13 @@ flclash-cli tui --directory ~/.config/flclash-b
 仅检查是否有新版本：
 
 ```bash
-flclash-cli update --check
+flclash update --check
 ```
 
 下载、校验并安装新版本：
 
 ```bash
-flclash-cli update
+flclash update
 ```
 
 更新器只接受本仓库 GitHub Releases 中与当前 CPU 架构匹配的 Debian 包，并在安装前验证 SHA-256。
@@ -212,13 +212,13 @@ flclash-cli update
 需要 Go、Git、Make，并需要初始化 Mihomo 子模块：
 
 ```bash
-git clone --recurse-submodules https://github.com/yqlay/flclash-cli.git
-cd flclash-cli
+git clone --recurse-submodules https://github.com/yqlay/flclash-tui.git
+cd flclash-tui
 make cli-linux
-./dist/flclash-cli
+./dist/flclash
 ```
 
-构建产物位于 `dist/flclash-cli`，离线 Geo 数据位于 `dist/data/`，移动二进制时需将该目录一起移动。本仓库保留了上游 FlClash Flutter 工程，因为 CLI 复用了其中的核心集成和平台代码；构建纯 CLI 不需要启动 Flutter 图形界面。
+构建产物位于 `dist/flclash`，离线 Geo 数据位于 `dist/data/`，移动二进制时需将该目录一起移动。本仓库保留了上游 FlClash Flutter 工程，因为 CLI 复用了其中的核心集成和平台代码；构建纯 CLI 不需要启动 Flutter 图形界面。
 
 ## 数据位置
 

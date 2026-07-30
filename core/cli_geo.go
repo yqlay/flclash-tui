@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	tuiGeoDataDirectoryEnv = "FLCLASH_CLI_DATA_DIR"
-	tuiSystemGeoDataDir    = "/usr/share/flclash-cli/data"
+	tuiGeoDataDirectoryEnv       = "FLCLASH_DATA_DIR"
+	tuiLegacyGeoDataDirectoryEnv = "FLCLASH_CLI_DATA_DIR"
+	tuiSystemGeoDataDir          = "/usr/share/flclash-tui/data"
+	tuiLegacySystemGeoDataDir    = "/usr/share/flclash-cli/data"
 )
 
 type tuiBundledGeoFile struct {
@@ -80,6 +82,10 @@ func tuiBundledGeoDataDirectories() []string {
 	directories := make([]string, 0, 3)
 	if configured := strings.TrimSpace(os.Getenv(tuiGeoDataDirectoryEnv)); configured != "" {
 		directories = append(directories, configured)
+	} else if configured := strings.TrimSpace(
+		os.Getenv(tuiLegacyGeoDataDirectoryEnv),
+	); configured != "" {
+		directories = append(directories, configured)
 	}
 	if executable, err := os.Executable(); err == nil {
 		directories = append(
@@ -87,7 +93,11 @@ func tuiBundledGeoDataDirectories() []string {
 			filepath.Join(filepath.Dir(executable), "data"),
 		)
 	}
-	directories = append(directories, tuiSystemGeoDataDir)
+	directories = append(
+		directories,
+		tuiSystemGeoDataDir,
+		tuiLegacySystemGeoDataDir,
+	)
 	return directories
 }
 

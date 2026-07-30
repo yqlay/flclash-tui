@@ -1,7 +1,7 @@
-# FlClash CLI for Linux
+# FlClash TUI for Linux
 
 This repository includes a Linux TUI/CLI entry point that uses the same
-Go/Mihomo core as the FlClash desktop application. Running `flclash-cli`
+Go/Mihomo core as the FlClash desktop application. Running `flclash`
 without a subcommand opens a full-screen terminal interface; subcommands remain
 available for scripts and headless servers.
 
@@ -14,24 +14,26 @@ git submodule update --init --recursive
 make cli-linux
 ```
 
-The binary is written to `dist/flclash-cli`; bundled Geo databases are copied
+The binary is written to `dist/flclash`; bundled Geo databases are copied
 to `dist/data`. Keep that directory beside the binary when moving a source
 build to an offline host.
 
 ## Install the Debian package
 
-Download the `v0.3.10` package matching `dpkg --print-architecture` from the
-[GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then
+Download the `v0.3.11` package matching `dpkg --print-architecture` from the
+[GitHub Releases](https://github.com/yqlay/flclash-tui/releases) page, then
 install it with:
 
 ```bash
-sudo dpkg -i flclash-cli_0.3.10_amd64.deb
-# or: sudo dpkg -i flclash-cli_0.3.10_arm64.deb
+sudo dpkg -i flclash-tui_0.3.11_amd64.deb
+# or: sudo dpkg -i flclash-tui_0.3.11_arm64.deb
 ```
 
-The package installs the executable at `/usr/bin/flclash-cli`, bundled offline
-Geo databases under `/usr/share/flclash-cli/data`, and documentation under
-`/usr/share/doc/flclash-cli`. Before the core starts, missing Geo data is copied
+The package installs the executable at `/usr/bin/flclash`, bundled offline
+Geo databases under `/usr/share/flclash-tui/data`, and documentation under
+`/usr/share/doc/flclash-tui`. It declares `Conflicts/Replaces` for the old
+`flclash-cli` Debian package, so installing it migrates the executable name
+without deleting profiles or settings. Before the core starts, missing Geo data is copied
 from the package into the selected FlClash data directory. A valid existing
 database is preserved; an incomplete or invalid MMDB download is repaired from
 the bundled copy. Initial startup therefore does not depend on GitHub access.
@@ -39,7 +41,7 @@ the bundled copy. Initial startup therefore does not depend on GitHub access.
 ## Run the TUI
 
 ```bash
-./dist/flclash-cli
+./dist/flclash
 ```
 
 On first launch, when the default configuration is missing, the TUI creates a
@@ -53,7 +55,7 @@ state file. Select a profile and press `U` to download and apply its latest
 subscription directly from the saved URL; refresh never asks for the URL
 again. Profiles imported by an older version without source metadata remain
 local profiles instead of pretending to support refresh. Link one once with
-`flclash-cli profile link --config PROFILE URL`, or import the subscription as
+`flclash profile link --config PROFILE URL`, or import the subscription as
 a new linked profile. Refresh preserves local mode, port, TUN, LAN, IPv6,
 unified-delay, TCP-concurrent, and log-level settings. The replacement is
 validated and written atomically; an active profile is hot-reloaded without
@@ -86,8 +88,8 @@ By default, the TUI starts or reconnects to a detached local Service and uses
 private Unix sockets for service and Core management, so it does not reserve a
 TCP controller port. Pressing `q` detaches only the TUI and returns to the
 shell; a running Service keeps proxying in the background. Reopening
-`flclash-cli` reconnects to it. Pressing `Ctrl+C`, or running
-`flclash-cli stop`, stops the managed Service/Core.
+`flclash` reconnects to it. Pressing `Ctrl+C`, or running
+`flclash stop`, stops the managed Service/Core.
 
 No settings shortcut has to be memorized: all settings and lifecycle actions
 are selectable rows. The single-letter keys remain optional accelerators.
@@ -101,7 +103,7 @@ The active profile, subscription bindings, and last proxy selection for each gro
 atomically with user-only permissions. On the next launch, the TUI restores
 that profile, its YAML settings, and matching proxy-group selections. Runtime
 Service state belongs to the detached Service: after `q`, reopening the TUI
-shows the same running state. After `Ctrl+C` or `flclash-cli stop`, the next
+shows the same running state. After `Ctrl+C` or `flclash stop`, the next
 launch starts with listeners stopped.
 
 The sidebar follows the graphical FlClash information architecture:
@@ -168,8 +170,8 @@ trigger unrelated operations on another page.
 You can use another configuration directory or file:
 
 ```bash
-./dist/flclash-cli --directory ~/.config/flclash-work
-./dist/flclash-cli --config /path/to/config.yaml
+./dist/flclash --directory ~/.config/flclash-work
+./dist/flclash --config /path/to/config.yaml
 ```
 
 Use `--controller` and `--no-start` to open the TUI for a core already running
@@ -179,7 +181,7 @@ port for each instance.
 The original foreground mode is still available:
 
 ```bash
-./dist/flclash-cli run --config /path/to/config.yaml
+./dist/flclash run --config /path/to/config.yaml
 ```
 
 The process stays in the foreground. `Ctrl-C` stops listeners and shuts down
@@ -188,7 +190,7 @@ the Mihomo executor. `SIGHUP` reloads the configuration.
 ## Validate configuration
 
 ```bash
-./dist/flclash-cli check --config /path/to/config.yaml
+./dist/flclash check --config /path/to/config.yaml
 ```
 
 ## Control a running instance
@@ -197,8 +199,8 @@ If the configuration enables Mihomo's external controller, the CLI can inspect
 proxy groups and select a proxy:
 
 ```bash
-./dist/flclash-cli proxy list --controller 127.0.0.1:9090
-./dist/flclash-cli proxy select --controller 127.0.0.1:9090 PROXY Tokyo
+./dist/flclash proxy list --controller 127.0.0.1:9090
+./dist/flclash proxy select --controller 127.0.0.1:9090 PROXY Tokyo
 ```
 
 If the controller has a secret, pass `--secret` or keep the controller bound
@@ -213,19 +215,21 @@ MATE `gsettings`, matching the Linux integration used by FlClash.
 Check the latest public release without changing the installed version:
 
 ```bash
-flclash-cli update --check
+flclash update --check
 ```
 
 Download, verify, and install an available update:
 
 ```bash
-flclash-cli update
+flclash update
 ```
 
-The updater connects to `yqlay/flclash-cli` on GitHub, selects the Debian
+The updater connects to `yqlay/flclash-tui` on GitHub, selects the Debian
 package for the current CPU architecture, downloads its `.sha256` file, and
 refuses installation if verification fails. Installation uses `sudo dpkg -i`
 and may request the system password. For unattended use, `--yes` confirms the
-warning; `--download-only` verifies the package but does not install it.
+warning; `--download-only` verifies the package but does not install it. While
+the package downloads, an interactive terminal shows a live progress bar with
+the percentage, downloaded size, and current transfer speed.
 
 **If the current version works well, do not update lightly. / 当前版本使用正常时，请勿轻易更新。**

@@ -49,6 +49,10 @@ type tuiCoreMemoryMsg struct {
 	update tuiCoreMemoryUpdate
 }
 
+type tuiTrafficMsg struct {
+	update tuiTrafficUpdate
+}
+
 type tuiRefreshResultMsg struct {
 	sequence uint64
 	snapshot tuiSnapshot
@@ -121,6 +125,8 @@ type tuiModel struct {
 	memoryRefreshActive bool
 	coreMemoryUpdates   <-chan tuiCoreMemoryUpdate
 	stopCoreMemory      func()
+	trafficUpdates      <-chan tuiTrafficUpdate
+	stopTraffic         func()
 	stopServiceOnExit   bool
 }
 
@@ -209,7 +215,9 @@ func runTUI(
 	model.coreRunning = coreRunning
 	model.snapshot.ManagedService = service != nil
 	model.startCoreMemoryMonitor()
+	model.startTrafficMonitor()
 	defer model.stopCoreMemoryMonitor()
+	defer model.stopTrafficMonitor()
 	program := tea.NewProgram(
 		model,
 		tea.WithAltScreen(),
@@ -248,6 +256,7 @@ func (m *tuiModel) Init() tea.Cmd {
 		m.startNetworkCheck(true),
 		m.startMemoryRefresh(),
 		m.waitCoreMemoryUpdate(),
+		m.waitTrafficUpdate(),
 	)
 }
 
@@ -297,6 +306,17 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.snapshot.Memory.CoreUpdated = message.update.UpdatedAt
 		return m, m.waitCoreMemoryUpdate()
+	case tuiTrafficMsg:
+		if message.update.Closed {
+			m.trafficUpdates = nil
+			return m, nil
+		}
+		m.snapshot.Traffic = message.update.Traffic
+		m.snapshot.TotalTraffic = trafficSnapshot{
+			Up:   message.update.Traffic.UpTotal,
+			Down: message.update.Traffic.DownTotal,
+		}
+		return m, m.waitTrafficUpdate()
 	case tuiRefreshResultMsg:
 		if message.sequence != m.refreshSequence {
 			return m, nil

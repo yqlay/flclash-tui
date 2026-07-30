@@ -958,7 +958,7 @@ func checkTUIUpdate(snapshot *tuiSnapshot) {
 	snapshot.Update.Available = isNewerCLIVersion(latestVersion, cliVersion)
 	if snapshot.Update.Available {
 		snapshot.Status = fmt.Sprintf(
-			"v%s available · %s · quit and run: flclash-cli update",
+			"v%s available · %s · quit and run: flclash update",
 			latestVersion,
 			cliUpdateWarning,
 		)
@@ -1099,13 +1099,6 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 		}
 	}
 
-	if traffic, err := client.requestStreamFirst("/traffic"); err == nil {
-		var value trafficSnapshot
-		if json.Unmarshal(traffic, &value) == nil {
-			snapshot.Traffic = value
-			snapshot.TotalTraffic = trafficSnapshot{Up: value.UpTotal, Down: value.DownTotal}
-		}
-	}
 	if connections, err := client.request("GET", "/connections", nil); err == nil {
 		var value struct {
 			Connections []struct {
@@ -2782,7 +2775,7 @@ func tuiUpdateRow(info tuiUpdateInfo) string {
 		return "Update        Check failed · Enter to retry"
 	case info.LatestVersion != "" && info.Available:
 		return fmt.Sprintf(
-			"Update        v%s available · run flclash-cli update",
+			"Update        v%s available · run flclash update",
 			info.LatestVersion,
 		)
 	case info.LatestVersion != "":
@@ -3163,7 +3156,7 @@ func exportTUILogs(homeDir string, logs []string) (string, error) {
 	}
 	path := filepath.Join(
 		logDir,
-		"flclash-cli-"+time.Now().Format("20060102-150405")+".log",
+		"flclash-"+time.Now().Format("20060102-150405")+".log",
 	)
 	return path, os.WriteFile(path, []byte(strings.Join(logs, "\n")+"\n"), 0o600)
 }

@@ -159,7 +159,7 @@ func requestTUIPublicIP(
 		return tuiPublicIPResult{Err: err}
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "flclash-cli/"+cliVersion)
+	request.Header.Set("User-Agent", "flclash/"+cliVersion)
 	response, err := client.Do(request)
 	if err != nil {
 		return tuiPublicIPResult{Err: err}
