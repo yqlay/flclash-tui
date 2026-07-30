@@ -35,6 +35,7 @@ type tuiGroup struct {
 	Now    string
 	Nodes  []string
 	Delays map[string]int
+	Speeds map[string]tuiSpeedResult
 }
 
 type tuiPage int
@@ -100,6 +101,15 @@ type tuiMemoryInfo struct {
 	CoreError    string
 	UpdatedAt    time.Time
 	CoreUpdated  time.Time
+}
+
+type tuiSpeedResult struct {
+	Bytes          int64   `json:"bytes"`
+	DurationMillis int64   `json:"duration_millis"`
+	BytesPerSecond float64 `json:"bytes_per_second"`
+	Complete       bool    `json:"complete"`
+	Testing        bool    `json:"-"`
+	Error          string  `json:"-"`
 }
 
 type tuiUpdateInfo struct {
@@ -179,6 +189,8 @@ type tuiSnapshot struct {
 	Settings           tuiSettings
 	Network            tuiNetworkInfo
 	Memory             tuiMemoryInfo
+	DashboardDelay     int
+	DashboardSpeed     tuiSpeedResult
 	Update             tuiUpdateInfo
 	UpdatedAt          time.Time
 	Status             string
@@ -1070,6 +1082,7 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 			Now:    proxy.Now,
 			Nodes:  proxy.All,
 			Delays: delays,
+			Speeds: map[string]tuiSpeedResult{},
 		})
 	}
 	orderTUIGroups(groups, snapshot.GroupOrder)
@@ -2002,6 +2015,7 @@ const (
 	tuiKeyViewNext
 	tuiKeyDelayTest
 	tuiKeyDelayTestAll
+	tuiKeySpeedTest
 )
 
 func readTUIKeys(reader io.Reader, keys chan<- tuiKey) {
@@ -2621,7 +2635,7 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 	groupLimit := minTUI(len(snapshot.Groups), maxTUIWidth(availableRows/3, 1))
 	nodeLimit := maxTUIWidth(availableRows-groupLimit, 1)
 	groupStart, groupEnd := tuiVisibleRange(len(snapshot.Groups), snapshot.SelectedGroup, groupLimit)
-	groupHint := "↑↓/ws group · Enter nodes · d test group · [/] view"
+	groupHint := "↑↓/ws group · Enter nodes · d test group · v speed group · [/] view"
 	if snapshot.ProxyNodeFocus {
 		groupHint = "Esc returns to proxy groups"
 	}
@@ -2651,7 +2665,7 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 		b,
 		nodeTitle,
 		fmt.Sprintf(
-			"%d nodes · ↑↓/ws select · Enter apply · d test · Esc back",
+			"%d nodes · ↑↓/ws select · Enter apply · d delay · v speed · Esc back",
 			len(group.Nodes),
 		),
 		width,
@@ -2677,6 +2691,20 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 		case !tested:
 			label += "  [d test]"
 			color = tuiDim
+		}
+		if speed, speedTested := group.Speeds[node]; speedTested {
+			switch {
+			case speed.Testing:
+				label += "  Speed testing..."
+				color = tuiCyan
+			case speed.Error != "":
+				label += "  Speed failed · v retry"
+				color = tuiDim
+			case speed.BytesPerSecond > 0:
+				label += "  " + formatTUISpeed(speed)
+			}
+		} else {
+			label += "  [v test]"
 		}
 		tuiRow(
 			b,
@@ -2798,8 +2826,8 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 	rows := []string{
 		"Navigation     ← sidebar · → content · ↑↓/ws move · Enter opens/applies · Esc back",
 		"Sections       1-7 open directly · Tab changes focus · [/] changes proxy view",
-		"Dashboard      n refreshes public and intranet IP detection",
-		"Proxies        Enter opens nodes · d group/node delay · A group delay · Esc groups",
+		"Dashboard      d route delay · v 100 MB/5s speed · n refresh IP detection",
+		"Proxies        Enter nodes · d group/node delay · v group/node speed · Esc groups",
 		"Profiles       Enter activate · U refresh subscription · F2/u rename · e edit · n import",
 		"Requests       x clears local history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
@@ -2865,7 +2893,7 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 			intranetIP = "No active LAN address"
 		}
 	}
-	networkSubtitle := "n refresh"
+	networkSubtitle := "d latency · v speed (100 MB/5s) · n refresh"
 	if snapshot.Network.Route != "" {
 		networkSubtitle += " · " + snapshot.Network.Route
 	}
@@ -2875,6 +2903,20 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 	tuiTitle(b, "Network detection", networkSubtitle, width)
 	tuiRow(b, "Public IP     "+publicIP, width, false, tuiCyan)
 	tuiRow(b, "Intranet IP   "+intranetIP, width, false, tuiGreen)
+	tuiRow(
+		b,
+		"Route latency  "+tuiDashboardDelayLabel(snapshot.DashboardDelay),
+		width,
+		false,
+		tuiCyan,
+	)
+	tuiRow(
+		b,
+		"Download test  "+tuiSpeedResultLabel(snapshot.DashboardSpeed),
+		width,
+		false,
+		tuiGreen,
+	)
 	tuiEndPanel(b, width)
 
 	if height >= 17 {
@@ -2902,6 +2944,39 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 			tuiRow(b, row, width, false, "")
 		}
 		tuiEndPanel(b, width)
+	}
+}
+
+func tuiDashboardDelayLabel(delay int) string {
+	switch {
+	case delay > 0:
+		return fmt.Sprintf("%d ms · d retest", delay)
+	case delay == -1:
+		return "Timeout · d retry"
+	case delay == -2:
+		return "Testing..."
+	default:
+		return "Not tested · press d"
+	}
+}
+
+func tuiSpeedResultLabel(result tuiSpeedResult) string {
+	switch {
+	case result.Testing:
+		return "Testing 100 MB for up to 5s..."
+	case result.Error != "":
+		return "Failed · v retry"
+	case result.BytesPerSecond > 0:
+		downloaded := float64(result.Bytes) / 1_000_000
+		duration := float64(result.DurationMillis) / 1000
+		return fmt.Sprintf(
+			"%s · %.1f MB in %.2fs · v retest",
+			formatTUISpeed(result),
+			downloaded,
+			duration,
+		)
+	default:
+		return "Not tested · press v"
 	}
 }
 

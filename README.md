@@ -21,7 +21,7 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 
 - **全屏 TUI**：固定布局、键盘操作，不会不断向终端追加界面内容
 - **订阅与配置管理**：在界面中导入/更新订阅、切换配置、重命名配置和编辑 YAML
-- **完整代理控制**：查看代理组和 Provider、切换节点、单节点测速及整组测速
+- **完整代理控制**：查看代理组和 Provider、切换节点，并对单节点或整组执行延迟与下载速度测试
 - **后台 Service**：TUI 与 Core 进程分离；退出界面后代理可以继续运行，再次进入会自动重连
 - **常用设置可视化**：支持模式、Mixed Port、TUN、Allow LAN、IPv6、日志等级、Unified Delay 和 TCP Concurrent
 - **状态与诊断**：显示公网/内网 IP、实时流量、连接、请求、日志、系统内存、本进程和 Core 内存
@@ -33,8 +33,8 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 
 | 栏目 | 用途 |
 | --- | --- |
-| Dashboard | 服务、系统代理、TUN、模式、端口、网络和内存状态 |
-| Proxies | 代理组、节点、Provider、节点切换和延迟测试 |
+| Dashboard | 服务、系统代理、TUN、模式、端口、网络、延迟、下载速度和内存状态 |
+| Proxies | 代理组、节点、Provider、节点切换、延迟测试和下载速度测试 |
 | Profiles | 导入/更新订阅、激活/重命名配置、编辑 YAML |
 | Requests | 查看本次运行期间的活动请求和近期请求 |
 | Connections | 查看和关闭当前连接 |
@@ -43,13 +43,24 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 
 ## 安装
 
-目前 Release 提供 Debian/Ubuntu 的 `amd64` 安装包：
+目前 Release 提供 Debian/Ubuntu 的 `amd64` 和 `arm64` 安装包。
+
+AMD64：
 
 ```bash
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.8/flclash-cli_0.3.8_amd64.deb
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.8/flclash-cli_0.3.8_amd64.deb.sha256
-sha256sum -c flclash-cli_0.3.8_amd64.deb.sha256
-sudo dpkg -i flclash-cli_0.3.8_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.9/flclash-cli_0.3.9_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.9/flclash-cli_0.3.9_amd64.deb.sha256
+sha256sum -c flclash-cli_0.3.9_amd64.deb.sha256
+sudo dpkg -i flclash-cli_0.3.9_amd64.deb
+```
+
+ARM64：
+
+```bash
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.9/flclash-cli_0.3.9_arm64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.9/flclash-cli_0.3.9_arm64.deb.sha256
+sha256sum -c flclash-cli_0.3.9_arm64.deb.sha256
+sudo dpkg -i flclash-cli_0.3.9_arm64.deb
 ```
 
 查看本机 CPU 架构：
@@ -58,7 +69,8 @@ sudo dpkg -i flclash-cli_0.3.8_amd64.deb
 dpkg --print-architecture
 ```
 
-输出为 `amd64` 时可使用上述安装包。其他发行版可以从源码构建。
+输出为 `amd64` 或 `arm64` 时，选择名称中架构一致的安装包。其他发行版
+可以从源码构建。
 
 ## 快速开始
 
@@ -89,13 +101,18 @@ flclash-cli
 ↑↓/ws             移动选择                  Enter 打开/执行
 1～7             快速打开对应栏目           r 刷新
 [/]              切换代理组/Provider        Esc 返回代理组
-d                组模式测全组/节点模式测单个 A 测试当前组全部节点
+d                Dashboard 测当前路由延迟；Proxies 测全组/单节点延迟
+v                Dashboard 测当前路由速度；Proxies 测全组/单节点速度
 S                开关系统代理               c 启动/停止 Service
 U                刷新已绑定订阅             n 导入新订阅
 q                仅退出 TUI                 Ctrl+C 停止 Service 并退出
 ```
 
 所有主要功能都可以通过界面中的可选行完成，快捷键只是辅助操作，不要求记忆。
+
+下载速度测试请求最多 `100 MB` 数据并持续最多 `5 秒`。若在 5 秒内完成，
+结果按 `100 MB / 实际耗时` 计算；否则按 `实际下载量 / 5 秒` 计算。整组测速
+会逐个节点串行执行，避免节点互相争抢带宽；最大流量约为节点数乘以 100 MB。
 
 ## 系统代理与 TUN
 

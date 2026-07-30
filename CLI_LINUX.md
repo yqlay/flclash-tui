@@ -20,10 +20,13 @@ build to an offline host.
 
 ## Install the Debian package
 
-Download `flclash-cli_0.3.8_amd64.deb` from the [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then install it with:
+Download the `v0.3.9` package matching `dpkg --print-architecture` from the
+[GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then
+install it with:
 
 ```bash
-sudo dpkg -i flclash-cli_0.3.8_amd64.deb
+sudo dpkg -i flclash-cli_0.3.9_amd64.deb
+# or: sudo dpkg -i flclash-cli_0.3.9_arm64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash-cli`, bundled offline
@@ -107,13 +110,16 @@ The sidebar follows the graphical FlClash information architecture:
   public-IP network detection, intranet IP, speeds, traffic totals, and
   connection counts. It also refreshes system memory, process RSS, and Go heap
   once per second. Managed and external modes show TUI and Core RSS
-  separately. Press `n` to refresh both IP checks.
+  separately. Press `d` to test the current route latency, `v` to test current
+  route download speed, or `n` to refresh both IP checks.
 - Proxies: proxy groups and nodes in configuration-file order. In the group
   list, use `↑↓/ws`, press Enter to open that group's nodes, and press `d` to
-  test every node in the selected group. In node selection, use `↑↓/ws`, press
-  Enter to apply the node, press `d` to test it, and press Esc to return to
-  groups. `A` also tests the current group. Press `[`/`]` to switch between
-  Groups and Providers.
+  test every node's delay or `v` to test every node's download speed. In node
+  selection, use `↑↓/ws`, press Enter to apply the node, press `d` to test its
+  delay, press `v` to test its download speed, and press Esc to return to
+  groups. `A` also tests the current group's delays. Press `[`/`]` to switch
+  between Groups and Providers. Speed tests run serially so nodes do not
+  compete for bandwidth.
 - Profiles: import a subscription, activate/rename profiles, and press `e` to
   edit the selected YAML in `$EDITOR`. Active-profile edits are validated and
   hot-reloaded; invalid edits or failed reloads restore the previous file.
@@ -138,10 +144,15 @@ Keyboard shortcuts:
 5 connections  6 logs          7 tools         U refresh subscription
 ↑↓/ws move     Enter open/apply Esc back        d delay
 [/] proxy view r refresh       R reload         S system proxy
-c start/stop   x clear/all     d close one     e edit/export
+c start/stop   x clear/all     v speed         e edit/export
 F2/u rename    n import/check  A test group    q detach TUI
 Ctrl+C stop Service/Core and exit
 ```
+
+Each download speed test requests at most 100 MB for at most five seconds. A
+completed transfer uses `100 MB / actual duration`; an incomplete transfer
+uses `downloaded MB / 5 seconds`. A whole-group test can therefore consume up
+to 100 MB per node.
 
 `q` exits only the frontend. `Ctrl+C` stops the managed Service/Core and exits.
 Neither key stops a Core connected through explicit `--no-start` external mode.

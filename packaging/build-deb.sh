@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.3.8}"
+VERSION="${VERSION:-0.3.9}"
 ARCH="${ARCH:-amd64}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist}"
 PACKAGE_NAME="flclash-cli_${VERSION}_${ARCH}"
@@ -13,10 +13,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ "${ARCH}" != "amd64" ]]; then
-  echo "Only amd64 Debian packaging is supported by this script." >&2
-  exit 2
-fi
+case "${ARCH}" in
+  amd64|arm64)
+    ;;
+  *)
+    echo "Unsupported Debian architecture: ${ARCH} (expected amd64 or arm64)." >&2
+    exit 2
+    ;;
+esac
 
 mkdir -p "${OUTPUT_DIR}"
 mkdir -p "${WORK_DIR}/DEBIAN"

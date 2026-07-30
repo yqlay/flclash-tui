@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -31,16 +32,21 @@ const (
 type tuiServiceRequest struct {
 	Action     string `json:"action"`
 	ConfigPath string `json:"config_path,omitempty"`
+	ProxyName  string `json:"proxy_name,omitempty"`
+	MixedPort  int    `json:"mixed_port,omitempty"`
+	TestURL    string `json:"test_url,omitempty"`
 }
 
 type tuiServiceStatus struct {
-	OK         bool   `json:"ok"`
-	Error      string `json:"error,omitempty"`
-	PID        int    `json:"pid"`
-	Version    string `json:"version"`
-	ConfigPath string `json:"config_path"`
-	CoreSocket string `json:"core_socket"`
-	Running    bool   `json:"running"`
+	OK         bool            `json:"ok"`
+	Error      string          `json:"error,omitempty"`
+	PID        int             `json:"pid"`
+	Version    string          `json:"version"`
+	ConfigPath string          `json:"config_path"`
+	CoreSocket string          `json:"core_socket"`
+	Running    bool            `json:"running"`
+	Delay      int             `json:"delay,omitempty"`
+	Speed      *tuiSpeedResult `json:"speed,omitempty"`
 }
 
 type tuiServiceClient struct {
@@ -62,9 +68,23 @@ func (c *tuiServiceClient) socketPath() string {
 }
 
 func (c *tuiServiceClient) request(action, configPath string) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{
+		Action:     action,
+		ConfigPath: configPath,
+	})
+}
+
+func (c *tuiServiceClient) requestPayload(
+	request tuiServiceRequest,
+) (tuiServiceStatus, error) {
 	requestTimeout := c.timeout
-	if action == "reload" {
+	switch request.Action {
+	case "reload":
 		requestTimeout = c.reloadTimeout
+	case "speed_proxy", "speed_route":
+		requestTimeout = tuiSpeedConnectTimeout + tuiSpeedTestDuration + 2*time.Second
+	case "delay_route":
+		requestTimeout = tuiSpeedConnectTimeout + 2*time.Second
 	}
 	connection, err := net.DialTimeout("unix", c.socketPath(), requestTimeout)
 	if err != nil {
@@ -72,10 +92,7 @@ func (c *tuiServiceClient) request(action, configPath string) (tuiServiceStatus,
 	}
 	defer connection.Close()
 	_ = connection.SetDeadline(time.Now().Add(requestTimeout))
-	if err := json.NewEncoder(connection).Encode(tuiServiceRequest{
-		Action:     action,
-		ConfigPath: configPath,
-	}); err != nil {
+	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return tuiServiceStatus{}, err
 	}
 	var status tuiServiceStatus
@@ -110,6 +127,56 @@ func (c *tuiServiceClient) reload(configPath string) (tuiServiceStatus, error) {
 func (c *tuiServiceClient) shutdown() error {
 	_, err := c.request("shutdown", "")
 	return err
+}
+
+func (c *tuiServiceClient) testProxySpeed(
+	proxyName string,
+) (tuiSpeedResult, error) {
+	status, err := c.requestPayload(tuiServiceRequest{
+		Action:    "speed_proxy",
+		ProxyName: proxyName,
+	})
+	if err != nil {
+		return tuiSpeedResult{}, err
+	}
+	if status.Speed == nil {
+		return tuiSpeedResult{}, errors.New("background service returned no speed result")
+	}
+	return *status.Speed, nil
+}
+
+func (c *tuiServiceClient) testRouteSpeed(
+	mixedPort int,
+) (tuiSpeedResult, error) {
+	status, err := c.requestPayload(tuiServiceRequest{
+		Action:    "speed_route",
+		MixedPort: mixedPort,
+	})
+	if err != nil {
+		return tuiSpeedResult{}, err
+	}
+	if status.Speed == nil {
+		return tuiSpeedResult{}, errors.New("background service returned no speed result")
+	}
+	return *status.Speed, nil
+}
+
+func (c *tuiServiceClient) testRouteDelay(
+	mixedPort int,
+	testURL string,
+) (int, error) {
+	status, err := c.requestPayload(tuiServiceRequest{
+		Action:    "delay_route",
+		MixedPort: mixedPort,
+		TestURL:   testURL,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if status.Delay <= 0 {
+		return 0, errors.New("background service returned no delay result")
+	}
+	return status.Delay, nil
 }
 
 func ensureTUIService(
@@ -318,6 +385,15 @@ func runTUIService(paths cliPaths, testURL string) error {
 				_ = connection.SetDeadline(
 					time.Now().Add(tuiServiceReloadTimeout + 5*time.Second),
 				)
+			} else if request.Action == "speed_proxy" ||
+				request.Action == "speed_route" {
+				_ = connection.SetDeadline(
+					time.Now().Add(
+						tuiSpeedConnectTimeout +
+							tuiSpeedTestDuration +
+							5*time.Second,
+					),
+				)
 			}
 			lock.Lock()
 			defer lock.Unlock()
@@ -364,6 +440,91 @@ func runTUIService(paths cliPaths, testURL string) error {
 				} else {
 					paths.configPath = reloadPath
 					setupParams = reloadedParams
+				}
+			case "speed_proxy":
+				client, closeClient, clientErr := newTUIProxyNodeHTTPClient(
+					request.ProxyName,
+				)
+				if clientErr != nil {
+					status.OK = false
+					status.Error = clientErr.Error()
+					break
+				}
+				result, speedErr := runTUIDownloadSpeedTest(
+					context.Background(),
+					client,
+				)
+				closeClient()
+				if speedErr != nil {
+					status.OK = false
+					status.Error = speedErr.Error()
+				} else {
+					status.Speed = &result
+				}
+			case "speed_route", "delay_route":
+				wasRunning := running
+				if !running {
+					reloadedParams, reloadErr := reloadTUIServiceConfig(
+						paths,
+						paths.configPath,
+						testURL,
+						coreSocket,
+						setupParams,
+						false,
+					)
+					if reloadErr != nil {
+						status.OK = false
+						status.Error = "prepare stopped Service for test: " +
+							reloadErr.Error()
+						break
+					}
+					setupParams = reloadedParams
+					if !handleStartListener() {
+						status.OK = false
+						status.Error = "start proxy listeners for test failed"
+						break
+					}
+				}
+				running = true
+				client, closeClient, clientErr := newTUIRouteHTTPClient(
+					request.MixedPort,
+				)
+				if clientErr == nil {
+					if request.Action == "speed_route" {
+						result, speedErr := runTUIDownloadSpeedTest(
+							context.Background(),
+							client,
+						)
+						if speedErr != nil {
+							clientErr = speedErr
+						} else {
+							status.Speed = &result
+						}
+					} else {
+						delay, delayErr := runTUIRouteDelayTest(
+							context.Background(),
+							client,
+							request.TestURL,
+						)
+						if delayErr != nil {
+							clientErr = delayErr
+						} else {
+							status.Delay = delay
+						}
+					}
+					closeClient()
+				}
+				if !wasRunning {
+					if !handleStopListener() && clientErr == nil {
+						clientErr = errors.New(
+							"restore stopped Service state failed",
+						)
+					}
+					running = false
+				}
+				if clientErr != nil {
+					status.OK = false
+					status.Error = clientErr.Error()
 				}
 			case "shutdown":
 				running = false
