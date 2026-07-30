@@ -34,7 +34,7 @@ core-windows:
 core-android:
 	$(MAKE) core PLATFORM=android
 
-CLI_OUTPUT ?= dist/flclash-cli
+CLI_OUTPUT ?= dist/flclash
 
 cli-linux:
 	@mkdir -p $$(dirname $(abspath $(CLI_OUTPUT)))

@@ -666,7 +666,7 @@ func stopCommand(args []string) error {
 	client := newTUIServiceClient(paths.homeDir)
 	status, err := client.status()
 	if err != nil {
-		return errors.New("no flclash-cli background service is running")
+		return errors.New("no flclash background service is running")
 	}
 	settings := loadTUIConfiguredSettings(status.ConfigPath, true)
 	if settings != nil && linuxSystemProxyMatches(settings.MixedPort) {
@@ -677,6 +677,6 @@ func stopCommand(args []string) error {
 	if err := client.shutdown(); err != nil {
 		return err
 	}
-	fmt.Println("FlClash CLI background service stopped")
+	fmt.Println("FlClash TUI background service stopped")
 	return nil
 }

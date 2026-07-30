@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.3.10"
+const cliVersion = "0.3.11"
 
 type cliPaths struct {
 	homeDir    string
@@ -58,7 +57,7 @@ func main() {
 		case "update", "upgrade":
 			err = updateCommand(os.Args[2:])
 		case "version", "--version", "-v":
-			fmt.Printf("FlClash CLI %s (Mihomo core)\n", cliVersion)
+			fmt.Printf("FlClash TUI %s (Mihomo core)\n", cliVersion)
 		case "help", "--help", "-h":
 			printUsage(os.Stdout)
 		default:
@@ -71,7 +70,7 @@ func main() {
 	}
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "flclash-cli: %v\n", err)
+		fmt.Fprintf(os.Stderr, "flclash: %v\n", err)
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
@@ -80,18 +79,18 @@ func main() {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "FlClash CLI - Linux command-line client powered by the FlClash Mihomo core")
+	fmt.Fprintln(w, "FlClash TUI - Linux terminal client powered by the FlClash Mihomo core")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  flclash-cli [tui] --config ./config.yaml")
-	fmt.Fprintln(w, "  flclash-cli run --config ./config.yaml")
-	fmt.Fprintln(w, "  flclash-cli stop")
-	fmt.Fprintln(w, "  flclash-cli check --config ./config.yaml")
-	fmt.Fprintln(w, "  flclash-cli proxy list --controller 127.0.0.1:9090")
-	fmt.Fprintln(w, "  flclash-cli proxy select --controller 127.0.0.1:9090 GROUP NODE")
-	fmt.Fprintln(w, "  flclash-cli profile link --config ./profile.yaml URL")
-	fmt.Fprintln(w, "  flclash-cli update [--check]")
-	fmt.Fprintln(w, "  flclash-cli version")
+	fmt.Fprintln(w, "  flclash [tui] --config ./config.yaml")
+	fmt.Fprintln(w, "  flclash run --config ./config.yaml")
+	fmt.Fprintln(w, "  flclash stop")
+	fmt.Fprintln(w, "  flclash check --config ./config.yaml")
+	fmt.Fprintln(w, "  flclash proxy list --controller 127.0.0.1:9090")
+	fmt.Fprintln(w, "  flclash proxy select --controller 127.0.0.1:9090 GROUP NODE")
+	fmt.Fprintln(w, "  flclash profile link --config ./profile.yaml URL")
+	fmt.Fprintln(w, "  flclash update [--check]")
+	fmt.Fprintln(w, "  flclash version")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  tui, ui           Open the full-screen terminal interface (default)")
@@ -126,7 +125,7 @@ func runCommand(args []string) error {
 		return err
 	}
 
-	fmt.Printf("FlClash CLI is running\n")
+	fmt.Printf("FlClash TUI is running\n")
 	fmt.Printf("  config: %s\n", paths.configPath)
 	fmt.Printf("  data:   %s\n", paths.homeDir)
 	fmt.Println("Press Ctrl-C to stop.")
@@ -145,7 +144,7 @@ func runCommand(args []string) error {
 			return nil
 		case <-reload:
 			if message := handleSetupConfig(setupParams); message != "" {
-				fmt.Fprintf(os.Stderr, "flclash-cli: reload failed: %s\n", message)
+				fmt.Fprintf(os.Stderr, "flclash: reload failed: %s\n", message)
 			} else {
 				fmt.Println("configuration reloaded")
 			}
@@ -289,35 +288,6 @@ func (c controllerClient) httpClient() *http.Client {
 		return controllerHTTPClientForOptions(c.options, controllerRequestTimeout)
 	}
 	return controllerHTTPClient
-}
-
-func (c controllerClient) requestStreamFirst(path string) ([]byte, error) {
-	base := c.baseURL()
-	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(base, "/")+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	if c.options.secret != "" {
-		req.Header.Set("Authorization", "Bearer "+c.options.secret)
-	}
-	resp, err := c.httpClient().Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("controller returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
-	}
-	line, err := bufio.NewReader(resp.Body).ReadBytes('\n')
-	if err != nil && len(line) == 0 {
-		return nil, err
-	}
-	return bytesTrimSpace(line), nil
-}
-
-func bytesTrimSpace(data []byte) []byte {
-	return []byte(strings.TrimSpace(string(data)))
 }
 
 func (c controllerClient) request(method, path string, body io.Reader) ([]byte, error) {

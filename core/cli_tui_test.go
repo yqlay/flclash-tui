@@ -1283,6 +1283,92 @@ func TestTUIExternalCoreMemoryStreamIgnoresInitialZero(t *testing.T) {
 	}
 }
 
+func TestTUITrafficUpdateAppliesLiveAndTotalCounters(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, false)
+	_, command := model.Update(tuiTrafficMsg{
+		update: tuiTrafficUpdate{
+			Traffic: trafficSnapshot{
+				Up:        1024,
+				Down:      2048,
+				UpTotal:   4096,
+				DownTotal: 8192,
+			},
+		},
+	})
+	if command != nil {
+		t.Fatal("model without a traffic monitor scheduled another monitor read")
+	}
+	if model.snapshot.Traffic.Up != 1024 ||
+		model.snapshot.Traffic.Down != 2048 ||
+		model.snapshot.TotalTraffic.Up != 4096 ||
+		model.snapshot.TotalTraffic.Down != 8192 {
+		t.Fatalf("traffic update was not applied: %+v", model.snapshot)
+	}
+}
+
+func TestTUITrafficStreamOutlivesControllerRequestTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.URL.Path != "/traffic" {
+			t.Fatalf("traffic path = %q", request.URL.Path)
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("test response does not support flushing")
+		}
+		select {
+		case <-time.After(900 * time.Millisecond):
+		case <-request.Context().Done():
+			return
+		}
+		_, _ = io.WriteString(
+			w,
+			"{\"up\":1024,\"down\":2048,\"upTotal\":4096,\"downTotal\":8192}\n",
+		)
+		flusher.Flush()
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	values := make(chan trafficSnapshot, 1)
+	errors := make(chan error, 1)
+	baseClient := server.Client()
+	go func() {
+		errors <- streamTUITraffic(
+			ctx,
+			controllerClient{
+				options: controllerOptions{address: server.URL},
+				client: &http.Client{
+					Transport: baseClient.Transport,
+					Timeout:   750 * time.Millisecond,
+				},
+			},
+			func(value trafficSnapshot) {
+				values <- value
+				cancel()
+			},
+		)
+	}()
+	select {
+	case value := <-values:
+		if value.Up != 1024 || value.Down != 2048 ||
+			value.UpTotal != 4096 || value.DownTotal != 8192 {
+			t.Fatalf("traffic stream value = %+v", value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("traffic stream was stopped by the short controller timeout")
+	}
+	select {
+	case <-errors:
+	case <-time.After(time.Second):
+		t.Fatal("traffic stream did not stop after cancellation")
+	}
+}
+
 func TestTUIDashboardRendersEmbeddedAndExternalMemory(t *testing.T) {
 	base := populatedTUISnapshot(tuiPageDashboard)
 	base.Memory = tuiMemoryInfo{
@@ -3006,7 +3092,7 @@ func TestRefreshTUISnapshotPreservesSelectionsAndActionStatus(t *testing.T) {
 	if snapshot.Status != "Switched B to B1" {
 		t.Fatalf("action status was overwritten: %q", snapshot.Status)
 	}
-	if snapshot.Settings.MixedPort != 17890 || snapshot.Traffic.Up != 1 || snapshot.TotalTraffic.Down != 4 {
+	if snapshot.Settings.MixedPort != 17890 {
 		t.Fatalf("snapshot values were not refreshed: %+v", snapshot)
 	}
 }

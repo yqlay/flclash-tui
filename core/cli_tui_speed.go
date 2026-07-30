@@ -119,7 +119,7 @@ downloadLoop:
 		}
 		request.Header.Set("Accept-Encoding", "identity")
 		request.Header.Set("Cache-Control", "no-store")
-		request.Header.Set("User-Agent", "flclash-cli/"+cliVersion)
+		request.Header.Set("User-Agent", "flclash/"+cliVersion)
 
 		response, responseErr := client.Do(request)
 		if responseErr != nil {
@@ -244,7 +244,7 @@ func runTUIRouteDelayTest(
 	}
 	request.Header.Set("Accept-Encoding", "identity")
 	request.Header.Set("Cache-Control", "no-store")
-	request.Header.Set("User-Agent", "flclash-cli/"+cliVersion)
+	request.Header.Set("User-Agent", "flclash/"+cliVersion)
 	startedAt := time.Now()
 	response, err := client.Do(request)
 	if err != nil {
