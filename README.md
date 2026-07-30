@@ -48,19 +48,19 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 AMD64：
 
 ```bash
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.9/flclash-cli_0.3.9_amd64.deb
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.9/flclash-cli_0.3.9_amd64.deb.sha256
-sha256sum -c flclash-cli_0.3.9_amd64.deb.sha256
-sudo dpkg -i flclash-cli_0.3.9_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.10/flclash-cli_0.3.10_amd64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.10/flclash-cli_0.3.10_amd64.deb.sha256
+sha256sum -c flclash-cli_0.3.10_amd64.deb.sha256
+sudo dpkg -i flclash-cli_0.3.10_amd64.deb
 ```
 
 ARM64：
 
 ```bash
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.9/flclash-cli_0.3.9_arm64.deb
-wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.9/flclash-cli_0.3.9_arm64.deb.sha256
-sha256sum -c flclash-cli_0.3.9_arm64.deb.sha256
-sudo dpkg -i flclash-cli_0.3.9_arm64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.10/flclash-cli_0.3.10_arm64.deb
+wget https://github.com/yqlay/flclash-cli/releases/download/v0.3.10/flclash-cli_0.3.10_arm64.deb.sha256
+sha256sum -c flclash-cli_0.3.10_arm64.deb.sha256
+sudo dpkg -i flclash-cli_0.3.10_arm64.deb
 ```
 
 查看本机 CPU 架构：

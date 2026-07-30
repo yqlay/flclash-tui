@@ -19,22 +19,24 @@ import (
 )
 
 const (
-	tuiSpeedTestBytes      int64 = 100_000_000
-	tuiSpeedTestDuration         = 5 * time.Second
-	tuiSpeedConnectTimeout       = 8 * time.Second
-	tuiSpeedTestEndpoint         = "https://speed.cloudflare.com/__down"
+	tuiSpeedTestBytes       int64 = 100_000_000
+	tuiSpeedMaxRequestBytes int64 = 99_999_999
+	tuiSpeedTestDuration          = 5 * time.Second
+	tuiSpeedConnectTimeout        = 8 * time.Second
+	tuiSpeedTestEndpoint          = "https://speed.cloudflare.com/__down"
 )
 
 func runTUIDownloadSpeedTest(
 	ctx context.Context,
 	client *http.Client,
 ) (tuiSpeedResult, error) {
-	return runTUIDownloadSpeedTestWithOptions(
+	return runTUIDownloadSpeedTestWithRequestLimit(
 		ctx,
 		client,
 		tuiSpeedTestEndpoint,
 		tuiSpeedTestBytes,
 		tuiSpeedTestDuration,
+		tuiSpeedMaxRequestBytes,
 	)
 }
 
@@ -45,88 +47,141 @@ func runTUIDownloadSpeedTestWithOptions(
 	byteLimit int64,
 	testDuration time.Duration,
 ) (tuiSpeedResult, error) {
+	return runTUIDownloadSpeedTestWithRequestLimit(
+		ctx,
+		client,
+		endpoint,
+		byteLimit,
+		testDuration,
+		byteLimit,
+	)
+}
+
+func runTUIDownloadSpeedTestWithRequestLimit(
+	ctx context.Context,
+	client *http.Client,
+	endpoint string,
+	byteLimit int64,
+	testDuration time.Duration,
+	maxRequestBytes int64,
+) (tuiSpeedResult, error) {
 	if byteLimit <= 0 {
 		return tuiSpeedResult{}, errors.New("speed test byte limit must be positive")
 	}
 	if testDuration <= 0 {
 		return tuiSpeedResult{}, errors.New("speed test duration must be positive")
 	}
+	if maxRequestBytes <= 0 {
+		return tuiSpeedResult{}, errors.New("speed test request limit must be positive")
+	}
 	requestURL, err := url.Parse(endpoint)
 	if err != nil {
 		return tuiSpeedResult{}, err
 	}
-	query := requestURL.Query()
-	query.Set("bytes", strconv.FormatInt(byteLimit, 10))
-	query.Set("cache", strconv.FormatInt(time.Now().UnixNano(), 10))
-	requestURL.RawQuery = query.Encode()
 
 	requestContext, cancel := context.WithTimeout(
 		ctx,
 		tuiSpeedConnectTimeout+testDuration,
 	)
 	defer cancel()
-	request, err := http.NewRequestWithContext(
-		requestContext,
-		http.MethodGet,
-		requestURL.String(),
-		nil,
-	)
-	if err != nil {
-		return tuiSpeedResult{}, err
-	}
-	request.Header.Set("Accept-Encoding", "identity")
-	request.Header.Set("Cache-Control", "no-store")
-	request.Header.Set("User-Agent", "flclash-cli/"+cliVersion)
 
-	response, err := client.Do(request)
-	if err != nil {
-		return tuiSpeedResult{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return tuiSpeedResult{}, fmt.Errorf(
-			"speed test server returned %s",
-			response.Status,
-		)
-	}
-
-	startedAt := time.Now()
 	var windowExpired atomic.Bool
-	timer := time.AfterFunc(testDuration, func() {
-		windowExpired.Store(true)
-		cancel()
-	})
-	defer timer.Stop()
+	var startedAt time.Time
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
 
-	limited := io.LimitReader(response.Body, byteLimit)
 	buffer := make([]byte, 64<<10)
 	var downloaded int64
+downloadLoop:
 	for downloaded < byteLimit {
-		count, readErr := limited.Read(buffer)
-		if count > 0 {
-			downloaded += int64(count)
+		requestBytes := byteLimit - downloaded
+		if requestBytes > maxRequestBytes {
+			requestBytes = maxRequestBytes
 		}
-		if downloaded >= byteLimit {
-			break
+		currentURL := *requestURL
+		query := currentURL.Query()
+		query.Set("bytes", strconv.FormatInt(requestBytes, 10))
+		query.Set("cache", strconv.FormatInt(time.Now().UnixNano(), 10))
+		currentURL.RawQuery = query.Encode()
+
+		request, requestErr := http.NewRequestWithContext(
+			requestContext,
+			http.MethodGet,
+			currentURL.String(),
+			nil,
+		)
+		if requestErr != nil {
+			return tuiSpeedResult{}, requestErr
 		}
-		if readErr != nil {
+		request.Header.Set("Accept-Encoding", "identity")
+		request.Header.Set("Cache-Control", "no-store")
+		request.Header.Set("User-Agent", "flclash-cli/"+cliVersion)
+
+		response, responseErr := client.Do(request)
+		if responseErr != nil {
 			if windowExpired.Load() {
 				break
 			}
 			if ctx.Err() != nil {
 				return tuiSpeedResult{}, ctx.Err()
 			}
-			if errors.Is(readErr, io.EOF) {
-				return tuiSpeedResult{}, fmt.Errorf(
-					"speed test stream ended after %s",
-					formatBytes(downloaded),
-				)
-			}
-			return tuiSpeedResult{}, readErr
+			return tuiSpeedResult{}, responseErr
 		}
+		if response.StatusCode != http.StatusOK {
+			_ = response.Body.Close()
+			return tuiSpeedResult{}, fmt.Errorf(
+				"speed test server returned %s",
+				response.Status,
+			)
+		}
+		if startedAt.IsZero() {
+			startedAt = time.Now()
+			timer = time.AfterFunc(testDuration, func() {
+				windowExpired.Store(true)
+				cancel()
+			})
+		}
+
+		limited := io.LimitReader(response.Body, requestBytes)
+		var requestDownloaded int64
+		for requestDownloaded < requestBytes {
+			count, readErr := limited.Read(buffer)
+			if count > 0 {
+				count64 := int64(count)
+				requestDownloaded += count64
+				downloaded += count64
+			}
+			if requestDownloaded >= requestBytes {
+				break
+			}
+			if readErr != nil {
+				_ = response.Body.Close()
+				if windowExpired.Load() {
+					break downloadLoop
+				}
+				if ctx.Err() != nil {
+					return tuiSpeedResult{}, ctx.Err()
+				}
+				if errors.Is(readErr, io.EOF) {
+					return tuiSpeedResult{}, fmt.Errorf(
+						"speed test stream ended after %s",
+						formatBytes(downloaded),
+					)
+				}
+				return tuiSpeedResult{}, readErr
+			}
+		}
+		_ = response.Body.Close()
 	}
 
 	completed := downloaded >= byteLimit
+	if startedAt.IsZero() {
+		return tuiSpeedResult{}, errors.New("speed test did not receive a response")
+	}
 	duration := time.Since(startedAt)
 	if !completed && windowExpired.Load() {
 		duration = testDuration

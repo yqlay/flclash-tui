@@ -121,6 +121,59 @@ func TestTUIDownloadSpeedUsesFixedWindowWhenIncomplete(t *testing.T) {
 	}
 }
 
+func TestTUIDownloadSpeedSplitsServerLimitedRequest(t *testing.T) {
+	const (
+		byteLimit       int64 = 10
+		maxRequestBytes int64 = 9
+	)
+	var requested []int64
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		requestBytes, err := strconv.ParseInt(
+			request.URL.Query().Get("bytes"),
+			10,
+			64,
+		)
+		if err != nil {
+			http.Error(writer, "invalid bytes query", http.StatusBadRequest)
+			return
+		}
+		if requestBytes > maxRequestBytes {
+			http.Error(writer, "request too large", http.StatusForbidden)
+			return
+		}
+		requested = append(requested, requestBytes)
+		writer.Header().Set(
+			"Content-Length",
+			strconv.FormatInt(requestBytes, 10),
+		)
+		_, _ = writer.Write(make([]byte, requestBytes))
+	}))
+	defer server.Close()
+
+	result, err := runTUIDownloadSpeedTestWithRequestLimit(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		byteLimit,
+		time.Second,
+		maxRequestBytes,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Complete || result.Bytes != byteLimit {
+		t.Fatalf("split result = %+v", result)
+	}
+	if len(requested) != 2 ||
+		requested[0] != maxRequestBytes ||
+		requested[1] != byteLimit-maxRequestBytes {
+		t.Fatalf("requested chunks = %v", requested)
+	}
+}
+
 func TestTUIVKeyIsScopedToDashboardAndProxies(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.snapshot.Page = tuiPageDashboard
