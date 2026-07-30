@@ -10,6 +10,16 @@ FlClash CLI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 
 > 本项目是非官方衍生版本，不是 FlClash 官方发布版本，也不代表 FlClash 或 Mihomo 维护者。版权和许可证说明见 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
 
+## v0.3.10 最新更新
+
+- Dashboard 中按 `d` 测试当前代理路由延迟，按 `v` 测试当前代理路由下载速度。
+- Proxies 中保留单节点和整组延迟测试，并支持对单节点或整组逐个执行下载测速。
+- 下载测速最多传输 `100 MB`、持续最多 `5 秒`；5 秒内完成时按实际耗时计算，否则按 5 秒内实际下载量计算。
+- 修复 Cloudflare 测速接口因单次请求精确达到 100 MB 而返回 `403 Forbidden` 的问题；程序会自动拆分请求，用户无需更换测速地址。
+- Release 同时提供 Linux `amd64` 和 `arm64` 的 `.deb`、便携 `.tar.gz` 及 SHA256 校验文件。
+
+完整安装包与更新说明见 [FlClash CLI v0.3.10 Release](https://github.com/yqlay/flclash-cli/releases/tag/v0.3.10)。
+
 ## 适合哪些场景
 
 - 通过 SSH 管理 Linux 服务器、工作站或 WSL 环境
