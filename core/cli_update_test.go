@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -114,6 +115,87 @@ func TestSelectCLIUpdateAssets(t *testing.T) {
 	}
 }
 
+func TestSelectCLIUpdateAssetsSupportsRenamesAndLegacyPackages(
+	t *testing.T,
+) {
+	for _, test := range []struct {
+		name       string
+		goArch     string
+		repository string
+		debName    string
+	}{
+		{
+			name:       "legacy package",
+			goArch:     "amd64",
+			repository: "flclash-tui",
+			debName:    "flclash-cli_0.3.12_amd64.deb",
+		},
+		{
+			name:       "renamed repository and package",
+			goArch:     "arm64",
+			repository: "flclash-terminal",
+			debName:    "flclash-terminal-v0.3.12-linux-aarch64.deb",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			baseURL := "https://github.com/yqlay/" + test.repository +
+				"/releases/download/v0.3.12/"
+			release := cliRelease{
+				TagName: "v0.3.12",
+				HTMLURL: "https://github.com/yqlay/" +
+					test.repository + "/releases/tag/v0.3.12",
+				Assets: []cliReleaseAsset{
+					{
+						Name:        test.debName,
+						DownloadURL: baseURL + test.debName,
+					},
+					{
+						Name:        "SHA256SUMS",
+						DownloadURL: baseURL + "SHA256SUMS",
+					},
+				},
+			}
+			deb, checksum, err := selectCLIUpdateAssets(
+				release,
+				"0.3.12",
+				test.goArch,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if deb.Name != test.debName ||
+				checksum.Name != "SHA256SUMS" {
+				t.Fatalf(
+					"selected assets = %q and %q",
+					deb.Name,
+					checksum.Name,
+				)
+			}
+		})
+	}
+}
+
+func TestSelectCLIUpdateAssetsRejectsAmbiguousPackages(t *testing.T) {
+	release := cliRelease{
+		TagName: "v0.3.12",
+		Assets: []cliReleaseAsset{
+			{
+				Name: "flclash-one_0.3.12_amd64.deb",
+			},
+			{
+				Name: "flclash-two_0.3.12_amd64.deb",
+			},
+		},
+	}
+	if _, _, err := selectCLIUpdateAssets(
+		release,
+		"0.3.12",
+		"amd64",
+	); err == nil {
+		t.Fatal("ambiguous Debian assets were accepted")
+	}
+}
+
 func TestDownloadAndVerifyCLIUpdate(t *testing.T) {
 	debData := []byte("test Debian package")
 	checksum := sha256.Sum256(debData)
@@ -178,6 +260,86 @@ func TestDownloadAndVerifyCLIUpdate(t *testing.T) {
 	}
 	if err := verifyCLIUpdateChecksum(debPath, checksumPath); err == nil {
 		t.Fatal("tampered update passed checksum verification")
+	}
+}
+
+func TestVerifyCLIUpdateChecksumSelectsNamedHash(t *testing.T) {
+	directory := t.TempDir()
+	debPath := filepath.Join(directory, "selected.deb")
+	data := []byte("selected package")
+	if err := os.WriteFile(debPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selectedHash := sha256.Sum256(data)
+	otherHash := sha256.Sum256([]byte("other package"))
+	checksumPath := filepath.Join(directory, "SHA256SUMS")
+	checksums := fmt.Sprintf(
+		"%x  other.deb\n%x  selected.deb\n",
+		otherHash,
+		selectedHash,
+	)
+	if err := os.WriteFile(checksumPath, []byte(checksums), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyCLIUpdateChecksum(debPath, checksumPath); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateCLIUpdateDebianPackageMetadata(t *testing.T) {
+	if _, err := exec.LookPath("dpkg-deb"); err != nil {
+		t.Skip("dpkg-deb is unavailable")
+	}
+	root := filepath.Join(t.TempDir(), "package")
+	if err := os.MkdirAll(filepath.Join(root, "DEBIAN"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "usr", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	control := `Package: flclash-next
+Version: 0.3.12-1
+Architecture: amd64
+Maintainer: test <test@example.com>
+Description: updater metadata test
+`
+	if err := os.WriteFile(
+		filepath.Join(root, "DEBIAN", "control"),
+		[]byte(control),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "usr", "bin", "flclash"),
+		[]byte("#!/bin/sh\n"),
+		0o755,
+	); err != nil {
+		t.Fatal(err)
+	}
+	debPath := filepath.Join(t.TempDir(), "flclash.deb")
+	if output, err := exec.Command(
+		"dpkg-deb",
+		"--build",
+		"--root-owner-group",
+		root,
+		debPath,
+	).CombinedOutput(); err != nil {
+		t.Fatalf("build test package: %v: %s", err, output)
+	}
+	if err := validateCLIUpdateDebianPackage(
+		debPath,
+		"0.3.12",
+		"amd64",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCLIUpdateDebianPackage(
+		debPath,
+		"0.3.12",
+		"arm64",
+	); err == nil {
+		t.Fatal("wrong package architecture was accepted")
 	}
 }
 

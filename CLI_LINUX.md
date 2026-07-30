@@ -20,13 +20,13 @@ build to an offline host.
 
 ## Install the Debian package
 
-Download the `v0.3.11` package matching `dpkg --print-architecture` from the
+Download the `v0.3.12` package matching `dpkg --print-architecture` from the
 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) page, then
 install it with:
 
 ```bash
-sudo dpkg -i flclash-tui_0.3.11_amd64.deb
-# or: sudo dpkg -i flclash-tui_0.3.11_arm64.deb
+sudo dpkg -i flclash-tui_0.3.12_amd64.deb
+# or: sudo dpkg -i flclash-tui_0.3.12_arm64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash`, bundled offline
@@ -91,6 +91,19 @@ shell; a running Service keeps proxying in the background. Reopening
 `flclash` reconnects to it. Pressing `Ctrl+C`, or running
 `flclash stop`, stops the managed Service/Core.
 
+Exactly one managed FlClash Service/Core is allowed per Linux user. The
+manager socket and kernel-backed ownership lock live under
+`/run/user/<UID>/flclash` (with a UID-specific secure temporary fallback), so
+changing `--directory` or `XDG_CONFIG_HOME` cannot create a second backend.
+Multiple TUI frontends are allowed and all attach to that single backend. An
+additional frontend opens with a notice listing the PID and TTY of frontends
+that are already active; Dashboard keeps the frontend count current. `q`
+closes only the current frontend. `Ctrl+C` stops the shared backend, so every
+attached frontend will report that the controller stopped. Frontend session
+locks disappear automatically after a clean exit or crash. On the first
+v0.3.12 launch, the client also detects and migrates the legacy manager socket
+from the previous configuration-directory location.
+
 No settings shortcut has to be memorized: all settings and lifecycle actions
 are selectable rows. The single-letter keys remain optional accelerators.
 Port, mode, LAN, IPv6, log-level, and TUN changes are persisted to the active
@@ -138,6 +151,14 @@ The terminal runtime uses Bubble Tea's model-update-view event loop. Controller
 polling and long-running actions execute outside the input loop, while the
 renderer updates only terminal rows that changed.
 
+The layout is responsive. At normal sizes it keeps the sidebar and content
+panels. Below 88 columns or 18 rows it switches to a full-width navigation or
+content view; `←` opens navigation and `→`/Enter opens its selected page.
+Dashboard becomes a viewport whenever all status panels do not fit. Use
+`PgUp`/`PgDn` or the mouse wheel to reach network, memory, traffic, frontend,
+and configuration rows. Terminals down to `44x10` remain operable; smaller
+terminals show an exact resize requirement without drawing broken borders.
+
 Keyboard shortcuts:
 
 ```text
@@ -145,6 +166,7 @@ Keyboard shortcuts:
 1 dashboard    2 proxies       3 profiles      4 requests
 5 connections  6 logs          7 tools         U refresh subscription
 ↑↓/ws move     Enter open/apply Esc back        d delay
+PgUp/PgDn scroll compact Dashboard              mouse wheel scroll
 [/] proxy view r refresh       R reload         S system proxy
 c start/stop   x clear/all     v speed         e edit/export
 F2/u rename    n import/check  A test group    q detach TUI
@@ -175,8 +197,10 @@ You can use another configuration directory or file:
 ```
 
 Use `--controller` and `--no-start` to open the TUI for a core already running
-in another process. Use a different data directory, mixed port, and controller
-port for each instance.
+in another process. `--directory` and `--config` select storage and profiles;
+they do not bypass the one-managed-backend-per-user rule. If an explicitly
+requested target conflicts with the active backend, FlClash reports the active
+configuration and asks you to stop it first.
 
 The original foreground mode is still available:
 
@@ -224,12 +248,18 @@ Download, verify, and install an available update:
 flclash update
 ```
 
-The updater connects to `yqlay/flclash-tui` on GitHub, selects the Debian
-package for the current CPU architecture, downloads its `.sha256` file, and
-refuses installation if verification fails. Installation uses `sudo dpkg -i`
-and may request the system password. For unattended use, `--yes` confirms the
-warning; `--download-only` verifies the package but does not install it. While
-the package downloads, an interactive terminal shows a live progress bar with
-the percentage, downloaded size, and current transfer speed.
+The updater starts from the trusted `yqlay/flclash-tui` GitHub release channel
+and follows GitHub's repository-rename metadata. It discovers a recognizable
+FlClash Debian package for the current architecture instead of requiring one
+hard-coded filename, so legacy `flclash-cli`, current `flclash-tui`, and future
+package naming can migrate safely. A matching `.sha256` or aggregate
+`SHA256SUMS` asset is accepted. Before installation, the updater verifies the
+GitHub owner/repository relationship, SHA-256, and the Debian package's
+internal package name, version, and architecture. Installation uses
+`sudo dpkg -i` and may request the system password. For unattended use,
+`--yes` confirms the warning; `--download-only` verifies the package but does
+not install it. While the package downloads, an interactive terminal shows a
+live progress bar with the percentage, downloaded size, and current transfer
+speed.
 
 **If the current version works well, do not update lightly. / 当前版本使用正常时，请勿轻易更新。**

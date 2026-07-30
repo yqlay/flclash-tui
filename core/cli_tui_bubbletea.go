@@ -201,6 +201,7 @@ func runTUI(
 	ownsCore bool,
 	service *tuiServiceClient,
 	coreRunning bool,
+	startupNotice string,
 ) error {
 	if !isInteractiveTUI() {
 		return errors.New("TUI requires an interactive terminal; use run or proxy commands in non-interactive shells")
@@ -214,6 +215,10 @@ func runTUI(
 	model.service = service
 	model.coreRunning = coreRunning
 	model.snapshot.ManagedService = service != nil
+	model.snapshot.Frontends, _ = listCLIFrontends()
+	if startupNotice != "" {
+		model.snapshot.StartupNotice = startupNotice
+	}
 	model.startCoreMemoryMonitor()
 	model.startTrafficMonitor()
 	defer model.stopCoreMemoryMonitor()
@@ -222,6 +227,7 @@ func runTUI(
 		model,
 		tea.WithAltScreen(),
 		tea.WithFPS(30),
+		tea.WithMouseCellMotion(),
 		tea.WithoutSignalHandler(),
 	)
 	sighup := make(chan os.Signal, 1)
@@ -466,6 +472,15 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(commands...)
 		}
 		return m, m.handleTeaKey(message)
+	case tea.MouseMsg:
+		switch message.Button {
+		case tea.MouseButtonWheelUp:
+			return m, m.handleKey(tuiKeyPageUp)
+		case tea.MouseButtonWheelDown:
+			return m, m.handleKey(tuiKeyPageDown)
+		default:
+			return m, nil
+		}
 	default:
 		return m, nil
 	}
@@ -480,6 +495,13 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 		(m.snapshot.Page == tuiPageDashboard ||
 			m.snapshot.Page == tuiPageProxies) {
 		key = tuiKeySpeedTest
+	}
+	if m.snapshot.StartupNotice != "" &&
+		key != tuiKeyQuit &&
+		key != tuiKeyInterrupt {
+		m.snapshot.StartupNotice = ""
+		m.snapshot.Status = "Connected to shared per-user backend"
+		return nil
 	}
 	if m.snapshot.ShowHelp &&
 		key != tuiKeyHelp &&
@@ -509,7 +531,9 @@ func tuiKeyAllowedWhileBusy(key tuiKey) bool {
 		tuiKeyLeft,
 		tuiKeyRight,
 		tuiKeyViewPrevious,
-		tuiKeyViewNext:
+		tuiKeyViewNext,
+		tuiKeyPageUp,
+		tuiKeyPageDown:
 		return true
 	default:
 		return false
@@ -626,7 +650,7 @@ func (m *tuiModel) shutdown() {
 		return
 	}
 	if m.service != nil {
-		if m.stopServiceOnExit || !m.coreRunning {
+		if m.stopServiceOnExit {
 			_ = m.service.shutdown()
 		}
 		return
@@ -655,6 +679,7 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 	return func() tea.Msg {
 		refreshTUISnapshot(&snapshot, client)
 		refreshTUIProfiles(&snapshot, paths)
+		snapshot.Frontends, _ = listCLIFrontends()
 		return tuiRefreshResultMsg{
 			sequence: sequence,
 			snapshot: snapshot,
@@ -764,6 +789,7 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	updated.ManagedService = current.ManagedService
 	updated.FocusSidebar = current.FocusSidebar
 	updated.ShowHelp = current.ShowHelp
+	updated.StartupNotice = current.StartupNotice
 	if len(current.GroupOrder) > 0 {
 		updated.GroupOrder = append([]string(nil), current.GroupOrder...)
 		orderTUIGroups(updated.Groups, updated.GroupOrder)
@@ -1089,6 +1115,26 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				m.snapshot.Status = "Proxy groups · Enter nodes · d delay group · v speed group"
 			}
 		}
+	case tuiKeyPageUp:
+		if m.snapshot.Page == tuiPageDashboard {
+			step := maxTUIWidth(m.dashboardViewportLimit()-1, 1)
+			m.snapshot.DashboardScroll = maxTUIIndex(
+				m.snapshot.DashboardScroll - step,
+			)
+		}
+	case tuiKeyPageDown:
+		if m.snapshot.Page == tuiPageDashboard {
+			limit := m.dashboardViewportLimit()
+			maxScroll := maxTUIIndex(
+				len(tuiCompactDashboardRows(m.snapshot, m.paths)) -
+					limit,
+			)
+			m.snapshot.DashboardScroll = minTUI(
+				m.snapshot.DashboardScroll+
+					maxTUIWidth(limit-1, 1),
+				maxScroll,
+			)
+		}
 	case tuiKeySelect:
 		return m.selectCurrent()
 	case tuiKeyPortUp, tuiKeyPortDown:
@@ -1153,6 +1199,14 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	return nil
 }
 
+func (m *tuiModel) dashboardViewportLimit() int {
+	pageHeight := m.height - 4
+	if m.width < 88 || m.height < 18 {
+		pageHeight = m.height - 2
+	}
+	return maxTUIWidth(pageHeight-3, 1)
+}
+
 func (m *tuiModel) moveSelection(delta int) {
 	switch m.snapshot.Page {
 	case tuiPageProfiles:
@@ -1197,6 +1251,7 @@ func (m *tuiModel) moveSelection(delta int) {
 			delta,
 			tuiDashboardRowCount,
 		)
+		m.snapshot.DashboardScroll = 0
 	case tuiPageTools:
 		m.snapshot.SelectedTool = wrapTUIIndex(
 			m.snapshot.SelectedTool,
@@ -2789,6 +2844,10 @@ func tuiKeyFromTea(message tea.KeyMsg) (tuiKey, bool) {
 		return tuiKeyUp, true
 	case "down", "s":
 		return tuiKeyDown, true
+	case "pgup":
+		return tuiKeyPageUp, true
+	case "pgdown":
+		return tuiKeyPageDown, true
 	case "left":
 		return tuiKeyLeft, true
 	case "right":

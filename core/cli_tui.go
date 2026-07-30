@@ -204,6 +204,7 @@ type tuiSnapshot struct {
 	SelectedDashboard  int
 	SelectedSetting    int
 	SelectedTool       int
+	DashboardScroll    int
 	ProxyView          int
 	ProxyNodeFocus     bool
 	FocusSidebar       bool
@@ -211,9 +212,11 @@ type tuiSnapshot struct {
 	ServiceRunning     bool
 	ExternalCore       bool
 	ManagedService     bool
+	Frontends          []cliProcessOwner
 	InputTitle         string
 	InputValue         string
 	InputHint          string
+	StartupNotice      string
 }
 
 type trafficSnapshot struct {
@@ -319,12 +322,20 @@ func tuiCommand(args []string) error {
 	}
 	if !*noStartArg {
 		var status tuiServiceStatus
-		service, status, err = ensureTUIService(paths, *testURLArg)
+		service, status, err = ensureTUIService(
+			paths,
+			*testURLArg,
+			*configArg != "",
+			*directoryArg != "",
+		)
 		if err != nil {
 			return err
 		}
 		if _, pathErr := tuiProfileStateKey(paths.homeDir, status.ConfigPath); pathErr != nil {
 			return fmt.Errorf("background service returned an invalid profile path: %w", pathErr)
+		}
+		if status.HomeDir != "" {
+			paths.homeDir = status.HomeDir
 		}
 		paths.configPath = status.ConfigPath
 		controllerAddress = ""
@@ -347,7 +358,23 @@ func tuiCommand(args []string) error {
 			return err
 		}
 	}
-	return runTUI(client, paths, nil, !*noStartArg, service, coreRunning)
+	frontendSession, existingFrontends, err := registerCLIFrontend(
+		paths.homeDir,
+		paths.configPath,
+	)
+	if err != nil {
+		return fmt.Errorf("register TUI frontend: %w", err)
+	}
+	defer frontendSession.close()
+	return runTUI(
+		client,
+		paths,
+		nil,
+		!*noStartArg,
+		service,
+		coreRunning,
+		formatCLIFrontendNotice(existingFrontends),
+	)
 }
 
 func ensureTUIConfig(paths cliPaths, allowCreate bool) error {
@@ -2009,6 +2036,8 @@ const (
 	tuiKeyDelayTest
 	tuiKeyDelayTestAll
 	tuiKeySpeedTest
+	tuiKeyPageUp
+	tuiKeyPageDown
 )
 
 func readTUIKeys(reader io.Reader, keys chan<- tuiKey) {
@@ -2125,6 +2154,7 @@ func readTUIEscape(reader io.Reader) tuiKey {
 	if _, err := io.ReadFull(reader, prefix); err != nil || (prefix[0] != '[' && prefix[0] != 'O') {
 		return tuiKey(0xff)
 	}
+	number := byte(0)
 	for count := 0; count < 16; count++ {
 		value := make([]byte, 1)
 		if _, err := io.ReadFull(reader, value); err != nil {
@@ -2141,6 +2171,18 @@ func readTUIEscape(reader io.Reader) tuiKey {
 			return tuiKeyLeft
 		case 'Z':
 			return tuiKeyFocusPrevious
+		case '~':
+			switch number {
+			case '5':
+				return tuiKeyPageUp
+			case '6':
+				return tuiKeyPageDown
+			}
+			return tuiKey(0xff)
+		}
+		if value[0] >= '0' && value[0] <= '9' {
+			number = value[0]
+			continue
 		}
 		if (value[0] >= 'a' && value[0] <= 'z') ||
 			(value[0] >= 'E' && value[0] <= 'Z') ||
@@ -2231,7 +2273,7 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	if width <= 0 || height <= 0 {
 		return ""
 	}
-	if width < 64 || height < 14 {
+	if width < 44 || height < 10 {
 		return renderTUITooSmall(width, height)
 	}
 	snapshot.ServiceRunning = coreRunning
@@ -2239,6 +2281,17 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	if ownsCore && coreRunning && snapshot.Settings.MixedPort <= 0 &&
 		(snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Core listeners started") {
 		snapshot.Status = "No mixed listener active; select Mixed port in Dashboard or Tools"
+	}
+	if width < 88 || height < 18 {
+		return renderTUICompact(
+			snapshot,
+			paths,
+			controllerAddress,
+			ownsCore,
+			coreRunning,
+			width,
+			height,
+		)
 	}
 	contentWidth := width - 2
 	headerHeight := 3
@@ -2281,6 +2334,9 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	if width >= 110 {
 		footer = "  ←→ panel  ↑↓/ws move  Enter open/apply  Esc back  d delay  ? help  q detach  Ctrl+C stop"
 	}
+	if snapshot.Page == tuiPageDashboard && bodyHeight < 27 {
+		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  q detach  Ctrl+C stop"
+	}
 	if snapshot.Status != "" && snapshot.Status != "Connected" {
 		statusWidth := maxTUIWidth(width-tuiDisplayWidth(footer)-5, 0)
 		if statusWidth >= 8 {
@@ -2289,6 +2345,226 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	}
 	b.WriteString(tuiClampAnsiLine(footer, width))
 	return b.String()
+}
+
+func renderTUICompact(
+	snapshot tuiSnapshot,
+	paths cliPaths,
+	controllerAddress string,
+	ownsCore,
+	coreRunning bool,
+	width,
+	height int,
+) string {
+	pageName := tuiPageName(snapshot.Page)
+	focus := "CONTENT"
+	if snapshot.FocusSidebar {
+		focus = "NAV"
+	}
+	header := fmt.Sprintf(
+		"  FlClash · %d %s · %s · %s",
+		int(snapshot.Page)+1,
+		pageName,
+		tuiCoreStatus(ownsCore, coreRunning),
+		focus,
+	)
+	if width >= 72 {
+		header += " · " + truncateTUI(controllerAddress, 24)
+	}
+
+	bodyHeight := height - 2
+	contentWidth := width - 2
+	var page string
+	switch {
+	case snapshot.StartupNotice != "":
+		page = renderTUIStartupNotice(
+			snapshot.StartupNotice,
+			contentWidth,
+			bodyHeight,
+		)
+	case snapshot.FocusSidebar:
+		page = renderTUICompactNavigation(
+			snapshot,
+			contentWidth,
+			bodyHeight,
+		)
+	case snapshot.Page == tuiPageDashboard:
+		page = renderTUICompactDashboard(
+			snapshot,
+			paths,
+			contentWidth,
+			bodyHeight,
+		)
+	default:
+		page = tuiRenderPage(
+			snapshot,
+			paths,
+			contentWidth,
+			bodyHeight,
+		)
+	}
+
+	var b strings.Builder
+	b.WriteString(tuiClampAnsiLine(header, width))
+	b.WriteByte('\n')
+	pageLines := strings.Split(strings.TrimSuffix(page, "\n"), "\n")
+	for row := 0; row < bodyHeight; row++ {
+		line := ""
+		if row < len(pageLines) {
+			line = pageLines[row]
+		}
+		b.WriteString(tuiClampAnsiLine(line, width))
+		b.WriteByte('\n')
+	}
+	footer := "  1-7 page · ← nav · ↑↓/ws · Enter · q"
+	if snapshot.FocusSidebar {
+		footer = "  ↑↓/ws page · →/Enter open · 1-7 direct · q"
+	} else if snapshot.Page == tuiPageDashboard {
+		footer = "  ↑↓/ws select · PgUp/PgDn scroll · ← nav · q"
+	}
+	if snapshot.Status != "" && snapshot.Status != "Connected" && width >= 72 {
+		statusWidth := maxTUIWidth(
+			width-tuiDisplayWidth(footer)-5,
+			0,
+		)
+		if statusWidth >= 8 {
+			footer += " · " + truncateTUI(snapshot.Status, statusWidth)
+		}
+	}
+	b.WriteString(tuiClampAnsiLine(footer, width))
+	return b.String()
+}
+
+func tuiPageName(page tuiPage) string {
+	switch page {
+	case tuiPageDashboard:
+		return "Dashboard"
+	case tuiPageProxies:
+		return "Proxies"
+	case tuiPageProfiles:
+		return "Profiles"
+	case tuiPageRequests:
+		return "Requests"
+	case tuiPageConnections:
+		return "Connections"
+	case tuiPageLogs:
+		return "Logs"
+	case tuiPageTools:
+		return "Tools"
+	default:
+		return "Unknown"
+	}
+}
+
+func renderTUICompactNavigation(
+	snapshot tuiSnapshot,
+	width,
+	height int,
+) string {
+	var b strings.Builder
+	tuiTitle(&b, "Navigation", "↑↓/ws select · →/Enter open", width)
+	limit := maxTUIWidth(height-3, 1)
+	start, end := tuiVisibleRange(
+		int(tuiPageCount),
+		snapshot.SelectedMenu,
+		limit,
+	)
+	for index := start; index < end; index++ {
+		tuiRow(
+			&b,
+			fmt.Sprintf("%d  %s", index+1, tuiPageName(tuiPage(index))),
+			width,
+			index == snapshot.SelectedMenu,
+			"",
+		)
+	}
+	tuiEndPanel(&b, width)
+	return b.String()
+}
+
+func renderTUIStartupNotice(notice string, width, height int) string {
+	var b strings.Builder
+	tuiTitle(
+		&b,
+		"Shared backend",
+		"another TUI frontend is already open",
+		width,
+	)
+	limit := maxTUIWidth(height-4, 1)
+	lines := tuiWrapText(notice, maxTUIWidth(width-4, 1))
+	lines = append(lines, "Press any key to continue")
+	if len(lines) > limit {
+		lines = lines[:limit]
+	}
+	for index, line := range lines {
+		color := tuiDim
+		if index == len(lines)-1 {
+			color = tuiCyan
+		}
+		tuiRow(&b, line, width, false, color)
+	}
+	tuiEndPanel(&b, width)
+	return b.String()
+}
+
+func tuiWrapText(value string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	words := strings.Fields(value)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	lines := make([]string, 0, len(words))
+	line := ""
+	for _, word := range words {
+		candidate := word
+		if line != "" {
+			candidate = line + " " + word
+		}
+		if tuiDisplayWidth(candidate) <= width {
+			line = candidate
+			continue
+		}
+		if line != "" {
+			lines = append(lines, line)
+		}
+		wordParts := tuiWrapWord(word, width)
+		if len(wordParts) > 1 {
+			lines = append(lines, wordParts[:len(wordParts)-1]...)
+		}
+		line = wordParts[len(wordParts)-1]
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func tuiWrapWord(value string, width int) []string {
+	if value == "" || width <= 0 {
+		return []string{""}
+	}
+	parts := make([]string, 0, 1)
+	var part strings.Builder
+	partWidth := 0
+	for _, valueRune := range value {
+		runeWidth := tuiRuneWidth(valueRune)
+		if partWidth > 0 && partWidth+runeWidth > width {
+			parts = append(parts, part.String())
+			part.Reset()
+			partWidth = 0
+		}
+		part.WriteRune(valueRune)
+		partWidth += runeWidth
+	}
+	if part.Len() > 0 {
+		parts = append(parts, part.String())
+	}
+	if len(parts) == 0 {
+		return []string{""}
+	}
+	return parts
 }
 
 func drawTUITooSmall(w io.Writer, width, height int) {
@@ -2301,7 +2577,7 @@ func renderTUITooSmall(width, height int) string {
 		"  FlClash TUI",
 		"",
 		fmt.Sprintf("  Terminal: %dx%d", width, height),
-		"  Resize to at least 64x14",
+		"  Resize to at least 44x10",
 		"",
 		"  q detach UI · Ctrl+C stop Service",
 	}
@@ -2351,7 +2627,13 @@ func (w *tuiFrameWriter) invalidate() {
 
 func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) string {
 	var b strings.Builder
-	if snapshot.InputTitle != "" {
+	if snapshot.StartupNotice != "" {
+		return renderTUIStartupNotice(
+			snapshot.StartupNotice,
+			width,
+			height,
+		)
+	} else if snapshot.InputTitle != "" {
 		drawTUIInput(&b, snapshot, width)
 	} else if snapshot.ShowHelp {
 		drawTUIHelp(&b, width, height)
@@ -2366,6 +2648,14 @@ func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) stri
 	} else if snapshot.Page == tuiPageTools {
 		drawTUITools(&b, snapshot, width, height)
 	} else if snapshot.Page == tuiPageDashboard {
+		if height < 27 {
+			return renderTUICompactDashboard(
+				snapshot,
+				paths,
+				width,
+				height,
+			)
+		}
 		drawTUIDashboard(&b, snapshot, paths, width, height)
 	} else if snapshot.Page == tuiPageProxies &&
 		snapshot.ProxyView == tuiProxyViewProviders {
@@ -2930,6 +3220,7 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 				len(snapshot.Connections),
 				len(snapshot.Requests),
 			),
+			"TUI frontends "+formatCLIFrontendSummary(snapshot.Frontends),
 			fmt.Sprintf("Config        %s", paths.configPath),
 		)
 		tuiTitle(b, "Overview", "memory refresh 1s · live status", width)
@@ -2938,6 +3229,164 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 		}
 		tuiEndPanel(b, width)
 	}
+}
+
+type tuiDashboardCompactRow struct {
+	value    string
+	color    string
+	selected bool
+}
+
+func renderTUICompactDashboard(
+	snapshot tuiSnapshot,
+	paths cliPaths,
+	width,
+	height int,
+) string {
+	rows := tuiCompactDashboardRows(snapshot, paths)
+	limit := maxTUIWidth(height-3, 1)
+	maxStart := maxTUIIndex(len(rows) - limit)
+	start := snapshot.DashboardScroll
+	if start > maxStart {
+		start = maxStart
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := minTUI(start+limit, len(rows))
+	var b strings.Builder
+	tuiTitle(
+		&b,
+		"Dashboard",
+		fmt.Sprintf(
+			"rows %d-%d/%d · PgUp/PgDn or wheel",
+			start+1,
+			end,
+			len(rows),
+		),
+		width,
+	)
+	for _, row := range rows[start:end] {
+		tuiRow(
+			&b,
+			row.value,
+			width,
+			row.selected,
+			row.color,
+		)
+	}
+	tuiEndPanel(&b, width)
+	return b.String()
+}
+
+func tuiCompactDashboardRows(
+	snapshot tuiSnapshot,
+	paths cliPaths,
+) []tuiDashboardCompactRow {
+	controls := []string{
+		fmt.Sprintf("Service       %s", tuiServiceLabel(snapshot)),
+		fmt.Sprintf(
+			"System proxy  %s",
+			tuiSystemProxyLabel(snapshot),
+		),
+		fmt.Sprintf(
+			"TUN           %s",
+			tuiOnOff(snapshot.Settings.TunEnabled),
+		),
+		fmt.Sprintf("Outbound mode %s", snapshot.Settings.Mode),
+		fmt.Sprintf("Mixed port    %d", snapshot.Settings.MixedPort),
+	}
+	rows := make([]tuiDashboardCompactRow, 0, 24)
+	for index, control := range controls {
+		rows = append(rows, tuiDashboardCompactRow{
+			value: control,
+			selected: index == snapshot.SelectedDashboard &&
+				!snapshot.FocusSidebar,
+		})
+	}
+
+	publicIP := "Checking..."
+	if snapshot.Network.PublicIP != "" {
+		publicIP = snapshot.Network.PublicIP
+		if snapshot.Network.Country != "" {
+			publicIP += " [" + snapshot.Network.Country + "]"
+		}
+	} else if snapshot.Network.Error != "" &&
+		!snapshot.Network.Loading {
+		publicIP = "Unavailable · n retry"
+	}
+	intranetIP := snapshot.Network.IntranetIP
+	if intranetIP == "" {
+		if snapshot.Network.Loading {
+			intranetIP = "Detecting..."
+		} else {
+			intranetIP = "No active LAN address"
+		}
+	}
+	rows = append(
+		rows,
+		tuiDashboardCompactRow{
+			value: "── Network · d latency · v speed · n refresh",
+			color: tuiCyan,
+		},
+		tuiDashboardCompactRow{
+			value: "Public IP     " + publicIP,
+			color: tuiCyan,
+		},
+		tuiDashboardCompactRow{
+			value: "Intranet IP   " + intranetIP,
+			color: tuiGreen,
+		},
+		tuiDashboardCompactRow{
+			value: "Route latency  " +
+				tuiDashboardDelayLabel(snapshot.DashboardDelay),
+			color: tuiCyan,
+		},
+		tuiDashboardCompactRow{
+			value: "Download test  " +
+				tuiSpeedResultLabel(snapshot.DashboardSpeed),
+			color: tuiGreen,
+		},
+		tuiDashboardCompactRow{
+			value: "── Overview · live status",
+			color: tuiCyan,
+		},
+	)
+	for _, row := range tuiMemoryRows(snapshot) {
+		rows = append(rows, tuiDashboardCompactRow{value: row})
+	}
+	rows = append(
+		rows,
+		tuiDashboardCompactRow{
+			value: fmt.Sprintf(
+				"Network speed ↑ %s/s ↓ %s/s",
+				formatBytes(snapshot.Traffic.Up),
+				formatBytes(snapshot.Traffic.Down),
+			),
+		},
+		tuiDashboardCompactRow{
+			value: fmt.Sprintf(
+				"Traffic total ↑ %s ↓ %s",
+				formatBytes(snapshot.TotalTraffic.Up),
+				formatBytes(snapshot.TotalTraffic.Down),
+			),
+		},
+		tuiDashboardCompactRow{
+			value: fmt.Sprintf(
+				"Activity      %d active · %d requests",
+				len(snapshot.Connections),
+				len(snapshot.Requests),
+			),
+		},
+		tuiDashboardCompactRow{
+			value: "TUI frontends " +
+				formatCLIFrontendSummary(snapshot.Frontends),
+		},
+		tuiDashboardCompactRow{
+			value: "Config        " + paths.configPath,
+		},
+	)
+	return rows
 }
 
 func tuiDashboardDelayLabel(delay int) string {
