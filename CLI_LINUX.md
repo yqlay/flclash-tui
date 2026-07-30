@@ -20,13 +20,13 @@ build to an offline host.
 
 ## Install the Debian package
 
-Download the `v0.3.9` package matching `dpkg --print-architecture` from the
+Download the `v0.3.10` package matching `dpkg --print-architecture` from the
 [GitHub Releases](https://github.com/yqlay/flclash-cli/releases) page, then
 install it with:
 
 ```bash
-sudo dpkg -i flclash-cli_0.3.9_amd64.deb
-# or: sudo dpkg -i flclash-cli_0.3.9_arm64.deb
+sudo dpkg -i flclash-cli_0.3.10_amd64.deb
+# or: sudo dpkg -i flclash-cli_0.3.10_arm64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash-cli`, bundled offline
