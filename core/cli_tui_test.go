@@ -88,6 +88,97 @@ func TestTUIRenderingFitsTerminalWidth(t *testing.T) {
 	}
 }
 
+func TestTUIRenderingFitsEveryPositiveTerminalSize(t *testing.T) {
+	paths := cliPaths{configPath: "/tmp/flclash/config.yaml"}
+	snapshots := make([]tuiSnapshot, 0, int(tuiPageCount))
+	for page := tuiPageDashboard; page <= tuiPageTools; page++ {
+		snapshots = append(snapshots, populatedTUISnapshot(page))
+	}
+	for width := 1; width <= 160; width++ {
+		for height := 1; height <= 60; height++ {
+			for page, snapshot := range snapshots {
+				output := renderTUIAtSize(
+					snapshot,
+					paths,
+					"private Unix socket",
+					true,
+					true,
+					width,
+					height,
+				)
+				lines := strings.Split(output, "\n")
+				if len(lines) != height {
+					t.Fatalf(
+						"page %d at %dx%d has %d lines, want %d",
+						page,
+						width,
+						height,
+						len(lines),
+						height,
+					)
+				}
+				for lineNumber, line := range lines {
+					if got := tuiDisplayWidth(stripTUIANSI(line)); got != width {
+						t.Fatalf(
+							"page %d at %dx%d line %d has width %d, want %d",
+							page,
+							width,
+							height,
+							lineNumber,
+							got,
+							width,
+						)
+					}
+				}
+			}
+		}
+	}
+}
+
+type tuiImmediateQuitModel struct{}
+
+func (tuiImmediateQuitModel) Init() tea.Cmd {
+	return tea.Quit
+}
+
+func (model tuiImmediateQuitModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
+	return model, nil
+}
+
+func (tuiImmediateQuitModel) View() string {
+	return ""
+}
+
+func TestTUIProgramDoesNotCaptureTerminalMouse(t *testing.T) {
+	var output bytes.Buffer
+	options := append(
+		tuiProgramOptions(),
+		tea.WithInput(nil),
+		tea.WithOutput(&output),
+	)
+	program := tea.NewProgram(tuiImmediateQuitModel{}, options...)
+	if _, err := program.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	rendered := output.String()
+	if !strings.Contains(rendered, "\x1b[?1049h") {
+		t.Fatalf("test did not observe alternate-screen startup: %q", rendered)
+	}
+	for _, mouseEnableSequence := range []string{
+		"\x1b[?1000h",
+		"\x1b[?1002h",
+		"\x1b[?1003h",
+	} {
+		if strings.Contains(rendered, mouseEnableSequence) {
+			t.Fatalf(
+				"TUI enabled terminal mouse capture with %q; native text selection would be blocked",
+				mouseEnableSequence,
+			)
+		}
+	}
+}
+
 func TestTUICompactDashboardCanScrollEverySection(t *testing.T) {
 	model := newTUIModel(
 		controllerClient{},
@@ -157,6 +248,83 @@ func TestTUICompactNavigationTracksSelectedPage(t *testing.T) {
 	if !strings.Contains(output, "Navigation") ||
 		!strings.Contains(output, "7  Tools") {
 		t.Fatalf("compact navigation hid selected page:\n%s", output)
+	}
+}
+
+func TestTUIEscReturnsFromEveryPageToNavigationAtEveryLayout(t *testing.T) {
+	sizes := []struct {
+		width  int
+		height int
+	}{
+		{width: 44, height: 10},
+		{width: 64, height: 14},
+		{width: 87, height: 17},
+		{width: 88, height: 18},
+		{width: 120, height: 30},
+	}
+	for _, size := range sizes {
+		for page := tuiPageDashboard; page <= tuiPageTools; page++ {
+			t.Run(fmt.Sprintf("%dx%d/%s", size.width, size.height, tuiPageName(page)), func(t *testing.T) {
+				model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+				model.width = size.width
+				model.height = size.height
+				model.snapshot = populatedTUISnapshot(page)
+				model.snapshot.SelectedMenu = int(page)
+				model.snapshot.FocusSidebar = false
+				model.snapshot.ProxyNodeFocus = false
+
+				_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+				if !model.snapshot.FocusSidebar {
+					t.Fatalf("Esc did not return %s to navigation: %+v", tuiPageName(page), model.snapshot)
+				}
+				if model.snapshot.SelectedMenu != int(page) {
+					t.Fatalf(
+						"navigation selection = %d after leaving %s, want %d",
+						model.snapshot.SelectedMenu,
+						tuiPageName(page),
+						page,
+					)
+				}
+				if size.width >= 44 &&
+					size.height >= 10 &&
+					(size.width < 88 || size.height < 18) {
+					output := stripTUIANSI(model.View())
+					if !strings.Contains(output, "Navigation") {
+						t.Fatalf(
+							"navigation is not visible after Esc at %dx%d:\n%s",
+							size.width,
+							size.height,
+							output,
+						)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestTUIEscFollowsProxyNavigationHierarchy(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.width = 44
+	model.height = 10
+	model.snapshot = populatedTUISnapshot(tuiPageProxies)
+	model.snapshot.SelectedMenu = int(tuiPageProxies)
+	model.snapshot.FocusSidebar = false
+	model.snapshot.ProxyView = tuiProxyViewGroups
+	model.snapshot.ProxyNodeFocus = true
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if model.snapshot.ProxyNodeFocus || model.snapshot.FocusSidebar {
+		t.Fatalf("first Esc did not return only to proxy groups: %+v", model.snapshot)
+	}
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if !model.snapshot.FocusSidebar {
+		t.Fatalf("second Esc did not return to navigation: %+v", model.snapshot)
+	}
+	if output := stripTUIANSI(model.View()); !strings.Contains(output, "Navigation") {
+		t.Fatalf("compact navigation is not visible after second Esc:\n%s", output)
 	}
 }
 

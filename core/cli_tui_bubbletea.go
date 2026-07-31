@@ -223,13 +223,7 @@ func runTUI(
 	model.startTrafficMonitor()
 	defer model.stopCoreMemoryMonitor()
 	defer model.stopTrafficMonitor()
-	program := tea.NewProgram(
-		model,
-		tea.WithAltScreen(),
-		tea.WithFPS(30),
-		tea.WithMouseCellMotion(),
-		tea.WithoutSignalHandler(),
-	)
+	program := tea.NewProgram(model, tuiProgramOptions()...)
 	sighup := make(chan os.Signal, 1)
 	signal.Notify(sighup, syscall.SIGHUP)
 	done := make(chan struct{})
@@ -253,6 +247,14 @@ func runTUI(
 		return fmt.Errorf("run TUI: %w", runErr)
 	}
 	return nil
+}
+
+func tuiProgramOptions() []tea.ProgramOption {
+	return []tea.ProgramOption{
+		tea.WithAltScreen(),
+		tea.WithFPS(30),
+		tea.WithoutSignalHandler(),
+	}
 }
 
 func (m *tuiModel) Init() tea.Cmd {
@@ -472,15 +474,6 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(commands...)
 		}
 		return m, m.handleTeaKey(message)
-	case tea.MouseMsg:
-		switch message.Button {
-		case tea.MouseButtonWheelUp:
-			return m, m.handleKey(tuiKeyPageUp)
-		case tea.MouseButtonWheelDown:
-			return m, m.handleKey(tuiKeyPageDown)
-		default:
-			return m, nil
-		}
 	default:
 		return m, nil
 	}
@@ -931,6 +924,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			m.snapshot.ProxyNodeFocus {
 			m.snapshot.ProxyNodeFocus = false
 			m.snapshot.Status = "Proxy groups · Enter opens nodes · d delay · v speed"
+		} else if !m.snapshot.FocusSidebar {
+			m.snapshot.FocusSidebar = true
+			m.snapshot.SelectedMenu = int(m.snapshot.Page)
 		}
 		return nil
 	case tuiKeyRefresh:
