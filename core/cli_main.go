@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.3.12"
+const cliVersion = "0.3.13"
 
 type cliPaths struct {
 	homeDir    string
@@ -56,6 +56,10 @@ func main() {
 			err = profileCommand(os.Args[2:])
 		case "update", "upgrade":
 			err = updateCommand(os.Args[2:])
+		case "exec":
+			err = wrappedCommand(os.Args[2:])
+		case "--":
+			err = wrappedCommand(os.Args[2:])
 		case "version", "--version", "-v":
 			fmt.Printf("FlClash TUI %s (Mihomo core)\n", cliVersion)
 		case "help", "--help", "-h":
@@ -64,7 +68,7 @@ func main() {
 			if strings.HasPrefix(os.Args[1], "-") {
 				err = tuiCommand(os.Args[1:])
 			} else {
-				err = fmt.Errorf("unknown command %q", os.Args[1])
+				err = wrappedCommand(os.Args[1:])
 			}
 		}
 	}
@@ -89,6 +93,9 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  flclash proxy list --controller 127.0.0.1:9090")
 	fmt.Fprintln(w, "  flclash proxy select --controller 127.0.0.1:9090 GROUP NODE")
 	fmt.Fprintln(w, "  flclash profile link --config ./profile.yaml URL")
+	fmt.Fprintln(w, "  flclash git clone https://github.com/owner/repository.git")
+	fmt.Fprintln(w, "  flclash curl https://example.com")
+	fmt.Fprintln(w, "  flclash exec COMMAND [ARG...]")
 	fmt.Fprintln(w, "  flclash update [--check]")
 	fmt.Fprintln(w, "  flclash version")
 	fmt.Fprintln(w)
@@ -99,8 +106,12 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  check, validate   Validate a Clash/Mihomo YAML configuration")
 	fmt.Fprintln(w, "  proxy             Inspect or change a running core through its API")
 	fmt.Fprintln(w, "  profile           Manage local profile metadata")
+	fmt.Fprintln(w, "  exec              Run any command through the active Mixed Port")
 	fmt.Fprintln(w, "  update, upgrade   Check GitHub Releases and securely install an update")
 	fmt.Fprintln(w, "  version           Print the CLI version")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Any unrecognized command is run through the active FlClash proxy.")
+	fmt.Fprintln(w, "Use `flclash -- COMMAND` when COMMAND has the same name as a built-in command.")
 }
 
 func runCommand(args []string) error {

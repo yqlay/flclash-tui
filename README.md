@@ -10,15 +10,14 @@ FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 
 > 本项目是非官方衍生版本，不是 FlClash 官方发布版本，也不代表 FlClash 或 Mihomo 维护者。版权和许可证说明见 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
 
-## v0.3.12 最新更新
+## v0.3.13 最新更新
 
-- 新增响应式终端布局：宽度不足时自动切换为单栏导航，Dashboard 在高度不足时变成可滚动视图；最低可用尺寸降低到 `44×10`。
-- Dashboard 可通过 `PgUp/PgDn` 或鼠标滚轮查看被窗口隐藏的网络、内存、实时速度、累计流量和配置路径。
-- 每个 Linux 用户严格只运行一个 FlClash Service/Core 后端；不同终端可以同时打开多个 TUI，共享同一后端、Profile、端口和节点状态。
-- 打开额外 TUI 时会先显示已有前端的 PID 与终端，Dashboard 也会实时显示当前前端数量。`q` 只退出当前前端，`Ctrl+C` 停止共享后端并使所有前端断开。
-- 更新器不再依赖唯一固定的安装包文件名：支持旧、新及后续 FlClash 包名、统一 `SHA256SUMS` 和同名 `.sha256`，并在安装前校验 Release 来源及 Debian 包内的包名、版本和架构。
+- 新增通用代理命令包装器：`flclash git clone ...`、`flclash curl ...`、`flclash npm install` 等任意外部命令会自动使用当前正在运行的 Mixed Port。
+- 包装器从 Core 私有 API 读取实时端口，并确认 Service/Core 与代理监听均正常；未启动、端口不可用、命令不存在及控制器异常都会给出中英文提示。
+- 同时注入大小写形式的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `ALL_PROXY`，变量只影响当前子命令，不会修改当前 Shell 或系统代理设置。
+- 保留 v0.3.12 的响应式小终端布局、单用户单后端、多 TUI 前端以及灵活安全更新器。
 
-完整安装包与更新说明见 [FlClash TUI v0.3.12 Release](https://github.com/yqlay/flclash-tui/releases/tag/v0.3.12)。
+完整安装包与更新说明见 [FlClash TUI v0.3.13 Release](https://github.com/yqlay/flclash-tui/releases/tag/v0.3.13)。
 
 ## 适合哪些场景
 
@@ -37,7 +36,7 @@ FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 - **状态与诊断**：显示公网/内网 IP、实时流量、连接、请求、日志、系统内存、本进程和 Core 内存
 - **状态持久化**：保存当前 Profile、代理组选择及配置设置，下次进入时自动恢复
 - **安全更新**：从本仓库的 GitHub Releases 检查更新，校验 SHA-256 后再安装
-- **脚本化命令**：支持前台运行、配置校验、查询代理组和切换节点
+- **脚本化命令**：支持让任意外部命令临时使用当前代理，以及前台运行、配置校验、查询代理组和切换节点
 
 界面包含以下栏目：
 
@@ -58,19 +57,19 @@ FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 AMD64：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.12/flclash-tui_0.3.12_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.12/flclash-tui_0.3.12_amd64.deb.sha256
-sha256sum -c flclash-tui_0.3.12_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.3.12_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.13/flclash-tui_0.3.13_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.13/flclash-tui_0.3.13_amd64.deb.sha256
+sha256sum -c flclash-tui_0.3.13_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.3.13_amd64.deb
 ```
 
 ARM64：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.12/flclash-tui_0.3.12_arm64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.12/flclash-tui_0.3.12_arm64.deb.sha256
-sha256sum -c flclash-tui_0.3.12_arm64.deb.sha256
-sudo dpkg -i flclash-tui_0.3.12_arm64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.13/flclash-tui_0.3.13_arm64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.13/flclash-tui_0.3.13_arm64.deb.sha256
+sha256sum -c flclash-tui_0.3.13_arm64.deb.sha256
+sudo dpkg -i flclash-tui_0.3.13_arm64.deb
 ```
 
 查看本机 CPU 架构：
@@ -145,6 +144,37 @@ curl -x http://127.0.0.1:7890 -I --max-time 10 https://www.google.com
 第二条命令中的端口应替换为界面里显示的 Mixed Port。
 
 ## 命令行模式
+
+让任意外部命令临时使用当前正在运行的 FlClash Mixed Port：
+
+```bash
+flclash git clone https://github.com/owner/repository.git
+flclash curl https://example.com
+flclash wget https://example.com/file
+flclash npm install
+```
+
+FlClash 会为子命令设置大小写形式的 `HTTP_PROXY`、`HTTPS_PROXY` 和
+`ALL_PROXY`，其值为 `http://127.0.0.1:<当前 Mixed Port>`。这里即使访问
+HTTPS 网站，代理 URL 仍以 `http://` 开头，因为 Mixed Port 通过 HTTP
+CONNECT 转发 HTTPS。变量不会写入 Shell 配置，命令退出后自动消失。
+外部程序仍需支持这些标准代理环境变量；例如 `git`、`curl`、`wget`、npm
+支持，而完全忽略代理变量的程序不会因此自动代理。
+
+如果 Service/Core 未运行、Core API 无法访问、Mixed Port 未监听或外部命令
+不存在，程序会同时显示英文和中文原因。`exec` 是等价的显式写法；当外部
+程序名称与 FlClash 内置命令冲突时使用 `--`：
+
+```bash
+flclash exec curl https://example.com
+flclash -- stop
+```
+
+包装器不会自动解释管道或重定向。需要 Shell 语法时显式调用 Shell：
+
+```bash
+flclash sh -c 'curl -s https://example.com | jq .'
+```
 
 打开 TUI（默认行为）：
 

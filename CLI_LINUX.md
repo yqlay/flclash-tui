@@ -20,13 +20,13 @@ build to an offline host.
 
 ## Install the Debian package
 
-Download the `v0.3.12` package matching `dpkg --print-architecture` from the
+Download the `v0.3.13` package matching `dpkg --print-architecture` from the
 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) page, then
 install it with:
 
 ```bash
-sudo dpkg -i flclash-tui_0.3.12_amd64.deb
-# or: sudo dpkg -i flclash-tui_0.3.12_arm64.deb
+sudo dpkg -i flclash-tui_0.3.13_amd64.deb
+# or: sudo dpkg -i flclash-tui_0.3.13_arm64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash`, bundled offline
@@ -210,6 +210,41 @@ The original foreground mode is still available:
 
 The process stays in the foreground. `Ctrl-C` stops listeners and shuts down
 the Mihomo executor. `SIGHUP` reloads the configuration.
+
+## Run any command through FlClash
+
+Prefix any external command with `flclash` to run it through the Mixed Port of
+the currently running managed Service/Core:
+
+```bash
+flclash git clone https://github.com/owner/repository.git
+flclash curl https://example.com
+flclash wget https://example.com/file
+flclash npm install
+```
+
+The wrapper reads the live `mixed-port` value from the Core's private Unix API,
+checks that the listener accepts connections, and then replaces its process
+with the requested command. It sets uppercase and lowercase `HTTP_PROXY`,
+`HTTPS_PROXY`, and `ALL_PROXY` values to
+`http://127.0.0.1:<mixed-port>` only for that command. It does not persist
+environment variables or change desktop system-proxy settings.
+The external program must support these standard proxy environment variables;
+the wrapper can launch any executable but cannot force software that ignores
+proxy variables to route through them.
+
+Successful commands receive their original arguments, terminal, signals,
+standard streams, and exit behavior without extra status text. A stopped
+Service/Core, unavailable controller, invalid or closed Mixed Port, missing
+command, and process-start failure are reported in both English and Chinese.
+
+`flclash exec COMMAND ...` is an equivalent explicit spelling. Use
+`flclash -- COMMAND ...` when an external executable has the same name as a
+built-in FlClash command. Pipelines and redirection require an explicit shell:
+
+```bash
+flclash sh -c 'curl -s https://example.com | jq .'
+```
 
 ## Validate configuration
 
