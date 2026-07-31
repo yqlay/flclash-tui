@@ -20,13 +20,13 @@ build to an offline host.
 
 ## Install the Debian package
 
-Download the `v0.3.13` package matching `dpkg --print-architecture` from the
+Download the `v0.3.14` package matching `dpkg --print-architecture` from the
 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) page, then
 install it with:
 
 ```bash
-sudo dpkg -i flclash-tui_0.3.13_amd64.deb
-# or: sudo dpkg -i flclash-tui_0.3.13_arm64.deb
+sudo dpkg -i flclash-tui_0.3.14_amd64.deb
+# or: sudo dpkg -i flclash-tui_0.3.14_arm64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash`, bundled offline

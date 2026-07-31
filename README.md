@@ -10,14 +10,14 @@ FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 
 > 本项目是非官方衍生版本，不是 FlClash 官方发布版本，也不代表 FlClash 或 Mihomo 维护者。版权和许可证说明见 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
 
-## v0.3.13 最新更新
+## v0.3.14 最新更新
 
-- 新增通用代理命令包装器：`flclash git clone ...`、`flclash curl ...`、`flclash npm install` 等任意外部命令会自动使用当前正在运行的 Mixed Port。
-- 包装器从 Core 私有 API 读取实时端口，并确认 Service/Core 与代理监听均正常；未启动、端口不可用、命令不存在及控制器异常都会给出中英文提示。
-- 同时注入大小写形式的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `ALL_PROXY`，变量只影响当前子命令，不会修改当前 Shell 或系统代理设置。
-- 保留 v0.3.12 的响应式小终端布局、单用户单后端、多 TUI 前端以及灵活安全更新器。
+- 修复小屏紧凑布局进入页面后 Esc 无法返回导航栏的问题；现在按层级执行“节点 → 代理组 → 导航栏”的回退。
+- 关闭终端鼠标捕获，恢复普通鼠标拖选文字与复制；Dashboard 使用 `PgUp`/`PgDn` 滚动。
+- 新增覆盖全部 7 个页面、从 `1x1` 到 `160x60` 的终端尺寸渲染测试，确保各种窗口尺寸下不会发生越界、错行或残缺帧。
+- 保留 v0.3.13 的通用代理命令包装器、实时 Mixed Port 检测与中英文错误提示。
 
-完整安装包与更新说明见 [FlClash TUI v0.3.13 Release](https://github.com/yqlay/flclash-tui/releases/tag/v0.3.13)。
+完整安装包与更新说明见 [FlClash TUI v0.3.14 Release](https://github.com/yqlay/flclash-tui/releases/tag/v0.3.14)。
 
 ## 适合哪些场景
 
@@ -57,19 +57,19 @@ FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 AMD64：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.13/flclash-tui_0.3.13_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.13/flclash-tui_0.3.13_amd64.deb.sha256
-sha256sum -c flclash-tui_0.3.13_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.3.13_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.14/flclash-tui_0.3.14_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.14/flclash-tui_0.3.14_amd64.deb.sha256
+sha256sum -c flclash-tui_0.3.14_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.3.14_amd64.deb
 ```
 
 ARM64：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.13/flclash-tui_0.3.13_arm64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.13/flclash-tui_0.3.13_arm64.deb.sha256
-sha256sum -c flclash-tui_0.3.13_arm64.deb.sha256
-sudo dpkg -i flclash-tui_0.3.13_arm64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.14/flclash-tui_0.3.14_arm64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.14/flclash-tui_0.3.14_arm64.deb.sha256
+sha256sum -c flclash-tui_0.3.14_arm64.deb.sha256
+sudo dpkg -i flclash-tui_0.3.14_arm64.deb
 ```
 
 查看本机 CPU 架构：
