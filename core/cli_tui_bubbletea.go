@@ -213,7 +213,7 @@ func runTUI(
 
 	model := newTUIModel(client, paths, setupParams, ownsCore)
 	model.service = service
-	model.coreRunning = coreRunning
+	model.initializeCoreRuntime(coreRunning)
 	model.snapshot.ManagedService = service != nil
 	model.snapshot.Frontends, _ = listCLIFrontends()
 	if startupNotice != "" {
@@ -247,6 +247,17 @@ func runTUI(
 		return fmt.Errorf("run TUI: %w", runErr)
 	}
 	return nil
+}
+
+func (m *tuiModel) initializeCoreRuntime(coreRunning bool) {
+	m.coreRunning = coreRunning
+	if !coreRunning {
+		return
+	}
+	m.pendingMixedPort = nil
+	m.stagedSettings = nil
+	m.settingsDirty = false
+	m.snapshot.Settings = tuiSettings{}
 }
 
 func tuiProgramOptions() []tea.ProgramOption {
@@ -331,7 +342,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshInFlight = false
 		m.snapshot = mergeTUIRefresh(m.snapshot, message.snapshot)
-		if m.stagedSettings != nil {
+		if !m.coreRunning && m.stagedSettings != nil {
 			systemProxy := m.snapshot.Settings.SystemProxy
 			m.snapshot.Settings = *m.stagedSettings
 			m.snapshot.Settings.SystemProxy = systemProxy

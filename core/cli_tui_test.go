@@ -1845,6 +1845,42 @@ func TestTUIStagesPreStartSettings(t *testing.T) {
 	}
 }
 
+func TestTUIRunningCoreUsesLiveSettingsInsteadOfStagedYAML(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Settings = tuiSettings{MixedPort: 12345}
+	model.stagedSettings = &tuiSettings{MixedPort: 12345}
+	stagedPort := 12345
+	model.pendingMixedPort = &stagedPort
+	model.settingsDirty = true
+
+	model.initializeCoreRuntime(true)
+	if model.stagedSettings != nil || model.pendingMixedPort != nil || model.settingsDirty {
+		t.Fatalf(
+			"running Core retained staged settings: staged=%+v pending=%v dirty=%v",
+			model.stagedSettings,
+			model.pendingMixedPort,
+			model.settingsDirty,
+		)
+	}
+
+	model.refreshSequence = 1
+	model.refreshInFlight = true
+	_, _ = model.Update(tuiRefreshResultMsg{
+		sequence: 1,
+		snapshot: tuiSnapshot{
+			Status:    "Connected",
+			UpdatedAt: time.Now(),
+			Settings:  tuiSettings{MixedPort: 8001},
+		},
+	})
+	if model.snapshot.Settings.MixedPort != 8001 {
+		t.Fatalf(
+			"Dashboard mixed port = %d, want live Core port 8001",
+			model.snapshot.Settings.MixedPort,
+		)
+	}
+}
+
 func TestTUIImportsSubscriptionBeforeCoreStart(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.UserAgent() != tuiSubscriptionUserAgent {

@@ -43,6 +43,42 @@ func TestCLIProxyEnvironmentReplacesProxyVariables(t *testing.T) {
 	}
 }
 
+func TestCLIWrappedCommandDisablesWgetConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		executable string
+		arguments  []string
+		want       []string
+	}{
+		{
+			name:       "GNU Wget ignores stale user proxy config",
+			executable: "/usr/bin/wget",
+			arguments:  []string{"wget", "-O", "package.deb", "https://example.com/package.deb"},
+			want:       []string{"wget", "--no-config", "-O", "package.deb", "https://example.com/package.deb"},
+		},
+		{
+			name:       "existing no-config is not duplicated",
+			executable: "/usr/bin/wget",
+			arguments:  []string{"wget", "--no-config", "https://example.com"},
+			want:       []string{"wget", "--no-config", "https://example.com"},
+		},
+		{
+			name:       "other commands are unchanged",
+			executable: "/usr/bin/curl",
+			arguments:  []string{"curl", "https://example.com"},
+			want:       []string{"curl", "https://example.com"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := cliWrappedCommandArguments(test.executable, test.arguments)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("arguments = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestWrappedCommandRequiresCommand(t *testing.T) {
 	err := wrappedCommand(nil)
 	if err == nil ||

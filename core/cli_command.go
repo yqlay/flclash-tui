@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -46,6 +47,7 @@ func wrappedCommand(args []string) error {
 			err,
 		)
 	}
+	args = cliWrappedCommandArguments(executable, args)
 	environment := cliProxyEnvironment(os.Environ(), proxyURL)
 	if err := cliCommandExec(executable, args, environment); err != nil {
 		return fmt.Errorf(
@@ -57,6 +59,22 @@ func wrappedCommand(args []string) error {
 		)
 	}
 	return nil
+}
+
+func cliWrappedCommandArguments(executable string, args []string) []string {
+	result := append([]string(nil), args...)
+	if filepath.Base(executable) != "wget" {
+		return result
+	}
+	for _, argument := range result[1:] {
+		if argument == "--no-config" {
+			return result
+		}
+	}
+	return append(
+		[]string{result[0], "--no-config"},
+		result[1:]...,
+	)
 }
 
 func activeCLIProxyURL() (string, error) {

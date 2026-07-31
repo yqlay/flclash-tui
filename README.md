@@ -10,14 +10,14 @@ FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 
 > 本项目是非官方衍生版本，不是 FlClash 官方发布版本，也不代表 FlClash 或 Mihomo 维护者。版权和许可证说明见 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
 
-## v0.3.14 最新更新
+## v0.3.15 最新更新
 
-- 修复小屏紧凑布局进入页面后 Esc 无法返回导航栏的问题；现在按层级执行“节点 → 代理组 → 导航栏”的回退。
-- 关闭终端鼠标捕获，恢复普通鼠标拖选文字与复制；Dashboard 使用 `PgUp`/`PgDn` 滚动。
-- 新增覆盖全部 7 个页面、从 `1x1` 到 `160x60` 的终端尺寸渲染测试，确保各种窗口尺寸下不会发生越界、错行或残缺帧。
-- 保留 v0.3.13 的通用代理命令包装器、实时 Mixed Port 检测与中英文错误提示。
+- 修复 `~/.wgetrc` 中旧代理端口覆盖 `flclash wget ...` 实时 Mixed Port 的问题；包装器现在自动让 GNU Wget 跳过持久配置。
+- Wget 修复仅影响包装后的子进程，不修改用户的 `~/.wgetrc`，其他外部命令的参数保持不变。
+- Core 运行时 Dashboard 只显示私有 Unix API 返回的实时设置；待应用 YAML 设置仅在 Core 停止时显示，避免端口状态不一致。
+- 保留 v0.3.14 的小屏 Esc 层级回退和终端文字拖选复制修复。
 
-完整安装包与更新说明见 [FlClash TUI v0.3.14 Release](https://github.com/yqlay/flclash-tui/releases/tag/v0.3.14)。
+完整安装包与更新说明见 [FlClash TUI v0.3.15 Release](https://github.com/yqlay/flclash-tui/releases/tag/v0.3.15)。
 
 ## 适合哪些场景
 
@@ -57,19 +57,19 @@ FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 AMD64：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.14/flclash-tui_0.3.14_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.14/flclash-tui_0.3.14_amd64.deb.sha256
-sha256sum -c flclash-tui_0.3.14_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.3.14_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.15/flclash-tui_0.3.15_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.15/flclash-tui_0.3.15_amd64.deb.sha256
+sha256sum -c flclash-tui_0.3.15_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.3.15_amd64.deb
 ```
 
 ARM64：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.14/flclash-tui_0.3.14_arm64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.14/flclash-tui_0.3.14_arm64.deb.sha256
-sha256sum -c flclash-tui_0.3.14_arm64.deb.sha256
-sudo dpkg -i flclash-tui_0.3.14_arm64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.15/flclash-tui_0.3.15_arm64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.15/flclash-tui_0.3.15_arm64.deb.sha256
+sha256sum -c flclash-tui_0.3.15_arm64.deb.sha256
+sudo dpkg -i flclash-tui_0.3.15_arm64.deb
 ```
 
 查看本机 CPU 架构：
@@ -160,6 +160,9 @@ HTTPS 网站，代理 URL 仍以 `http://` 开头，因为 Mixed Port 通过 HTT
 CONNECT 转发 HTTPS。变量不会写入 Shell 配置，命令退出后自动消失。
 外部程序仍需支持这些标准代理环境变量；例如 `git`、`curl`、`wget`、npm
 支持，而完全忽略代理变量的程序不会因此自动代理。
+
+`flclash wget ...` 会额外传入 GNU Wget 的 `--no-config`，防止
+`~/.wgetrc` 中持久保存的旧代理覆盖实时 Mixed Port；用户文件不会被修改。
 
 如果 Service/Core 未运行、Core API 无法访问、Mixed Port 未监听或外部命令
 不存在，程序会同时显示英文和中文原因。`exec` 是等价的显式写法；当外部
