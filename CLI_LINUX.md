@@ -20,13 +20,13 @@ build to an offline host.
 
 ## Install the Debian package
 
-Download the `v0.3.14` package matching `dpkg --print-architecture` from the
+Download the `v0.3.15` package matching `dpkg --print-architecture` from the
 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) page, then
 install it with:
 
 ```bash
-sudo dpkg -i flclash-tui_0.3.14_amd64.deb
-# or: sudo dpkg -i flclash-tui_0.3.14_arm64.deb
+sudo dpkg -i flclash-tui_0.3.15_amd64.deb
+# or: sudo dpkg -i flclash-tui_0.3.15_arm64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash`, bundled offline
@@ -229,6 +229,9 @@ with the requested command. It sets uppercase and lowercase `HTTP_PROXY`,
 `HTTPS_PROXY`, and `ALL_PROXY` values to
 `http://127.0.0.1:<mixed-port>` only for that command. It does not persist
 environment variables or change desktop system-proxy settings.
+For GNU Wget, the wrapper also inserts `--no-config` so a stale proxy in
+`~/.wgetrc` cannot override the live Mixed Port. The user configuration file
+is not modified, and explicitly supplied `--no-config` is not duplicated.
 The external program must support these standard proxy environment variables;
 the wrapper can launch any executable but cannot force software that ignores
 proxy variables to route through them.
