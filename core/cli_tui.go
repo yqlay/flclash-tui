@@ -2330,12 +2330,12 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 		b.WriteByte('\n')
 	}
 
-	footer := "  ←→ panel  ↑↓/ws move  Enter apply  ? help  q detach  Ctrl+C stop"
+	footer := "  ←→ panel  ↑↓/ws move  Enter apply  Esc nav  ? help  q detach  Ctrl+C stop"
 	if width >= 110 {
 		footer = "  ←→ panel  ↑↓/ws move  Enter open/apply  Esc back  d delay  ? help  q detach  Ctrl+C stop"
 	}
 	if snapshot.Page == tuiPageDashboard && bodyHeight < 27 {
-		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  q detach  Ctrl+C stop"
+		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  Esc nav  q detach"
 	}
 	if snapshot.Status != "" && snapshot.Status != "Connected" {
 		statusWidth := maxTUIWidth(width-tuiDisplayWidth(footer)-5, 0)
@@ -2416,11 +2416,11 @@ func renderTUICompact(
 		b.WriteString(tuiClampAnsiLine(line, width))
 		b.WriteByte('\n')
 	}
-	footer := "  1-7 page · ← nav · ↑↓/ws · Enter · q"
+	footer := "  1-7 page · ←/Esc nav · ↑↓/ws · Enter · q"
 	if snapshot.FocusSidebar {
 		footer = "  ↑↓/ws page · →/Enter open · 1-7 direct · q"
 	} else if snapshot.Page == tuiPageDashboard {
-		footer = "  ↑↓/ws select · PgUp/PgDn scroll · ← nav · q"
+		footer = "  ↑↓/ws select · PgUp/PgDn scroll · Esc nav · q"
 	}
 	if snapshot.Status != "" && snapshot.Status != "Connected" && width >= 72 {
 		statusWidth := maxTUIWidth(
@@ -3259,7 +3259,7 @@ func renderTUICompactDashboard(
 		&b,
 		"Dashboard",
 		fmt.Sprintf(
-			"rows %d-%d/%d · PgUp/PgDn or wheel",
+			"rows %d-%d/%d · PgUp/PgDn scroll",
 			start+1,
 			end,
 			len(rows),

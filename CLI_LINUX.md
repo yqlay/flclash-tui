@@ -20,13 +20,13 @@ build to an offline host.
 
 ## Install the Debian package
 
-Download the `v0.3.13` package matching `dpkg --print-architecture` from the
+Download the `v0.3.14` package matching `dpkg --print-architecture` from the
 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) page, then
 install it with:
 
 ```bash
-sudo dpkg -i flclash-tui_0.3.13_amd64.deb
-# or: sudo dpkg -i flclash-tui_0.3.13_arm64.deb
+sudo dpkg -i flclash-tui_0.3.14_amd64.deb
+# or: sudo dpkg -i flclash-tui_0.3.14_arm64.deb
 ```
 
 The package installs the executable at `/usr/bin/flclash`, bundled offline
@@ -153,9 +153,9 @@ renderer updates only terminal rows that changed.
 
 The layout is responsive. At normal sizes it keeps the sidebar and content
 panels. Below 88 columns or 18 rows it switches to a full-width navigation or
-content view; `←` opens navigation and `→`/Enter opens its selected page.
+content view; `←`/Esc opens navigation and `→`/Enter opens its selected page.
 Dashboard becomes a viewport whenever all status panels do not fit. Use
-`PgUp`/`PgDn` or the mouse wheel to reach network, memory, traffic, frontend,
+`PgUp`/`PgDn` to reach network, memory, traffic, frontend,
 and configuration rows. Terminals down to `44x10` remain operable; smaller
 terminals show an exact resize requirement without drawing broken borders.
 
@@ -166,7 +166,7 @@ Keyboard shortcuts:
 1 dashboard    2 proxies       3 profiles      4 requests
 5 connections  6 logs          7 tools         U refresh subscription
 ↑↓/ws move     Enter open/apply Esc back        d delay
-PgUp/PgDn scroll compact Dashboard              mouse wheel scroll
+PgUp/PgDn scroll compact Dashboard              mouse drag selects text for copying
 [/] proxy view r refresh       R reload         S system proxy
 c start/stop   x clear/all     v speed         e edit/export
 F2/u rename    n import/check  A test group    q detach TUI
