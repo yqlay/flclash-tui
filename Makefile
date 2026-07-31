@@ -39,12 +39,13 @@ CLI_OUTPUT ?= dist/flclash
 cli-linux:
 	@mkdir -p $$(dirname $(abspath $(CLI_OUTPUT)))
 	@cd core && CGO_ENABLED=0 go build -tags cli -trimpath -ldflags "-s -w" -o $(abspath $(CLI_OUTPUT)) .
+	@ln -sfn "$(notdir $(abspath $(CLI_OUTPUT)))" "$(dir $(abspath $(CLI_OUTPUT)))flc"
 	@mkdir -p "$(dir $(abspath $(CLI_OUTPUT)))data"
 	@for geo_file in GEOIP.metadb GEOIP.dat GEOSITE.dat ASN.mmdb; do \
 		install -m 0644 "assets/data/$$geo_file" \
 			"$(dir $(abspath $(CLI_OUTPUT)))data/$$geo_file"; \
 	done
-	@echo "Built $(CLI_OUTPUT)"
+	@echo "Built $(CLI_OUTPUT) and $(dir $(CLI_OUTPUT))flc"
 
 package-linux-deb:
 	bash packaging/build-deb.sh

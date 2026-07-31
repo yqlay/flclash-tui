@@ -4,7 +4,7 @@ package main
 
 import (
 	"bufio"
-	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -23,31 +22,56 @@ import (
 )
 
 const (
-	tuiServiceSocketFilename = ".flclash-cli-service.sock"
-	tuiCoreSocketFilename    = ".flclash-cli-core.sock"
-	tuiServiceLogFilename    = "flclash-cli-service.log"
-	tuiServiceReloadTimeout  = 2 * time.Minute
+	tuiServiceProtocolVersion = 2
+	tuiServiceSocketFilename  = ".flclash-cli-service.sock"
+	tuiCoreSocketFilename     = ".flclash-cli-core.sock"
+	tuiServiceLogFilename     = "flclash-cli-service.log"
+	tuiServiceReloadTimeout   = 2 * time.Minute
 )
 
 type tuiServiceRequest struct {
-	Action     string `json:"action"`
-	ConfigPath string `json:"config_path,omitempty"`
-	ProxyName  string `json:"proxy_name,omitempty"`
-	MixedPort  int    `json:"mixed_port,omitempty"`
-	TestURL    string `json:"test_url,omitempty"`
+	ProtocolVersion  int          `json:"protocol_version,omitempty"`
+	RequestID        string       `json:"request_id,omitempty"`
+	ExpectedRevision *uint64      `json:"expected_revision,omitempty"`
+	Action           string       `json:"action"`
+	ConfigPath       string       `json:"config_path,omitempty"`
+	ProxyName        string       `json:"proxy_name,omitempty"`
+	MixedPort        int          `json:"mixed_port,omitempty"`
+	TestURL          string       `json:"test_url,omitempty"`
+	Settings         *tuiSettings `json:"settings,omitempty"`
+	Enabled          *bool        `json:"enabled,omitempty"`
+	ExpectedSHA256   string       `json:"expected_sha256,omitempty"`
+	AfterRevision    uint64       `json:"after_revision,omitempty"`
+	WatchTimeoutMS   int          `json:"watch_timeout_ms,omitempty"`
 }
 
 type tuiServiceStatus struct {
-	OK         bool            `json:"ok"`
-	Error      string          `json:"error,omitempty"`
-	PID        int             `json:"pid"`
-	Version    string          `json:"version"`
-	HomeDir    string          `json:"home_dir"`
-	ConfigPath string          `json:"config_path"`
-	CoreSocket string          `json:"core_socket"`
-	Running    bool            `json:"running"`
-	Delay      int             `json:"delay,omitempty"`
-	Speed      *tuiSpeedResult `json:"speed,omitempty"`
+	ProtocolVersion int             `json:"protocol_version,omitempty"`
+	RequestID       string          `json:"request_id,omitempty"`
+	Revision        uint64          `json:"revision,omitempty"`
+	OK              bool            `json:"ok"`
+	ErrorCode       string          `json:"error_code,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	PID             int             `json:"pid"`
+	Version         string          `json:"version"`
+	HomeDir         string          `json:"home_dir"`
+	ConfigPath      string          `json:"config_path"`
+	CoreSocket      string          `json:"core_socket"`
+	Running         bool            `json:"running"`
+	SystemProxy     bool            `json:"system_proxy"`
+	FrontendCount   int             `json:"frontend_count"`
+	Delay           int             `json:"delay,omitempty"`
+	Speed           *tuiSpeedResult `json:"speed,omitempty"`
+}
+
+type tuiServiceError struct {
+	Code     string
+	Revision uint64
+	Message  string
+}
+
+func (e *tuiServiceError) Error() string {
+	return e.Message
 }
 
 type tuiServiceClient struct {
@@ -86,10 +110,21 @@ func (c *tuiServiceClient) request(action, configPath string) (tuiServiceStatus,
 func (c *tuiServiceClient) requestPayload(
 	request tuiServiceRequest,
 ) (tuiServiceStatus, error) {
+	if request.ProtocolVersion == 0 {
+		request.ProtocolVersion = tuiServiceProtocolVersion
+	}
+	if request.RequestID == "" {
+		request.RequestID = newTUIServiceRequestID()
+	}
 	requestTimeout := c.timeout
 	switch request.Action {
 	case "reload":
 		requestTimeout = c.reloadTimeout
+	case "watch":
+		requestTimeout = time.Duration(request.WatchTimeoutMS)*time.Millisecond + 2*time.Second
+		if requestTimeout < c.timeout {
+			requestTimeout = c.timeout
+		}
 	case "speed_proxy", "speed_route":
 		requestTimeout = tuiSpeedConnectTimeout + tuiSpeedTestDuration + 2*time.Second
 	case "delay_route":
@@ -112,9 +147,21 @@ func (c *tuiServiceClient) requestPayload(
 		if status.Error == "" {
 			status.Error = "background service rejected the request"
 		}
-		return status, errors.New(status.Error)
+		return status, &tuiServiceError{
+			Code:     status.ErrorCode,
+			Revision: status.Revision,
+			Message:  status.Error,
+		}
 	}
 	return status, nil
+}
+
+func newTUIServiceRequestID() string {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err == nil {
+		return fmt.Sprintf("%x", value[:])
+	}
+	return fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
 }
 
 func (c *tuiServiceClient) status() (tuiServiceStatus, error) {
@@ -125,12 +172,87 @@ func (c *tuiServiceClient) start() (tuiServiceStatus, error) {
 	return c.request("start", "")
 }
 
+func (c *tuiServiceClient) startAtRevision(
+	revision uint64,
+) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{
+		Action:           "start",
+		ExpectedRevision: &revision,
+	})
+}
+
 func (c *tuiServiceClient) stop() (tuiServiceStatus, error) {
 	return c.request("stop", "")
 }
 
+func (c *tuiServiceClient) stopAtRevision(
+	revision uint64,
+) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{
+		Action:           "stop",
+		ExpectedRevision: &revision,
+	})
+}
+
 func (c *tuiServiceClient) reload(configPath string) (tuiServiceStatus, error) {
 	return c.request("reload", configPath)
+}
+
+func (c *tuiServiceClient) reloadAtRevision(
+	configPath string,
+	revision uint64,
+) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{
+		Action:           "reload",
+		ConfigPath:       configPath,
+		ExpectedRevision: &revision,
+	})
+}
+
+func (c *tuiServiceClient) reloadAtRevisionWithDigest(
+	configPath string,
+	revision uint64,
+	expectedSHA256 string,
+) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{
+		Action:           "reload",
+		ConfigPath:       configPath,
+		ExpectedRevision: &revision,
+		ExpectedSHA256:   expectedSHA256,
+	})
+}
+
+func (c *tuiServiceClient) applySettings(
+	settings tuiSettings,
+	revision uint64,
+) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{
+		Action:           "apply_settings",
+		Settings:         &settings,
+		ExpectedRevision: &revision,
+	})
+}
+
+func (c *tuiServiceClient) setSystemProxy(
+	enabled bool,
+	revision uint64,
+) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{
+		Action:           "set_system_proxy",
+		Enabled:          &enabled,
+		ExpectedRevision: &revision,
+	})
+}
+
+func (c *tuiServiceClient) watch(
+	afterRevision uint64,
+	timeout time.Duration,
+) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{
+		Action:         "watch",
+		AfterRevision:  afterRevision,
+		WatchTimeoutMS: int(timeout / time.Millisecond),
+	})
 }
 
 func (c *tuiServiceClient) shutdown() error {
@@ -196,7 +318,8 @@ func ensureTUIService(
 ) (*tuiServiceClient, tuiServiceStatus, error) {
 	client := newTUIServiceClient(paths.homeDir)
 	if status, err := client.status(); err == nil {
-		if status.Version == cliVersion {
+		if status.Version == cliVersion &&
+			status.ProtocolVersion == tuiServiceProtocolVersion {
 			if err := validateTUIServiceTarget(
 				paths,
 				status,
@@ -245,7 +368,7 @@ func ensureTUIService(
 			return nil, tuiServiceStatus{}, err
 		}
 		if wasRunning {
-			status, err = client.start()
+			status, err = client.startAtRevision(status.Revision)
 			if err != nil {
 				return nil, tuiServiceStatus{}, fmt.Errorf(
 					"restart listeners after service upgrade: %w",
@@ -305,7 +428,7 @@ func ensureTUIService(
 			return nil, tuiServiceStatus{}, err
 		}
 		if wasRunning {
-			status, err = client.start()
+			status, err = client.startAtRevision(status.Revision)
 			if err != nil {
 				return nil, tuiServiceStatus{}, fmt.Errorf(
 					"restart listeners after service migration: %w",
@@ -603,10 +726,23 @@ func runTUIService(
 	}
 	_ = os.Chmod(coreSocket, 0o600)
 
-	var lock sync.Mutex
-	running := false
 	shutdown := make(chan struct{})
 	var shutdownOnce sync.Once
+	runtime := newTUIServiceRuntime(
+		paths,
+		testURL,
+		coreSocket,
+		setupParams,
+		func() {
+			shutdownOnce.Do(func() { close(shutdown) })
+		},
+	)
+	if settings := loadTUIConfiguredSettings(paths.configPath, true); settings != nil {
+		runtime.setSystemProxyState(
+			linuxSystemProxyMatches(settings.MixedPort),
+			settings.MixedPort,
+		)
+	}
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(interrupt)
@@ -640,12 +776,20 @@ func runTUIService(
 				})
 				return
 			}
-			if request.Action == "reload" {
+			if request.Action == "reload" ||
+				request.Action == "apply_settings" {
 				_ = connection.SetDeadline(
 					time.Now().Add(tuiServiceReloadTimeout + 5*time.Second),
 				)
+			} else if request.Action == "watch" {
+				watchTimeout := time.Duration(request.WatchTimeoutMS) * time.Millisecond
+				if watchTimeout <= 0 || watchTimeout > 30*time.Second {
+					watchTimeout = 30 * time.Second
+				}
+				_ = connection.SetDeadline(time.Now().Add(watchTimeout + 2*time.Second))
 			} else if request.Action == "speed_proxy" ||
-				request.Action == "speed_route" {
+				request.Action == "speed_route" ||
+				request.Action == "delay_route" {
 				_ = connection.SetDeadline(
 					time.Now().Add(
 						tuiSpeedConnectTimeout +
@@ -654,148 +798,7 @@ func runTUIService(
 					),
 				)
 			}
-			lock.Lock()
-			defer lock.Unlock()
-			status := tuiServiceStatus{
-				OK:         true,
-				PID:        os.Getpid(),
-				Version:    cliVersion,
-				HomeDir:    paths.homeDir,
-				ConfigPath: paths.configPath,
-				CoreSocket: coreSocket,
-				Running:    running,
-			}
-			switch request.Action {
-			case "status":
-			case "start":
-				if !running && !handleStartListener() {
-					status.OK = false
-					status.Error = "start proxy listeners failed"
-				} else {
-					running = true
-				}
-			case "stop":
-				if running && !handleStopListener() {
-					status.OK = false
-					status.Error = "stop proxy listeners failed"
-				} else {
-					running = false
-				}
-			case "reload":
-				reloadPath := request.ConfigPath
-				if reloadPath == "" {
-					reloadPath = paths.configPath
-				}
-				reloadedParams, reloadErr := reloadTUIServiceConfig(
-					paths,
-					reloadPath,
-					testURL,
-					coreSocket,
-					setupParams,
-					running,
-				)
-				if reloadErr != nil {
-					status.OK = false
-					status.Error = reloadErr.Error()
-				} else {
-					paths.configPath = reloadPath
-					setupParams = reloadedParams
-				}
-			case "speed_proxy":
-				client, closeClient, clientErr := newTUIProxyNodeHTTPClient(
-					request.ProxyName,
-				)
-				if clientErr != nil {
-					status.OK = false
-					status.Error = clientErr.Error()
-					break
-				}
-				result, speedErr := runTUIDownloadSpeedTest(
-					context.Background(),
-					client,
-				)
-				closeClient()
-				if speedErr != nil {
-					status.OK = false
-					status.Error = speedErr.Error()
-				} else {
-					status.Speed = &result
-				}
-			case "speed_route", "delay_route":
-				wasRunning := running
-				if !running {
-					reloadedParams, reloadErr := reloadTUIServiceConfig(
-						paths,
-						paths.configPath,
-						testURL,
-						coreSocket,
-						setupParams,
-						false,
-					)
-					if reloadErr != nil {
-						status.OK = false
-						status.Error = "prepare stopped Service for test: " +
-							reloadErr.Error()
-						break
-					}
-					setupParams = reloadedParams
-					if !handleStartListener() {
-						status.OK = false
-						status.Error = "start proxy listeners for test failed"
-						break
-					}
-				}
-				running = true
-				client, closeClient, clientErr := newTUIRouteHTTPClient(
-					request.MixedPort,
-				)
-				if clientErr == nil {
-					if request.Action == "speed_route" {
-						result, speedErr := runTUIDownloadSpeedTest(
-							context.Background(),
-							client,
-						)
-						if speedErr != nil {
-							clientErr = speedErr
-						} else {
-							status.Speed = &result
-						}
-					} else {
-						delay, delayErr := runTUIRouteDelayTest(
-							context.Background(),
-							client,
-							request.TestURL,
-						)
-						if delayErr != nil {
-							clientErr = delayErr
-						} else {
-							status.Delay = delay
-						}
-					}
-					closeClient()
-				}
-				if !wasRunning {
-					if !handleStopListener() && clientErr == nil {
-						clientErr = errors.New(
-							"restore stopped Service state failed",
-						)
-					}
-					running = false
-				}
-				if clientErr != nil {
-					status.OK = false
-					status.Error = clientErr.Error()
-				}
-			case "shutdown":
-				running = false
-				status.Running = false
-				shutdownOnce.Do(func() { close(shutdown) })
-			default:
-				status.OK = false
-				status.Error = "unknown service action " + strconv.Quote(request.Action)
-			}
-			status.ConfigPath = paths.configPath
-			status.Running = running
+			status := runtime.handle(request)
 			_ = json.NewEncoder(connection).Encode(status)
 		}(connection)
 	}
@@ -908,6 +911,11 @@ func removeStaleTUIServiceSocket(homeDir, socketPath string) error {
 }
 
 func stopCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash stop")
+		fmt.Println("Stop Core listeners and the managed system proxy; keep the backend running.")
+		return nil
+	}
 	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	directoryArg := fs.String("directory", "", "FlClash data directory")
@@ -923,15 +931,13 @@ func stopCommand(args []string) error {
 	if err != nil {
 		return errors.New("no flclash background service is running")
 	}
-	settings := loadTUIConfiguredSettings(status.ConfigPath, true)
-	if settings != nil && linuxSystemProxyMatches(settings.MixedPort) {
-		if err := setLinuxSystemProxy(settings.MixedPort, false); err != nil {
-			return fmt.Errorf("disable system proxy: %w", err)
-		}
-	}
-	if err := client.shutdown(); err != nil {
+	if err := validateCurrentTUIService(status); err != nil {
 		return err
 	}
-	fmt.Println("FlClash TUI background service stopped")
+	status, err = client.stopAtRevision(status.Revision)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Core stopped; backend remains available (revision %d)\n", status.Revision)
 	return nil
 }

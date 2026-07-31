@@ -1,3 +1,14 @@
+## FlClash TUI v0.4.0
+
+- Split `flclash` backend/TUI management from the `flc` command proxy.
+- Added a single per-user backend with multi-frontend IPC, revision conflicts,
+  request deduplication, watch notifications, profile locks, and transactional
+  config rollback.
+- Expanded lifecycle, service, profile, proxy, config, system-proxy, TUN,
+  mode, connection, Geo, environment, doctor, completion, and help commands.
+- Split Settings and Maintenance, made `q` and `Ctrl+C` detach only the current
+  frontend, and kept the complete TUI usable at `40x10`.
+
 ## v0.8.94
 
 - Fix macos performance issue

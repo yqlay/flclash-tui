@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,6 +59,7 @@ func TestTUIRenderingFitsTerminalWidth(t *testing.T) {
 		height int
 	}{
 		{width: 40, height: 8},
+		{width: 40, height: 10},
 		{width: 44, height: 10},
 		{width: 50, height: 12},
 		{width: 64, height: 14},
@@ -67,7 +69,7 @@ func TestTUIRenderingFitsTerminalWidth(t *testing.T) {
 		{width: 80, height: 24},
 		{width: 120, height: 30},
 	} {
-		for page := tuiPageDashboard; page <= tuiPageTools; page++ {
+		for page := tuiPageDashboard; page < tuiPageCount; page++ {
 			snapshot := populatedTUISnapshot(page)
 			var output bytes.Buffer
 			drawTUIAtSize(&output, snapshot, paths, "127.0.0.1:9090", true, true, size.width, size.height)
@@ -91,7 +93,7 @@ func TestTUIRenderingFitsTerminalWidth(t *testing.T) {
 func TestTUIRenderingFitsEveryPositiveTerminalSize(t *testing.T) {
 	paths := cliPaths{configPath: "/tmp/flclash/config.yaml"}
 	snapshots := make([]tuiSnapshot, 0, int(tuiPageCount))
-	for page := tuiPageDashboard; page <= tuiPageTools; page++ {
+	for page := tuiPageDashboard; page < tuiPageCount; page++ {
 		snapshots = append(snapshots, populatedTUISnapshot(page))
 	}
 	for width := 1; width <= 160; width++ {
@@ -196,7 +198,7 @@ func TestTUICompactDashboardCanScrollEverySection(t *testing.T) {
 	model.snapshot.Frontends = []cliProcessOwner{{PID: 101}, {PID: 202}}
 
 	first := stripTUIANSI(model.View())
-	if !strings.Contains(first, "Service") ||
+	if !strings.Contains(first, "Core") ||
 		strings.Contains(first, "TUI frontends") {
 		t.Fatalf("first compact viewport is wrong:\n%s", first)
 	}
@@ -246,7 +248,8 @@ func TestTUICompactNavigationTracksSelectedPage(t *testing.T) {
 		10,
 	))
 	if !strings.Contains(output, "Navigation") ||
-		!strings.Contains(output, "7  Tools") {
+		!strings.Contains(output, "7  Settings") ||
+		!strings.Contains(output, "8  Maintenance") {
 		t.Fatalf("compact navigation hid selected page:\n%s", output)
 	}
 }
@@ -256,6 +259,7 @@ func TestTUIEscReturnsFromEveryPageToNavigationAtEveryLayout(t *testing.T) {
 		width  int
 		height int
 	}{
+		{width: 40, height: 10},
 		{width: 44, height: 10},
 		{width: 64, height: 14},
 		{width: 87, height: 17},
@@ -263,7 +267,7 @@ func TestTUIEscReturnsFromEveryPageToNavigationAtEveryLayout(t *testing.T) {
 		{width: 120, height: 30},
 	}
 	for _, size := range sizes {
-		for page := tuiPageDashboard; page <= tuiPageTools; page++ {
+		for page := tuiPageDashboard; page < tuiPageCount; page++ {
 			t.Run(fmt.Sprintf("%dx%d/%s", size.width, size.height, tuiPageName(page)), func(t *testing.T) {
 				model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 				model.width = size.width
@@ -286,7 +290,7 @@ func TestTUIEscReturnsFromEveryPageToNavigationAtEveryLayout(t *testing.T) {
 						page,
 					)
 				}
-				if size.width >= 44 &&
+				if size.width >= 40 &&
 					size.height >= 10 &&
 					(size.width < 88 || size.height < 18) {
 					output := stripTUIANSI(model.View())
@@ -693,10 +697,9 @@ func TestTUIQuitKeysUseGracefulShutdownPath(t *testing.T) {
 			expected: tuiKeyQuit,
 		},
 		{
-			name:              "ctrl+c stops service",
-			key:               tea.KeyMsg{Type: tea.KeyCtrlC},
-			expected:          tuiKeyInterrupt,
-			stopServiceOnExit: true,
+			name:     "ctrl+c detaches TUI",
+			key:      tea.KeyMsg{Type: tea.KeyCtrlC},
+			expected: tuiKeyInterrupt,
 		},
 	}
 	for _, test := range tests {
@@ -786,17 +789,17 @@ func TestTUISettingsExposeAllInteractiveRows(t *testing.T) {
 		"IPv6          OFF",
 		"Log level     info",
 		"TUN           ON",
-		"Service       STOPPED · Enter to start",
-		"System proxy  DISABLED · Enter to enable (starts Service)",
+		"Core          STOPPED · Enter to start",
+		"System proxy  DISABLED · Enter to enable (starts Core)",
 	} {
 		if !strings.Contains(plain, row) {
 			t.Fatalf("settings view does not contain %q:\n%s", row, plain)
 		}
 	}
-	serviceIndex := strings.Index(plain, "Service       STOPPED · Enter to start")
+	serviceIndex := strings.Index(plain, "Core          STOPPED · Enter to start")
 	systemProxyIndex := strings.Index(
 		plain,
-		"System proxy  DISABLED · Enter to enable (starts Service)",
+		"System proxy  DISABLED · Enter to enable (starts Core)",
 	)
 	if serviceIndex < 0 || systemProxyIndex < 0 || serviceIndex >= systemProxyIndex {
 		t.Fatalf("service row must appear before system proxy:\n%s", plain)
@@ -852,13 +855,13 @@ func TestTUISettingsRunningServiceUnlocksSystemProxy(t *testing.T) {
 	var output strings.Builder
 	drawTUISettings(&output, snapshot, 80, 24)
 	plain := stripTUIANSI(output.String())
-	if !strings.Contains(plain, "Service       RUNNING · Enter to stop") {
+	if !strings.Contains(plain, "Core          RUNNING · Enter to stop") {
 		t.Fatalf("running settings view has no clear service state:\n%s", plain)
 	}
 	if !strings.Contains(plain, "System proxy  DISABLED · Enter to enable") {
 		t.Fatalf("running settings view has no clear system proxy state:\n%s", plain)
 	}
-	if strings.Contains(plain, "(starts Service)") {
+	if strings.Contains(plain, "(starts Core)") {
 		t.Fatalf("running settings view kept automatic-start hint:\n%s", plain)
 	}
 }
@@ -881,7 +884,8 @@ func TestTUISidebarMatchesGraphicalInformationArchitecture(t *testing.T) {
 		"Requests",
 		"Connections",
 		"Logs",
-		"Tools",
+		"Settings",
+		"Maintenance",
 	}
 	previous := -1
 	for _, label := range labels {
@@ -894,7 +898,7 @@ func TestTUISidebarMatchesGraphicalInformationArchitecture(t *testing.T) {
 		}
 		previous = index
 	}
-	for _, removed := range []string{"Settings", "Providers"} {
+	for _, removed := range []string{"Providers"} {
 		if strings.Contains(plain, removed) {
 			t.Fatalf("sidebar still exposes standalone %s page:\n%s", removed, plain)
 		}
@@ -931,7 +935,7 @@ func TestTUIProxyViewsKeepProvidersInsideProxies(t *testing.T) {
 	}
 }
 
-func TestTUIToolsExposeSettingsAndMaintenance(t *testing.T) {
+func TestTUISeparatesSettingsAndMaintenance(t *testing.T) {
 	snapshot := tuiSnapshot{
 		Page: tuiPageTools,
 		Settings: tuiSettings{
@@ -949,13 +953,23 @@ func TestTUIToolsExposeSettingsAndMaintenance(t *testing.T) {
 		"Unified delay",
 		"TCP concurrent",
 		"System proxy",
+	} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("Settings does not contain %q:\n%s", expected, plain)
+		}
+	}
+	output.Reset()
+	snapshot.Page = tuiPageMaintenance
+	drawTUIMaintenance(&output, snapshot, 100, 30)
+	plain = stripTUIANSI(output.String())
+	for _, expected := range []string{
 		"Edit current YAML",
 		"Update Mihomo Geo databases",
 		"Reset traffic counters",
 		"if stable, do not update lightly",
 	} {
 		if !strings.Contains(plain, expected) {
-			t.Fatalf("Tools does not contain %q:\n%s", expected, plain)
+			t.Fatalf("Maintenance does not contain %q:\n%s", expected, plain)
 		}
 	}
 }
@@ -1060,7 +1074,7 @@ func TestTUIEditKeyIsPageScoped(t *testing.T) {
 	if command := model.handleKey(tuiKeyEdit); command != nil {
 		t.Fatal("Dashboard edit key unexpectedly opened an editor")
 	}
-	if !strings.Contains(model.snapshot.Status, "Profiles and Tools") {
+	if !strings.Contains(model.snapshot.Status, "Profiles and Maintenance") {
 		t.Fatalf("Dashboard edit guidance = %q", model.snapshot.Status)
 	}
 
@@ -2412,22 +2426,12 @@ rules:
 	if !waitForTUITestPort(mixedPort, true, time.Second) {
 		t.Fatal("configuration edit interrupted the mixed listener")
 	}
-	model.stopServiceOnExit = true
 	model.shutdown()
-	if !waitForTUITestPort(mixedPort, false, 2*time.Second) {
-		t.Fatal("Ctrl+C-style shutdown did not stop the mixed listener")
+	if !waitForTUITestPort(mixedPort, true, time.Second) {
+		t.Fatal("Ctrl+C-style detach stopped the mixed listener")
 	}
-	serviceStopped := false
-	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := service.status(); err != nil {
-			serviceStopped = true
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !serviceStopped {
-		t.Fatal("Ctrl+C-style shutdown left the background service running")
+	if status, err := service.status(); err != nil || !status.Running {
+		t.Fatalf("Ctrl+C-style detach stopped the backend: %+v, %v", status, err)
 	}
 }
 
@@ -2639,6 +2643,97 @@ func TestTUIStateRestoresActiveProfileAndProxySelections(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("saved state mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestTUIStateConcurrentUpdatesKeepEveryMutation(t *testing.T) {
+	directory := t.TempDir()
+	const updates = 32
+	var wait sync.WaitGroup
+	wait.Add(updates)
+	errors := make(chan error, updates)
+	for index := 0; index < updates; index++ {
+		index := index
+		go func() {
+			defer wait.Done()
+			errors <- rememberTUIProxySelection(
+				directory,
+				fmt.Sprintf("group-%02d", index),
+				fmt.Sprintf("proxy-%02d", index),
+			)
+		}()
+	}
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	selected := loadTUISelectedProxies(directory)
+	if len(selected) != updates {
+		t.Fatalf("saved %d concurrent updates, want %d", len(selected), updates)
+	}
+	if _, err := os.Stat(filepath.Join(directory, tuiStateLockName)); err != nil {
+		t.Fatalf("stable state lock file is missing: %v", err)
+	}
+}
+
+func TestTUIProfileRollbackDoesNotOverwriteConcurrentChange(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.yaml")
+	original := []byte("mode: rule\n")
+	edited := []byte("mode: global\n")
+	concurrent := []byte("mode: direct\n")
+	if err := os.WriteFile(path, concurrent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backup := tuiProfileBackup{
+		data:          original,
+		mode:          0o600,
+		updatedSHA256: tuiBytesSHA256(edited),
+	}
+	if err := restoreTUIProfileIfUnchanged(directory, path, backup); err == nil {
+		t.Fatal("concurrent profile change was overwritten")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, concurrent) {
+		t.Fatalf("concurrent profile became %q", data)
+	}
+}
+
+func TestTUIProfileLockSerializesFrontends(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.yaml")
+	first, err := acquireTUIProfileLocks(directory, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		second, lockErr := acquireTUIProfileLocks(directory, path)
+		if lockErr == nil {
+			second.release()
+		}
+		result <- lockErr
+	}()
+	select {
+	case err := <-result:
+		first.release()
+		t.Fatalf("second frontend bypassed profile lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	first.release()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second frontend did not acquire released profile lock")
 	}
 }
 

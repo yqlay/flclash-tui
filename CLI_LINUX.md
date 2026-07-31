@@ -14,22 +14,24 @@ git submodule update --init --recursive
 make cli-linux
 ```
 
-The binary is written to `dist/flclash`; bundled Geo databases are copied
+The binary is written to `dist/flclash`, with `dist/flc` as its command-wrapper
+entry point; bundled Geo databases are copied
 to `dist/data`. Keep that directory beside the binary when moving a source
 build to an offline host.
 
 ## Install the Debian package
 
-Download the `v0.3.15` package matching `dpkg --print-architecture` from the
+Download the `v0.4.0` package matching `dpkg --print-architecture` from the
 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) page, then
 install it with:
 
 ```bash
-sudo dpkg -i flclash-tui_0.3.15_amd64.deb
-# or: sudo dpkg -i flclash-tui_0.3.15_arm64.deb
+sudo dpkg -i flclash-tui_0.4.0_amd64.deb
+# or: sudo dpkg -i flclash-tui_0.4.0_arm64.deb
 ```
 
-The package installs the executable at `/usr/bin/flclash`, bundled offline
+The package installs `/usr/bin/flclash` and the `/usr/bin/flc` command-wrapper
+entry point, bundled offline
 Geo databases under `/usr/share/flclash-tui/data`, and documentation under
 `/usr/share/doc/flclash-tui`. It declares `Conflicts/Replaces` for the old
 `flclash-cli` Debian package, so installing it migrates the executable name
@@ -60,7 +62,9 @@ a new linked profile. Refresh preserves local mode, port, TUN, LAN, IPv6,
 unified-delay, TCP-concurrent, and log-level settings. The replacement is
 validated and written atomically; an active profile is hot-reloaded without
 stopping running listeners, and the original file is restored when reload
-fails.
+fails. Concurrent editors, subscription refreshes, settings commits, renames,
+and restores use per-profile locks plus backend revision and content-digest
+checks, so a stale frontend cannot overwrite a newer change during rollback.
 
 To give a downloaded profile a readable file name, select the inactive profile
 in Profiles and press `F2` or `u`. Type the new name in the visible input panel
@@ -70,36 +74,38 @@ another profile first when the current profile needs to be renamed.
 
 Opening the TUI loads the core configuration but leaves all proxy listeners
 stopped, so the mixed port is not occupied while settings are being prepared.
-The Dashboard exposes `Service`, `System proxy`, `TUN`, `Mode`, and `Mixed
+The Dashboard exposes `Core`, `System proxy`, `TUN`, `Mode`, and `Mixed
 port`. Turning `System proxy` on automatically applies staged settings, starts
-the service, and then enables the desktop proxy; there is no separate manual
-start step. If desktop proxy setup fails, the automatic service start is rolled
-back. Stopping the service also disables a system proxy owned by that TUI
-instance. Tools contains the complete settings list (`Mixed port`, `TUN`,
+Core, and then enables the desktop proxy; there is no separate manual
+start step. If desktop proxy setup fails, the automatic Core start is rolled
+back. Stopping Core also disables the system proxy owned by the backend.
+Settings contains the complete settings list (`Mixed port`, `TUN`,
 `Allow LAN`, `IPv6`, `Unified delay`, `TCP concurrent`, `Mode`, and `Log
-level`) plus YAML and maintenance actions. Unified delay defaults to the
+level`); Maintenance contains YAML editing, backup/restore, Geo data, traffic,
+and update actions. Unified delay defaults to the
 original FlClash warmed-connection measurement instead of including every
 first-connection and TLS setup cost. TCP concurrent also follows the original
 FlClash default. Rows show the current state before the available action—for
-example, `Service RUNNING · Enter to stop` means the service is currently
+example, `Core RUNNING · Enter to stop` means Core is currently
 running.
 
-By default, the TUI starts or reconnects to a detached local Service and uses
-private Unix sockets for service and Core management, so it does not reserve a
+By default, the TUI starts or reconnects to a detached per-user backend and uses
+private Unix sockets for backend and Core management, so it does not reserve a
 TCP controller port. Pressing `q` detaches only the TUI and returns to the
-shell; a running Service keeps proxying in the background. Reopening
-`flclash` reconnects to it. Pressing `Ctrl+C`, or running
-`flclash stop`, stops the managed Service/Core.
+shell; a running Core keeps proxying in the background. Reopening
+`flclash` reconnects to it. `Ctrl+C` also detaches only that frontend.
+`flclash stop` stops Core and its managed system proxy while keeping the
+backend available; `flclash service stop` terminates the backend and disconnects
+all frontends.
 
-Exactly one managed FlClash Service/Core is allowed per Linux user. The
+Exactly one managed FlClash backend is allowed per Linux user. The
 manager socket and kernel-backed ownership lock live under
 `/run/user/<UID>/flclash` (with a UID-specific secure temporary fallback), so
 changing `--directory` or `XDG_CONFIG_HOME` cannot create a second backend.
 Multiple TUI frontends are allowed and all attach to that single backend. An
 additional frontend opens with a notice listing the PID and TTY of frontends
 that are already active; Dashboard keeps the frontend count current. `q`
-closes only the current frontend. `Ctrl+C` stops the shared backend, so every
-attached frontend will report that the controller stopped. Frontend session
+and `Ctrl+C` close only the current frontend. Frontend session
 locks disappear automatically after a clean exit or crash. On the first
 v0.3.12 launch, the client also detects and migrates the legacy manager socket
 from the previous configuration-directory location.
@@ -115,9 +121,9 @@ The active profile, subscription bindings, and last proxy selection for each gro
 `.flclash-cli-state.json` under the active data directory. The file is written
 atomically with user-only permissions. On the next launch, the TUI restores
 that profile, its YAML settings, and matching proxy-group selections. Runtime
-Service state belongs to the detached Service: after `q`, reopening the TUI
-shows the same running state. After `Ctrl+C` or `flclash stop`, the next
-launch starts with listeners stopped.
+Core state belongs to the detached backend: after `q` or `Ctrl+C`, reopening
+the TUI shows the same running state. After `flclash stop`, the next frontend
+starts with listeners stopped while reusing the existing backend.
 
 The sidebar follows the graphical FlClash information architecture:
 
@@ -144,8 +150,9 @@ The sidebar follows the graphical FlClash information architecture:
   connection or `x` to close all.
 - Logs: latest captured core events. Press `e` to export them under the active
   data directory's `logs/` folder or `x` to clear the view.
-- Tools: all core settings, current-YAML editing, backup/restore, Geo database
-  updates, traffic-counter reset, and a GitHub Release update check.
+- Settings: all Core, network, TUN, mode, port, and system-proxy settings.
+- Maintenance: current-YAML editing, backup/restore, Geo database updates,
+  traffic-counter reset, and a GitHub Release update check.
 
 The terminal runtime uses Bubble Tea's model-update-view event loop. Controller
 polling and long-running actions execute outside the input loop, while the
@@ -156,7 +163,7 @@ panels. Below 88 columns or 18 rows it switches to a full-width navigation or
 content view; `←`/Esc opens navigation and `→`/Enter opens its selected page.
 Dashboard becomes a viewport whenever all status panels do not fit. Use
 `PgUp`/`PgDn` to reach network, memory, traffic, frontend,
-and configuration rows. Terminals down to `44x10` remain operable; smaller
+and configuration rows. Terminals down to `40x10` remain operable; smaller
 terminals show an exact resize requirement without drawing broken borders.
 
 Keyboard shortcuts:
@@ -164,13 +171,13 @@ Keyboard shortcuts:
 ```text
 ← sidebar      → content       Tab switch focus
 1 dashboard    2 proxies       3 profiles      4 requests
-5 connections  6 logs          7 tools         U refresh subscription
+5 connections  6 logs          7 settings      8 maintenance
+U refresh subscription
 ↑↓/ws move     Enter open/apply Esc back        d delay
 PgUp/PgDn scroll compact Dashboard              mouse drag selects text for copying
 [/] proxy view r refresh       R reload         S system proxy
 c start/stop   x clear/all     v speed         e edit/export
-F2/u rename    n import/check  A test group    q detach TUI
-Ctrl+C stop Service/Core and exit
+F2/u rename    n import/check  A test group    q/Ctrl+C detach TUI
 ```
 
 Each download speed test requests at most 100 MB for at most five seconds. A
@@ -178,14 +185,15 @@ completed transfer uses `100 MB / actual duration`; an incomplete transfer
 uses `downloaded MB / 5 seconds`. A whole-group test can therefore consume up
 to 100 MB per node.
 
-`q` exits only the frontend. `Ctrl+C` stops the managed Service/Core and exits.
-Neither key stops a Core connected through explicit `--no-start` external mode.
+`q` and `Ctrl+C` exit only the current frontend. Neither key stops managed Core
+or a Core connected through explicit `--no-start` external mode.
 
 The TUI starts with the sidebar focused. Use `↑↓/ws` and Enter to open a page,
-or press `1`–`7` directly. `←` always focuses the sidebar and `→` always opens
+or press `1`–`8` directly. `←` always focuses the sidebar and `→` always opens
 the highlighted sidebar page and focuses its content. `Tab` also switches
 between the two panels. On Proxies, Enter opens node selection and Esc returns
-to proxy groups; `[`/`]` changes between Groups and Providers. Dashboard and Tools support `↑↓/ws` selection
+to proxy groups; `[`/`]` changes between Groups and Providers. Dashboard,
+Settings, and Maintenance support `↑↓/ws` selection
 followed by Enter. Action keys are page-scoped, so `e`, `x`, and Enter do not
 trigger unrelated operations on another page.
 
@@ -213,14 +221,14 @@ the Mihomo executor. `SIGHUP` reloads the configuration.
 
 ## Run any command through FlClash
 
-Prefix any external command with `flclash` to run it through the Mixed Port of
-the currently running managed Service/Core:
+Prefix any external command with `flc` to run it through the Mixed Port of
+the currently running managed Core:
 
 ```bash
-flclash git clone https://github.com/owner/repository.git
-flclash curl https://example.com
-flclash wget https://example.com/file
-flclash npm install
+flc git clone https://github.com/owner/repository.git
+flc curl https://example.com
+flc wget https://example.com/file
+flc npm install
 ```
 
 The wrapper reads the live `mixed-port` value from the Core's private Unix API,
@@ -238,15 +246,15 @@ proxy variables to route through them.
 
 Successful commands receive their original arguments, terminal, signals,
 standard streams, and exit behavior without extra status text. A stopped
-Service/Core, unavailable controller, invalid or closed Mixed Port, missing
+Core, unavailable controller, invalid or closed Mixed Port, missing
 command, and process-start failure are reported in both English and Chinese.
 
-`flclash exec COMMAND ...` is an equivalent explicit spelling. Use
-`flclash -- COMMAND ...` when an external executable has the same name as a
-built-in FlClash command. Pipelines and redirection require an explicit shell:
+`flclash exec -- COMMAND ...` is the compatibility spelling. Unknown
+`flclash` commands are rejected so management typos cannot accidentally run an
+external program. Pipelines and redirection require an explicit shell:
 
 ```bash
-flclash sh -c 'curl -s https://example.com | jq .'
+flc sh -c 'curl -s https://example.com | jq .'
 ```
 
 ## Validate configuration
@@ -255,7 +263,28 @@ flclash sh -c 'curl -s https://example.com | jq .'
 ./dist/flclash check --config /path/to/config.yaml
 ```
 
-## Control a running instance
+## Control the backend and Core
+
+Run `flclash -help` for the full command map and `flclash COMMAND -help` for a
+specific command. Common lifecycle commands are:
+
+```bash
+flclash start
+flclash stop
+flclash restart
+flclash reload
+flclash status --watch
+flclash logs --follow
+flclash service status
+flclash service stop
+```
+
+`stop` keeps the backend ready for TUI and CLI clients. `service stop` is the
+explicit operation that terminates it. Profile, proxy, config, system-proxy,
+TUN, mode, connection, Geo, environment, doctor, and completion commands are
+also listed by `flclash -help`.
+
+## Control a running controller
 
 If the configuration enables Mihomo's external controller, the CLI can inspect
 proxy groups and select a proxy:
@@ -268,7 +297,7 @@ proxy groups and select a proxy:
 If the controller has a secret, pass `--secret` or keep the controller bound
 to localhost.
 
-TUN mode is exposed on Dashboard and Tools and may require elevated Linux
+TUN mode is exposed on Dashboard and Settings and may require elevated Linux
 network permissions. Desktop system-proxy support currently targets GNOME and
 MATE `gsettings`, matching the Linux integration used by FlClash.
 

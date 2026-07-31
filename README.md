@@ -10,14 +10,15 @@ FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 
 > 本项目是非官方衍生版本，不是 FlClash 官方发布版本，也不代表 FlClash 或 Mihomo 维护者。版权和许可证说明见 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
 
-## v0.3.15 最新更新
+## v0.4.0 最新更新
 
-- 修复 `~/.wgetrc` 中旧代理端口覆盖 `flclash wget ...` 实时 Mixed Port 的问题；包装器现在自动让 GNU Wget 跳过持久配置。
-- Wget 修复仅影响包装后的子进程，不修改用户的 `~/.wgetrc`，其他外部命令的参数保持不变。
-- Core 运行时 Dashboard 只显示私有 Unix API 返回的实时设置；待应用 YAML 设置仅在 Core 停止时显示，避免端口状态不一致。
-- 保留 v0.3.14 的小屏 Esc 层级回退和终端文字拖选复制修复。
+- 每个用户只运行一个后端，多个 TUI/CLI 前端通过带 revision 的 IPC 协议安全并发管理；冲突修改会被拒绝并要求刷新。
+- 新增 `flc COMMAND...` 独立入口。`flclash` 只负责 TUI 和管理命令，未知命令不再被当作外部程序执行。
+- 丰富 `start/stop/restart/reload/status/logs/service/profile/proxy/config` 等命令，并支持 `flclash -help` 与逐级 `-help`。
+- TUI 将 Settings 与 Maintenance 分页，`q` 和 `Ctrl+C` 都只退出当前前端；完整操作界面适配到 `40x10`。
+- 后端状态读取不再被测速阻塞，配置提交使用验证、原子写入、热重载和失败回滚事务。
 
-完整安装包与更新说明见 [FlClash TUI v0.3.15 Release](https://github.com/yqlay/flclash-tui/releases/tag/v0.3.15)。
+完整安装包与更新说明见 [FlClash TUI v0.4.0 Release](https://github.com/yqlay/flclash-tui/releases/tag/v0.4.0)。
 
 ## 适合哪些场景
 
@@ -48,7 +49,8 @@ FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 | Requests | 查看本次运行期间的活动请求和近期请求 |
 | Connections | 查看和关闭当前连接 |
 | Logs | 查看、清空和导出 Core 日志 |
-| Tools | 完整设置、备份恢复、Geo 数据库和版本检查 |
+| Settings | Core、网络、TUN、模式、端口和系统代理设置 |
+| Maintenance | YAML 编辑、备份恢复、Geo 数据库、流量重置和版本检查 |
 
 ## 安装
 
@@ -57,19 +59,19 @@ FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户�
 AMD64：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.15/flclash-tui_0.3.15_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.15/flclash-tui_0.3.15_amd64.deb.sha256
-sha256sum -c flclash-tui_0.3.15_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.3.15_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.0/flclash-tui_0.4.0_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.0/flclash-tui_0.4.0_amd64.deb.sha256
+sha256sum -c flclash-tui_0.4.0_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.4.0_amd64.deb
 ```
 
 ARM64：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.15/flclash-tui_0.3.15_arm64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.3.15/flclash-tui_0.3.15_arm64.deb.sha256
-sha256sum -c flclash-tui_0.3.15_arm64.deb.sha256
-sudo dpkg -i flclash-tui_0.3.15_arm64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.0/flclash-tui_0.4.0_arm64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.0/flclash-tui_0.4.0_arm64.deb.sha256
+sha256sum -c flclash-tui_0.4.0_arm64.deb.sha256
+sudo dpkg -i flclash-tui_0.4.0_arm64.deb
 ```
 
 查看本机 CPU 架构：
@@ -97,13 +99,13 @@ flclash
 4. 在 **Proxies** 中选择需要的节点。
 5. 在 **Dashboard** 中确认模式和端口，然后将 **System proxy** 切换为 ON。
 
-开启 **System proxy** 时，程序会自动应用当前设置、启动 Service/Core，再设置桌面系统代理，不需要手动先启动核心。停止 Service 时，由当前 TUI 开启的系统代理也会关闭。
+开启 **System proxy** 时，程序会自动应用当前设置、启动 Core，再设置桌面系统代理，不需要手动先启动核心。停止 Core 时，后端管理的系统代理也会关闭。
 
-每个 Linux 用户只会运行一个 FlClash Service/Core。可以在多个终端执行
+每个 Linux 用户只会运行一个 FlClash 后端/Core。可以在多个终端执行
 `flclash`，所有 TUI 都连接同一个后端；新前端会显示其他前端的 PID 和
 TTY。`q` 只退出当前 TUI 并返回 Shell，后台代理和其他 TUI 不受影响。
-`Ctrl+C` 会停止共享 Service/Core，因此其他前端也会显示后端已断开。也可以
-在 Shell 中执行 `flclash stop`。
+`Ctrl+C` 与 `q` 一样只退出当前前端。`flclash stop` 停止 Core 但保留后端；
+`flclash service stop` 才会终止共享后端并断开所有前端。
 
 导入成功后，程序会安全保存该 Profile 与订阅 URL 的绑定。在 **Profiles** 中选中它并按 `U`，程序会直接从已保存的 URL 重新拉取配置，不会再次要求输入链接。活动 Profile 会立即热重载，Service 运行时不会停止监听端口；更新会保留端口、模式、TUN、IPv6 等本地设置，验证或热重载失败时自动回滚。旧版本留下的未绑定 Profile 会被明确标记为本地配置，可用 `flclash profile link --config PROFILE URL` 一次性建立绑定。
 
@@ -113,13 +115,13 @@ TTY。`q` 只退出当前 TUI 并返回 Shell，后台代理和其他 TUI 不受
 ← 聚焦侧栏       → 打开栏目并聚焦内容       Tab 切换焦点
 ↑↓/ws             移动选择                  Enter 打开/执行
 PgUp/PgDn         滚动紧凑 Dashboard         鼠标滚轮同样可用
-1～7             快速打开对应栏目           r 刷新
+1～8             快速打开对应栏目           r 刷新
 [/]              切换代理组/Provider        Esc 返回代理组
 d                Dashboard 测当前路由延迟；Proxies 测全组/单节点延迟
 v                Dashboard 测当前路由速度；Proxies 测全组/单节点速度
-S                开关系统代理               c 启动/停止 Service
+S                开关系统代理               c 启动/停止 Core
 U                刷新已绑定订阅             n 导入新订阅
-q                仅退出 TUI                 Ctrl+C 停止 Service 并退出
+q / Ctrl+C       仅退出当前 TUI             c 启动/停止 Core
 ```
 
 所有主要功能都可以通过界面中的可选行完成，快捷键只是辅助操作，不要求记忆。
@@ -148,10 +150,10 @@ curl -x http://127.0.0.1:7890 -I --max-time 10 https://www.google.com
 让任意外部命令临时使用当前正在运行的 FlClash Mixed Port：
 
 ```bash
-flclash git clone https://github.com/owner/repository.git
-flclash curl https://example.com
-flclash wget https://example.com/file
-flclash npm install
+flc git clone https://github.com/owner/repository.git
+flc curl https://example.com
+flc wget https://example.com/file
+flc npm install
 ```
 
 FlClash 会为子命令设置大小写形式的 `HTTP_PROXY`、`HTTPS_PROXY` 和
@@ -161,22 +163,22 @@ CONNECT 转发 HTTPS。变量不会写入 Shell 配置，命令退出后自动�
 外部程序仍需支持这些标准代理环境变量；例如 `git`、`curl`、`wget`、npm
 支持，而完全忽略代理变量的程序不会因此自动代理。
 
-`flclash wget ...` 会额外传入 GNU Wget 的 `--no-config`，防止
+`flc wget ...` 会额外传入 GNU Wget 的 `--no-config`，防止
 `~/.wgetrc` 中持久保存的旧代理覆盖实时 Mixed Port；用户文件不会被修改。
 
-如果 Service/Core 未运行、Core API 无法访问、Mixed Port 未监听或外部命令
+如果 Core 未运行、Core API 无法访问、Mixed Port 未监听或外部命令
 不存在，程序会同时显示英文和中文原因。`exec` 是等价的显式写法；当外部
 程序名称与 FlClash 内置命令冲突时使用 `--`：
 
 ```bash
 flclash exec curl https://example.com
-flclash -- stop
+flclash exec -- curl https://example.com
 ```
 
 包装器不会自动解释管道或重定向。需要 Shell 语法时显式调用 Shell：
 
 ```bash
-flclash sh -c 'curl -s https://example.com | jq .'
+flc sh -c 'curl -s https://example.com | jq .'
 ```
 
 打开 TUI（默认行为）：
@@ -206,10 +208,25 @@ flclash proxy list --controller 127.0.0.1:9090
 flclash proxy select --controller 127.0.0.1:9090 GROUP NODE
 ```
 
-停止由 TUI 留在后台的 Service：
+停止 Core 并保留共享后端：
 
 ```bash
 flclash stop
+```
+
+终止共享后端并断开所有前端：
+
+```bash
+flclash service stop
+```
+
+查看完整命令及子命令帮助：
+
+```bash
+flclash -help
+flclash stop -help
+flclash profile -help
+flc -help
 ```
 
 为旧版本的本地 Profile 一次性绑定订阅来源：

@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
 	"path/filepath"
 	"testing"
@@ -38,6 +39,14 @@ func TestTUIServiceReloadUsesExtendedTimeout(t *testing.T) {
 			bufio.NewReader(connection),
 		).Decode(&request); decodeErr != nil {
 			serverDone <- decodeErr
+			return
+		}
+		if request.ProtocolVersion != tuiServiceProtocolVersion || request.RequestID == "" {
+			serverDone <- fmt.Errorf(
+				"request identity = protocol %d, id %q",
+				request.ProtocolVersion,
+				request.RequestID,
+			)
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -137,5 +146,22 @@ func TestFindLegacyTUIServiceOutsidePerUserRuntime(t *testing.T) {
 	}
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateCurrentTUIServiceRequiresVersionedProtocol(t *testing.T) {
+	if err := validateCurrentTUIService(tuiServiceStatus{
+		Version:         cliVersion,
+		ProtocolVersion: tuiServiceProtocolVersion,
+	}); err != nil {
+		t.Fatalf("current backend was rejected: %v", err)
+	}
+	for _, status := range []tuiServiceStatus{
+		{Version: "0.3.15", ProtocolVersion: 0},
+		{Version: cliVersion, ProtocolVersion: tuiServiceProtocolVersion - 1},
+	} {
+		if err := validateCurrentTUIService(status); err == nil {
+			t.Fatalf("outdated backend was accepted: %+v", status)
+		}
 	}
 }

@@ -53,6 +53,11 @@ type cliRelease struct {
 }
 
 func updateCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash update [--check] [--download-only] [--yes]")
+		fmt.Println("Fetch a trusted GitHub Release, verify its checksum and package metadata, then install it.")
+		return nil
+	}
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	checkOnly := fs.Bool("check", false, "only check whether an update is available")

@@ -27,8 +27,8 @@ var (
 func wrappedCommand(args []string) error {
 	if len(args) == 0 {
 		return errors.New(
-			"no command specified; usage: flclash COMMAND [ARG...]\n" +
-				"未指定要执行的命令；用法：flclash 命令 [参数...]",
+			"no command specified; usage: flc COMMAND [ARG...]\n" +
+				"未指定要执行的命令；用法：flc 命令 [参数...]",
 		)
 	}
 
@@ -97,22 +97,22 @@ func activeCLIProxyURL() (string, error) {
 	}
 	if statusErr != nil {
 		return "", fmt.Errorf(
-			"FlClash is not running; open `flclash` and start Service first. Details: %v\n"+
-				"FlClash 未运行；请先打开 `flclash` 并启动 Service。详情：%v",
+			"FlClash backend is not running; run `flclash start` first. Details: %v\n"+
+				"FlClash 后端未运行；请先执行 `flclash start`。详情：%v",
 			statusErr,
 			statusErr,
 		)
 	}
 	if !status.Running {
 		return "", errors.New(
-			"FlClash Service/Core is stopped; open `flclash` and start Service first.\n" +
-				"FlClash Service/Core 已停止；请先打开 `flclash` 并启动 Service。",
+			"FlClash Core is stopped; run `flclash start` first.\n" +
+				"FlClash Core 已停止；请先执行 `flclash start`。",
 		)
 	}
 	if strings.TrimSpace(status.CoreSocket) == "" {
 		return "", errors.New(
-			"FlClash reported no Core controller socket; restart Service and try again.\n" +
-				"FlClash 未返回 Core 控制套接字；请重启 Service 后再试。",
+			"FlClash reported no Core controller socket; restart the backend and try again.\n" +
+				"FlClash 未返回 Core 控制套接字；请重启后端再试。",
 		)
 	}
 

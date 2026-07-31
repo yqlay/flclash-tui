@@ -48,6 +48,7 @@ const (
 	tuiPageConnections
 	tuiPageLogs
 	tuiPageTools
+	tuiPageMaintenance
 	tuiPageCount
 )
 
@@ -155,6 +156,16 @@ const (
 )
 
 const (
+	tuiMaintenanceEditConfigRow = iota
+	tuiMaintenanceBackupRow
+	tuiMaintenanceRestoreRow
+	tuiMaintenanceGeoUpdateRow
+	tuiMaintenanceResetTrafficRow
+	tuiMaintenanceUpdateRow
+	tuiMaintenanceRowCount
+)
+
+const (
 	tuiProxyViewGroups = iota
 	tuiProxyViewProviders
 	tuiProxyViewCount
@@ -176,47 +187,48 @@ type tuiProfile struct {
 }
 
 type tuiSnapshot struct {
-	Page               tuiPage
-	Groups             []tuiGroup
-	GroupOrder         []string
-	Traffic            trafficSnapshot
-	TotalTraffic       trafficSnapshot
-	Connections        []tuiConnection
-	Requests           []tuiRequest
-	Logs               []string
-	Profiles           []tuiProfile
-	Providers          []tuiProvider
-	Settings           tuiSettings
-	Network            tuiNetworkInfo
-	Memory             tuiMemoryInfo
-	DashboardDelay     int
-	DashboardSpeed     tuiSpeedResult
-	Update             tuiUpdateInfo
-	UpdatedAt          time.Time
-	Status             string
-	SelectedGroup      int
-	SelectedNode       int
-	SelectedRow        int
-	SelectedProvider   int
-	SelectedConnection int
-	SelectedRequest    int
-	SelectedMenu       int
-	SelectedDashboard  int
-	SelectedSetting    int
-	SelectedTool       int
-	DashboardScroll    int
-	ProxyView          int
-	ProxyNodeFocus     bool
-	FocusSidebar       bool
-	ShowHelp           bool
-	ServiceRunning     bool
-	ExternalCore       bool
-	ManagedService     bool
-	Frontends          []cliProcessOwner
-	InputTitle         string
-	InputValue         string
-	InputHint          string
-	StartupNotice      string
+	Page                tuiPage
+	Groups              []tuiGroup
+	GroupOrder          []string
+	Traffic             trafficSnapshot
+	TotalTraffic        trafficSnapshot
+	Connections         []tuiConnection
+	Requests            []tuiRequest
+	Logs                []string
+	Profiles            []tuiProfile
+	Providers           []tuiProvider
+	Settings            tuiSettings
+	Network             tuiNetworkInfo
+	Memory              tuiMemoryInfo
+	DashboardDelay      int
+	DashboardSpeed      tuiSpeedResult
+	Update              tuiUpdateInfo
+	UpdatedAt           time.Time
+	Status              string
+	SelectedGroup       int
+	SelectedNode        int
+	SelectedRow         int
+	SelectedProvider    int
+	SelectedConnection  int
+	SelectedRequest     int
+	SelectedMenu        int
+	SelectedDashboard   int
+	SelectedSetting     int
+	SelectedTool        int
+	SelectedMaintenance int
+	DashboardScroll     int
+	ProxyView           int
+	ProxyNodeFocus      bool
+	FocusSidebar        bool
+	ShowHelp            bool
+	ServiceRunning      bool
+	ExternalCore        bool
+	ManagedService      bool
+	Frontends           []cliProcessOwner
+	InputTitle          string
+	InputValue          string
+	InputHint           string
+	StartupNotice       string
 }
 
 type trafficSnapshot struct {
@@ -277,6 +289,11 @@ rules:
 `
 
 func tuiCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash [tui] [--config PATH] [--directory PATH]")
+		fmt.Println("Open an interactive frontend connected to the per-user backend.")
+		return nil
+	}
 	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	configArg := fs.String("config", "", "path to config.yaml")
@@ -554,7 +571,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 			systemProxyManaged = snapshot.Settings.SystemProxy
 			if autoStarted && snapshot.Settings.SystemProxy {
 				snapshot.Status = fmt.Sprintf(
-					"Service started on port %d; system proxy enabled",
+					"Core started on port %d; system proxy enabled",
 					snapshot.Settings.MixedPort,
 				)
 			}
@@ -680,7 +697,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 					break
 				}
 				if snapshot.Page != tuiPageProfiles && snapshot.Page != tuiPageTools {
-					snapshot.Status = "Edit YAML is available in Profiles and Tools"
+					snapshot.Status = "Edit YAML is available in Profiles and Maintenance"
 					break
 				}
 				screen.invalidate()
@@ -889,6 +906,11 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 }
 
 func backupTUIConfig(configPath string) (string, error) {
+	lease, err := acquireTUIProfileLocks(filepath.Dir(configPath), configPath)
+	if err != nil {
+		return "", err
+	}
+	defer lease.release()
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return "", err
@@ -999,9 +1021,39 @@ func checkTUIUpdate(snapshot *tuiSnapshot) {
 }
 
 func restoreLatestTUIConfig(configPath string) (string, error) {
+	backupPath, backup, err := restoreLatestTUIConfigLocked(
+		filepath.Dir(configPath),
+		configPath,
+	)
+	backup.release()
+	return backupPath, err
+}
+
+func restoreLatestTUIConfigLocked(
+	homeDir,
+	configPath string,
+) (string, tuiProfileBackup, error) {
+	lease, err := acquireTUIProfileLocks(homeDir, configPath)
+	if err != nil {
+		return "", tuiProfileBackup{}, err
+	}
+	releaseOnError := true
+	defer func() {
+		if releaseOnError {
+			lease.release()
+		}
+	}()
+	original, err := os.ReadFile(configPath)
+	if err != nil {
+		return "", tuiProfileBackup{}, err
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		return "", tuiProfileBackup{}, err
+	}
 	entries, err := os.ReadDir(filepath.Dir(configPath))
 	if err != nil {
-		return "", err
+		return "", tuiProfileBackup{}, err
 	}
 	prefix := filepath.Base(configPath) + ".backup-"
 	var latest string
@@ -1015,19 +1067,26 @@ func restoreLatestTUIConfig(configPath string) (string, error) {
 		}
 	}
 	if latest == "" {
-		return "", errors.New("no config backup found")
+		return "", tuiProfileBackup{}, errors.New("no config backup found")
 	}
 	data, err := os.ReadFile(latest)
 	if err != nil {
-		return "", err
+		return "", tuiProfileBackup{}, err
 	}
 	if message := validateConfigBytes(data); message != "" {
-		return "", fmt.Errorf("restored config is invalid: %s", message)
+		return "", tuiProfileBackup{}, fmt.Errorf("restored config is invalid: %s", message)
 	}
-	if err := os.WriteFile(configPath, data, 0o600); err != nil {
-		return "", err
+	if err := writeTUIProfileAtomically(configPath, data, info.Mode()); err != nil {
+		return "", tuiProfileBackup{}, err
 	}
-	return latest, nil
+	backup := tuiProfileBackup{
+		data:          original,
+		mode:          info.Mode(),
+		updatedSHA256: tuiBytesSHA256(data),
+		lock:          lease,
+	}
+	releaseOnError = false
+	return latest, backup, nil
 }
 
 func isInteractiveTUI() bool {
@@ -1773,22 +1832,27 @@ func linuxSystemProxyMatches(port int) bool {
 	if port <= 0 || !linuxSystemProxyEnabled() {
 		return false
 	}
-	schema := linuxProxySchema() + ".http"
-	host, err := linuxGSettingsGet(schema, "host")
-	if err != nil {
-		return false
+	for _, suffix := range []string{".http", ".https", ".socks"} {
+		schema := linuxProxySchema() + suffix
+		host, err := linuxGSettingsGet(schema, "host")
+		if err != nil {
+			return false
+		}
+		configuredPort, err := linuxGSettingsGet(schema, "port")
+		if err != nil {
+			return false
+		}
+		proxyPort, err := strconv.Atoi(strings.TrimSpace(configuredPort))
+		if err != nil {
+			return false
+		}
+		host = strings.Trim(strings.TrimSpace(host), "'\"")
+		if (host != "127.0.0.1" && host != "localhost" && host != "::1") ||
+			proxyPort != port {
+			return false
+		}
 	}
-	configuredPort, err := linuxGSettingsGet(schema, "port")
-	if err != nil {
-		return false
-	}
-	proxyPort, err := strconv.Atoi(strings.TrimSpace(configuredPort))
-	if err != nil {
-		return false
-	}
-	host = strings.Trim(strings.TrimSpace(host), "'\"")
-	return (host == "127.0.0.1" || host == "localhost" || host == "::1") &&
-		proxyPort == port
+	return true
 }
 
 func linuxGSettingsGet(schema, key string) (string, error) {
@@ -2027,6 +2091,7 @@ const (
 	tuiKeyUpdateProfile
 	tuiKeyCloseConnection
 	tuiKeyTools
+	tuiKeyMaintenance
 	tuiKeyBackup
 	tuiKeyRestore
 	tuiKeyGeoUpdate
@@ -2079,6 +2144,8 @@ func readTUIKeysSynchronized(reader io.Reader, keys chan<- tuiKey, handled <-cha
 			key = tuiKeyLogs
 		case '7':
 			key = tuiKeyTools
+		case '8':
+			key = tuiKeyMaintenance
 		case 'P':
 			key = tuiKeyProviders
 		case 'x', 'X':
@@ -2255,6 +2322,8 @@ func tuiPageForKey(key tuiKey) (tuiPage, bool) {
 		return tuiPageTools, true
 	case tuiKeyTools:
 		return tuiPageTools, true
+	case tuiKeyMaintenance:
+		return tuiPageMaintenance, true
 	default:
 		return tuiPageDashboard, false
 	}
@@ -2273,14 +2342,14 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	if width <= 0 || height <= 0 {
 		return ""
 	}
-	if width < 44 || height < 10 {
-		return renderTUITooSmall(width, height)
+	if width < 40 || height < 10 {
+		return renderTUITiny(snapshot, ownsCore, coreRunning, width, height)
 	}
 	snapshot.ServiceRunning = coreRunning
 	snapshot.ExternalCore = !ownsCore
 	if ownsCore && coreRunning && snapshot.Settings.MixedPort <= 0 &&
 		(snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Core listeners started") {
-		snapshot.Status = "No mixed listener active; select Mixed port in Dashboard or Tools"
+		snapshot.Status = "No mixed listener active; select Mixed port in Dashboard or Settings"
 	}
 	if width < 88 || height < 18 {
 		return renderTUICompact(
@@ -2330,9 +2399,9 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 		b.WriteByte('\n')
 	}
 
-	footer := "  ←→ panel  ↑↓/ws move  Enter apply  Esc nav  ? help  q detach  Ctrl+C stop"
+	footer := "  ←→ panel  ↑↓/ws move  Enter apply  Esc nav  ? help  q/Ctrl+C detach"
 	if width >= 110 {
-		footer = "  ←→ panel  ↑↓/ws move  Enter open/apply  Esc back  d delay  ? help  q detach  Ctrl+C stop"
+		footer = "  ←→ panel  ↑↓/ws move  Enter open/apply  Esc back  d delay  ? help  q/Ctrl+C detach"
 	}
 	if snapshot.Page == tuiPageDashboard && bodyHeight < 27 {
 		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  Esc nav  q detach"
@@ -2416,9 +2485,9 @@ func renderTUICompact(
 		b.WriteString(tuiClampAnsiLine(line, width))
 		b.WriteByte('\n')
 	}
-	footer := "  1-7 page · ←/Esc nav · ↑↓/ws · Enter · q"
+	footer := "  1-8 page · ←/Esc nav · ↑↓/ws · Enter · q"
 	if snapshot.FocusSidebar {
-		footer = "  ↑↓/ws page · →/Enter open · 1-7 direct · q"
+		footer = "  ↑↓/ws page · →/Enter open · 1-8 direct · q"
 	} else if snapshot.Page == tuiPageDashboard {
 		footer = "  ↑↓/ws select · PgUp/PgDn scroll · Esc nav · q"
 	}
@@ -2450,7 +2519,9 @@ func tuiPageName(page tuiPage) string {
 	case tuiPageLogs:
 		return "Logs"
 	case tuiPageTools:
-		return "Tools"
+		return "Settings"
+	case tuiPageMaintenance:
+		return "Maintenance"
 	default:
 		return "Unknown"
 	}
@@ -2577,10 +2648,39 @@ func renderTUITooSmall(width, height int) string {
 		"  FlClash TUI",
 		"",
 		fmt.Sprintf("  Terminal: %dx%d", width, height),
-		"  Resize to at least 44x10",
+		"  Resize to at least 40x10",
 		"",
-		"  q detach UI · Ctrl+C stop Service",
+		"  q/Ctrl+C detach UI",
 	}
+	var b strings.Builder
+	for row := 0; row < height; row++ {
+		line := ""
+		if row < len(lines) {
+			line = lines[row]
+		}
+		b.WriteString(tuiClampAnsiLine(line, width))
+		if row < height-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+func renderTUITiny(
+	snapshot tuiSnapshot,
+	ownsCore,
+	coreRunning bool,
+	width,
+	height int,
+) string {
+	lines := []string{
+		"FlClash " + tuiCoreStatus(ownsCore, coreRunning),
+		fmt.Sprintf("%d %s", int(snapshot.Page)+1, tuiPageName(snapshot.Page)),
+	}
+	if snapshot.Status != "" {
+		lines = append(lines, snapshot.Status)
+	}
+	lines = append(lines, "q/Ctrl+C detach")
 	var b strings.Builder
 	for row := 0; row < height; row++ {
 		line := ""
@@ -2647,6 +2747,8 @@ func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) stri
 		drawTUIProfiles(&b, snapshot, width, height)
 	} else if snapshot.Page == tuiPageTools {
 		drawTUITools(&b, snapshot, width, height)
+	} else if snapshot.Page == tuiPageMaintenance {
+		drawTUIMaintenance(&b, snapshot, width, height)
 	} else if snapshot.Page == tuiPageDashboard {
 		if height < 27 {
 			return renderTUICompactDashboard(
@@ -2747,7 +2849,8 @@ func tuiSidebar(snapshot tuiSnapshot, width, height int) []string {
 		">  Requests",
 		"~  Connections",
 		"=  Logs",
-		":  Tools",
+		":  Settings",
+		"!  Maintenance",
 	}
 	lines := make([]string, 0, height)
 	lines = append(lines, tuiBoxTop(innerWidth))
@@ -3028,29 +3131,51 @@ func drawTUIProviders(b *strings.Builder, snapshot tuiSnapshot, width, height in
 }
 
 func drawTUITools(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
-	rows := append(tuiSettingsRows(snapshot), []string{
+	rows := tuiSettingsRows(snapshot)
+	tuiTitle(
+		b,
+		"Settings",
+		"Core · network · lifecycle",
+		width,
+	)
+	limit := maxTUIWidth(height-3, 1)
+	start, end := tuiVisibleRange(len(rows), snapshot.SelectedTool, limit)
+	for index := start; index < end; index++ {
+		tuiRow(
+			b,
+			rows[index],
+			width,
+			index == snapshot.SelectedTool && !snapshot.FocusSidebar,
+			"",
+		)
+	}
+	tuiEndPanel(b, width)
+}
+
+func drawTUIMaintenance(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
+	rows := []string{
 		"Config        Edit current YAML in $EDITOR",
 		"Backup        Create timestamped configuration backup",
 		"Restore       Restore newest configuration backup",
 		"Resources     Update Mihomo Geo databases",
 		"Traffic       Reset traffic counters",
 		tuiUpdateRow(snapshot.Update),
-	}...)
+	}
 	tuiTitle(
 		b,
-		"Tools",
-		"core settings · configuration · resources · maintenance",
+		"Maintenance",
+		"Configuration · resources · diagnostics",
 		width,
 	)
 	limit := maxTUIWidth(height-3, 1)
-	start, end := tuiVisibleRange(len(rows), snapshot.SelectedTool, limit)
+	start, end := tuiVisibleRange(len(rows), snapshot.SelectedMaintenance, limit)
 	for index := start; index < end; index++ {
 		row := rows[index]
 		tuiRow(
 			b,
 			row,
 			width,
-			index == snapshot.SelectedTool && !snapshot.FocusSidebar,
+			index == snapshot.SelectedMaintenance && !snapshot.FocusSidebar,
 			"",
 		)
 	}
@@ -3108,15 +3233,16 @@ func tuiVisibleRange(total, selected, limit int) (int, int) {
 func drawTUIHelp(b *strings.Builder, width, height int) {
 	rows := []string{
 		"Navigation     ← sidebar · → content · ↑↓/ws move · Enter opens/applies · Esc back",
-		"Sections       1-7 open directly · Tab changes focus · [/] changes proxy view",
+		"Sections       1-8 open directly · Tab changes focus · [/] changes proxy view",
 		"Dashboard      d route delay · v 100 MB/5s speed · n refresh IP detection",
 		"Proxies        Enter nodes · d group/node delay · v group/node speed · Esc groups",
 		"Profiles       Enter activate · U refresh subscription · F2/u rename · e edit · n import",
 		"Requests       x clears local history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
 		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
-		"Tools          Enter applies row · a LAN · v IPv6 · p port · z reset traffic",
-		"Exit           q detaches TUI · Ctrl+C stops Service/Core and exits",
+		"Settings       Enter applies row · a LAN · v IPv6 · p port",
+		"Maintenance    Edit, backup, restore, Geo, traffic reset, and updates",
+		"Exit           q or Ctrl+C detaches this TUI frontend",
 	}
 	if height < 28 {
 		rows = rows[:minTUI(5, len(rows))]
@@ -3133,7 +3259,7 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 	serviceLabel := tuiServiceLabel(snapshot)
 	systemProxyLabel := tuiSystemProxyLabel(snapshot)
 	controls := []string{
-		fmt.Sprintf("Service       %s", serviceLabel),
+		fmt.Sprintf("Core          %s", serviceLabel),
 		fmt.Sprintf("System proxy  %s", systemProxyLabel),
 		fmt.Sprintf("TUN           %s", tuiOnOff(snapshot.Settings.TunEnabled)),
 		fmt.Sprintf("Outbound mode %s", snapshot.Settings.Mode),
@@ -3284,7 +3410,7 @@ func tuiCompactDashboardRows(
 	paths cliPaths,
 ) []tuiDashboardCompactRow {
 	controls := []string{
-		fmt.Sprintf("Service       %s", tuiServiceLabel(snapshot)),
+		fmt.Sprintf("Core          %s", tuiServiceLabel(snapshot)),
 		fmt.Sprintf(
 			"System proxy  %s",
 			tuiSystemProxyLabel(snapshot),
@@ -3612,11 +3738,11 @@ func exportTUILogs(homeDir string, logs []string) (string, error) {
 
 func drawTUISettings(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 	rows := tuiSettingsRows(snapshot)
-	subtitle := "Service is stopped · changes are staged until it starts"
+	subtitle := "Core is stopped · changes are staged until it starts"
 	if snapshot.ExternalCore {
 		subtitle = "↑/↓ select · Enter change · external core configuration"
 	} else if snapshot.ServiceRunning {
-		subtitle = "Service is running · changes apply immediately"
+		subtitle = "Core is running · changes apply immediately"
 	}
 	tuiTitle(b, "Settings", subtitle, width)
 	rowLimit := minTUI(len(rows), maxTUIWidth(height-3, 1))
@@ -3648,7 +3774,7 @@ func tuiSettingsRows(snapshot tuiSnapshot) []string {
 		),
 		fmt.Sprintf("Log level     %s", snapshot.Settings.LogLevel),
 		fmt.Sprintf("TUN           %s", tuiOnOff(snapshot.Settings.TunEnabled)),
-		fmt.Sprintf("Service       %s", tuiServiceLabel(snapshot)),
+		fmt.Sprintf("Core          %s", tuiServiceLabel(snapshot)),
 		fmt.Sprintf("System proxy  %s", tuiSystemProxyLabel(snapshot)),
 	}
 }
@@ -3668,7 +3794,7 @@ func tuiSystemProxyLabel(snapshot tuiSnapshot) string {
 		return "ENABLED · Enter to disable"
 	}
 	if !snapshot.ExternalCore && !snapshot.ServiceRunning {
-		return "DISABLED · Enter to enable (starts Service)"
+		return "DISABLED · Enter to enable (starts Core)"
 	}
 	return "DISABLED · Enter to enable"
 }

@@ -10,13 +10,21 @@
 
 本项目不是 FlClash 官方发布版本。版权和许可证信息请查看 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
 
+## v0.4.0 终端架构
+
+- `flclash` 负责 TUI、单用户共享后端和管理命令，支持多个 TUI/CLI 前端并发连接。
+- `flc COMMAND...` 通过当前 Mixed Port 执行外部命令；Core 不可用时直接失败，不会静默直连。
+- `q` 与 `Ctrl+C` 都只退出当前 TUI；`flclash stop` 停止 Core 但保留后端，`flclash service stop` 才终止后端。
+- Settings 与 Maintenance 分页，完整操作界面适配到 `40x10`。
+- 使用 `flclash -help`、`flclash COMMAND -help` 和 `flc -help` 查看命令语境。
+
 ## 快速开始
 
 ```bash
 git clone --recurse-submodules https://github.com/yqlay/flclash-tui.git
 cd flclash-tui
 make cli-linux
-./dist/flclash --config ~/.config/flclash/config.yaml
+./dist/flclash
 ```
 
 具体页面、快捷键、配置、代理控制和多实例用法请查看 [Linux CLI 文档](CLI_LINUX.md)。
@@ -24,7 +32,7 @@ make cli-linux
 预编译的 Debian 安装包可在 [Releases](https://github.com/yqlay/flclash-tui/releases) 页面下载：
 
 ```bash
-sudo dpkg -i flclash-tui_0.3.11_amd64.deb
+sudo dpkg -i flclash-tui_0.4.0_amd64.deb
 ```
 
 安装包内置 FlClash 自带的 GeoIP、GeoSite 和 ASN 数据。首次启动或发现
@@ -79,10 +87,10 @@ on Mobile:
 
 ```bash
 make cli-linux
-./dist/flclash --config ~/.config/flclash/config.yaml
+./dist/flclash
 ```
 
-不带参数时进入 TUI，包含仪表盘、代理组/节点、连接、流量、日志、设置、Provider、YAML 配置切换、重载和 Linux 系统代理控制；`run`、`check`、`proxy` 命令仍可供脚本使用。详见 [Linux CLI 文档](CLI_LINUX.md)。
+不带参数时进入 TUI，包含仪表盘、代理组/节点、连接、流量、日志、设置、Provider、YAML 配置切换、重载和 Linux 系统代理控制。外部命令使用 `flc`，管理与脚本命令使用 `flclash`。详见 [Linux CLI 文档](CLI_LINUX.md)。
 
 ### Android
 

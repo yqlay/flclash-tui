@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
 	tuiStateFilename = ".flclash-cli-state.json"
+	tuiStateLockName = ".flclash-cli-state.lock"
 	tuiStateVersion  = 1
 )
 
@@ -106,6 +108,30 @@ func updateTUIState(
 	homeDir string,
 	update func(*tuiPersistentState),
 ) error {
+	lockPath := filepath.Join(homeDir, tuiStateLockName)
+	owner := cliProcessOwner{
+		Kind:      "state-update",
+		PID:       os.Getpid(),
+		HomeDir:   homeDir,
+		StartedAt: time.Now(),
+	}
+	var lock *cliFileLock
+	var err error
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		lock, err = acquireCLIFileLock(lockPath, owner)
+		var busy *cliLockBusyError
+		if err == nil || !errors.As(err, &busy) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		return fmt.Errorf("lock shared state: %w", err)
+	}
+	defer func() {
+		lock.release()
+	}()
 	state, err := loadTUIState(homeDir)
 	if err != nil {
 		state = tuiPersistentState{

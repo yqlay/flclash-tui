@@ -36,6 +36,11 @@ const (
 type tuiTickMsg time.Time
 type tuiReloadSignalMsg struct{}
 
+type tuiServiceWatchMsg struct {
+	status tuiServiceStatus
+	err    error
+}
+
 type tuiNetworkResultMsg struct {
 	info  tuiNetworkInfo
 	route string
@@ -54,8 +59,9 @@ type tuiTrafficMsg struct {
 }
 
 type tuiRefreshResultMsg struct {
-	sequence uint64
-	snapshot tuiSnapshot
+	sequence      uint64
+	snapshot      tuiSnapshot
+	serviceStatus *tuiServiceStatus
 }
 
 type tuiOperationState struct {
@@ -67,6 +73,7 @@ type tuiOperationState struct {
 	pendingMixedPort   *int
 	stagedSettings     *tuiSettings
 	settingsDirty      bool
+	backendRevision    uint64
 	profileSelection   string
 }
 
@@ -120,6 +127,7 @@ type tuiModel struct {
 	pendingMixedPort    *int
 	stagedSettings      *tuiSettings
 	settingsDirty       bool
+	backendRevision     uint64
 	systemProxyToggle   func(*tuiSnapshot) bool
 	networkCheckActive  bool
 	memoryRefreshActive bool
@@ -127,7 +135,7 @@ type tuiModel struct {
 	stopCoreMemory      func()
 	trafficUpdates      <-chan tuiTrafficUpdate
 	stopTraffic         func()
-	stopServiceOnExit   bool
+	stopServiceOnExit   bool // Legacy test visibility; managed frontends always leave this false.
 }
 
 func newTUIModel(
@@ -213,6 +221,12 @@ func runTUI(
 
 	model := newTUIModel(client, paths, setupParams, ownsCore)
 	model.service = service
+	if service != nil {
+		if status, statusErr := service.status(); statusErr == nil {
+			model.backendRevision = status.Revision
+			model.snapshot.Settings.SystemProxy = status.SystemProxy
+		}
+	}
 	model.initializeCoreRuntime(coreRunning)
 	model.snapshot.ManagedService = service != nil
 	model.snapshot.Frontends, _ = listCLIFrontends()
@@ -276,6 +290,7 @@ func (m *tuiModel) Init() tea.Cmd {
 		m.startMemoryRefresh(),
 		m.waitCoreMemoryUpdate(),
 		m.waitTrafficUpdate(),
+		m.waitServiceUpdate(),
 	)
 }
 
@@ -294,6 +309,22 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		)
 	case tuiReloadSignalMsg:
 		return m, m.handleKey(tuiKeyReload)
+	case tuiServiceWatchMsg:
+		if message.err != nil {
+			m.snapshot.Status = "Backend watch interrupted: " + message.err.Error()
+			retry := m.waitServiceUpdate()
+			return m, tea.Tick(time.Second, func(time.Time) tea.Msg {
+				if retry == nil {
+					return tuiServiceWatchMsg{}
+				}
+				return retry()
+			})
+		}
+		m.backendRevision = message.status.Revision
+		m.coreRunning = message.status.Running
+		m.snapshot.Settings.SystemProxy = message.status.SystemProxy
+		m.refreshInFlight = false
+		return m, tea.Batch(m.startRefresh(), m.waitServiceUpdate())
 	case tuiNetworkResultMsg:
 		m.networkCheckActive = false
 		if message.route != m.networkCheckRoute() {
@@ -342,6 +373,11 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshInFlight = false
 		m.snapshot = mergeTUIRefresh(m.snapshot, message.snapshot)
+		if message.serviceStatus != nil {
+			m.backendRevision = message.serviceStatus.Revision
+			m.coreRunning = message.serviceStatus.Running
+			m.snapshot.Settings.SystemProxy = message.serviceStatus.SystemProxy
+		}
 		if !m.coreRunning && m.stagedSettings != nil {
 			systemProxy := m.snapshot.Settings.SystemProxy
 			m.snapshot.Settings = *m.stagedSettings
@@ -362,6 +398,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingMixedPort = cloneTUIOptionalInt(message.state.pendingMixedPort)
 		m.stagedSettings = cloneTUISettings(message.state.stagedSettings)
 		m.settingsDirty = message.state.settingsDirty
+		m.backendRevision = message.state.backendRevision
 		if message.state.profileSelection != "" {
 			m.snapshot.SelectedRow = findTUIProfile(
 				m.snapshot.Profiles,
@@ -414,16 +451,23 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.editorPath = ""
 		m.editorBackup = tuiProfileBackup{}
 		if message.err != nil {
+			restoreErr := restoreTUISubscriptionProfile(editorPath, editorBackup)
+			editorBackup.release()
 			m.snapshot.Status = "Editor failed: " + message.err.Error()
+			if restoreErr != nil {
+				m.snapshot.Status += "; restore failed: " + restoreErr.Error()
+			}
 			return m, nil
 		}
 		edited, readErr := os.ReadFile(editorPath)
 		if readErr != nil {
+			editorBackup.release()
 			m.snapshot.Status = "Edited configuration could not be read: " + readErr.Error()
 			return m, nil
 		}
 		if validationMessage := validateConfigBytes(edited); validationMessage != "" {
 			restoreErr := restoreTUISubscriptionProfile(editorPath, editorBackup)
+			editorBackup.release()
 			m.snapshot.Status = "Edited configuration is invalid: " + validationMessage
 			if restoreErr == nil {
 				m.snapshot.Status += "; original restored"
@@ -432,35 +476,45 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		editorBackup.updatedSHA256 = tuiBytesSHA256(edited)
 		if filepath.Clean(editorPath) != filepath.Clean(m.paths.configPath) {
+			editorBackup.release()
 			m.snapshot.Status = "Configuration saved: " + filepath.Base(editorPath) +
 				" · activate it to apply"
 			return m, nil
 		}
+		editorBackup.release()
 		return m, m.startOperation(func(state *tuiOperationState) {
-			if reloadErr := reloadTUIOperationConfig(
+			if reloadErr := reloadTUIOperationConfigExpected(
 				state,
 				m.service,
 				m.client,
 				m.ownsCore,
+				editorBackup.updatedSHA256,
 			); reloadErr != nil {
-				restoreErr := restoreTUISubscriptionProfile(editorPath, editorBackup)
+				restoreErr := restoreTUIProfileIfUnchanged(
+					state.paths.homeDir,
+					editorPath,
+					editorBackup,
+				)
 				state.snapshot.Status = "Edited config could not be hot-reloaded: " +
 					reloadErr.Error()
 				if restoreErr == nil {
-					if originalReloadErr := reloadTUIOperationConfig(
+					originalReloadErr := reloadTUIOperationConfigExpected(
 						state,
 						m.service,
 						m.client,
 						m.ownsCore,
-					); originalReloadErr != nil {
-						state.snapshot.Status += "; original restored but reload failed: " +
-							originalReloadErr.Error()
-					} else {
+						tuiBytesSHA256(editorBackup.data),
+					)
+					if originalReloadErr == nil {
 						state.snapshot.Status += "; original restored"
+					} else {
+						state.snapshot.Status += "; file restored but Core reload failed: " +
+							originalReloadErr.Error()
 					}
 				} else {
-					state.snapshot.Status += "; restore failed: " + restoreErr.Error()
+					state.snapshot.Status += "; original not restored: " + restoreErr.Error()
 				}
 			} else {
 				state.snapshot.Status = "Configuration saved and hot-reloaded"
@@ -641,22 +695,14 @@ func tuiInputViewport(value []rune, cursor, width int) string {
 }
 
 func (m *tuiModel) shutdown() {
-	if m.ownsCore && m.settingsDirty && m.stagedSettings != nil {
+	m.editorBackup.release()
+	if m.ownsCore && m.service == nil && m.settingsDirty && m.stagedSettings != nil {
 		_ = persistTUISettings(m.paths.configPath, *m.stagedSettings)
-	}
-	if m.ownsCore &&
-		m.stopServiceOnExit &&
-		linuxSystemProxyMatches(m.snapshot.Settings.MixedPort) {
-		_ = setLinuxSystemProxy(m.snapshot.Settings.MixedPort, false)
-		m.snapshot.Settings.SystemProxy = false
 	}
 	if !m.ownsCore {
 		return
 	}
 	if m.service != nil {
-		if m.stopServiceOnExit {
-			_ = m.service.shutdown()
-		}
 		return
 	}
 	if m.ownsCore {
@@ -670,6 +716,18 @@ func tuiTickCommand() tea.Cmd {
 	})
 }
 
+func (m *tuiModel) waitServiceUpdate() tea.Cmd {
+	if m.service == nil {
+		return nil
+	}
+	service := m.service
+	revision := m.backendRevision
+	return func() tea.Msg {
+		status, err := service.watch(revision, 30*time.Second)
+		return tuiServiceWatchMsg{status: status, err: err}
+	}
+}
+
 func (m *tuiModel) startRefresh() tea.Cmd {
 	if m.refreshInFlight || m.busy {
 		return nil
@@ -680,13 +738,21 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 	snapshot := m.snapshot
 	client := m.client
 	paths := m.paths
+	service := m.service
 	return func() tea.Msg {
 		refreshTUISnapshot(&snapshot, client)
 		refreshTUIProfiles(&snapshot, paths)
 		snapshot.Frontends, _ = listCLIFrontends()
+		var serviceStatus *tuiServiceStatus
+		if service != nil {
+			if status, err := service.status(); err == nil {
+				serviceStatus = &status
+			}
+		}
 		return tuiRefreshResultMsg{
-			sequence: sequence,
-			snapshot: snapshot,
+			sequence:      sequence,
+			snapshot:      snapshot,
+			serviceStatus: serviceStatus,
 		}
 	}
 }
@@ -708,6 +774,7 @@ func (m *tuiModel) startOperation(action func(*tuiOperationState)) tea.Cmd {
 		pendingMixedPort:   cloneTUIOptionalInt(m.pendingMixedPort),
 		stagedSettings:     cloneTUISettings(m.stagedSettings),
 		settingsDirty:      m.settingsDirty,
+		backendRevision:    m.backendRevision,
 	}
 	m.snapshot.Status = "Working..."
 	return func() tea.Msg {
@@ -788,6 +855,7 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	updated.SelectedDashboard = current.SelectedDashboard
 	updated.SelectedSetting = current.SelectedSetting
 	updated.SelectedTool = current.SelectedTool
+	updated.SelectedMaintenance = current.SelectedMaintenance
 	updated.ProxyView = current.ProxyView
 	updated.ProxyNodeFocus = current.ProxyNodeFocus
 	updated.ManagedService = current.ManagedService
@@ -926,7 +994,6 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeyQuit:
 		return tea.Quit
 	case tuiKeyInterrupt:
-		m.stopServiceOnExit = true
 		return tea.Quit
 	case tuiKeyBack:
 		if !m.snapshot.FocusSidebar &&
@@ -1030,10 +1097,10 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 					state.snapshot.Status = "Logs exported: " + path
 				}
 			})
-		case tuiPageTools:
+		case tuiPageMaintenance:
 			return m.startEditor(m.paths.configPath)
 		default:
-			m.snapshot.Status = "Edit YAML is available in Profiles and Tools"
+			m.snapshot.Status = "Edit YAML is available in Profiles and Maintenance"
 		}
 	case tuiKeyNewProfile:
 		if m.snapshot.Page == tuiPageProfiles {
@@ -1057,19 +1124,19 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		m.snapshot.ProxyNodeFocus = false
 		m.snapshot.Status = "Providers view · Enter updates the selected provider"
 	case tuiKeyBackup:
-		if m.snapshot.Page == tuiPageTools {
+		if m.snapshot.Page == tuiPageMaintenance {
 			return m.runTool(1)
 		}
 	case tuiKeyRestore:
-		if m.snapshot.Page == tuiPageTools {
+		if m.snapshot.Page == tuiPageMaintenance {
 			return m.runTool(2)
 		}
 	case tuiKeyGeoUpdate:
-		if m.snapshot.Page == tuiPageTools {
+		if m.snapshot.Page == tuiPageMaintenance {
 			return m.runTool(3)
 		}
 	case tuiKeyResetTraffic:
-		if m.snapshot.Page == tuiPageTools {
+		if m.snapshot.Page == tuiPageMaintenance {
 			return m.runTool(4)
 		}
 	case tuiKeyUp:
@@ -1151,9 +1218,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				return nil
 			}
 			return m.startOperation(func(state *tuiOperationState) {
-				if updateTUISettings(&state.snapshot, m.client, key) {
-					persistTUIOperationSettings(state)
-				}
+				applyTUIOperationSetting(state, m.service, m.client, key)
 			})
 		}
 	case tuiKeyAllowLAN, tuiKeyIPv6, tuiKeyUnifiedDelay, tuiKeyTCPConcurrent,
@@ -1166,9 +1231,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				return nil
 			}
 			return m.startOperation(func(state *tuiOperationState) {
-				if updateTUISettings(&state.snapshot, m.client, key) {
-					persistTUIOperationSettings(state)
-				}
+				applyTUIOperationSetting(state, m.service, m.client, key)
 			})
 		}
 	case tuiKeySetPort:
@@ -1185,11 +1248,32 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 					}
 					autoStarted = true
 				}
-				if m.systemProxyToggle(&state.snapshot) {
+				proxyUpdated := false
+				if m.service != nil {
+					if !prepareTUIBackendRevision(state, m.service) {
+						return
+					}
+					enabled := !state.snapshot.Settings.SystemProxy
+					status, err := m.service.setSystemProxy(
+						enabled,
+						state.backendRevision,
+					)
+					if err != nil {
+						state.snapshot.Status = "System proxy update failed: " + err.Error()
+					} else {
+						state.backendRevision = status.Revision
+						state.snapshot.Settings.SystemProxy = status.SystemProxy
+						state.snapshot.Status = "System proxy " + cliOnOff(status.SystemProxy)
+						proxyUpdated = true
+					}
+				} else {
+					proxyUpdated = m.systemProxyToggle(&state.snapshot)
+				}
+				if proxyUpdated {
 					state.systemProxyManaged = state.snapshot.Settings.SystemProxy
 					if autoStarted && state.snapshot.Settings.SystemProxy {
 						state.snapshot.Status = fmt.Sprintf(
-							"Service started on port %d; system proxy enabled",
+							"Core started on port %d; system proxy enabled",
 							state.snapshot.Settings.MixedPort,
 						)
 					}
@@ -1197,7 +1281,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 					proxyError := state.snapshot.Status
 					if stopTUIManagedCore(state, m.service) {
 						state.snapshot.Status = proxyError +
-							"; automatic Service start rolled back"
+							"; automatic Core start rolled back"
 					}
 				}
 			})
@@ -1263,7 +1347,13 @@ func (m *tuiModel) moveSelection(delta int) {
 		m.snapshot.SelectedTool = wrapTUIIndex(
 			m.snapshot.SelectedTool,
 			delta,
-			tuiToolsRowCount,
+			tuiSettingsRowCount,
+		)
+	case tuiPageMaintenance:
+		m.snapshot.SelectedMaintenance = wrapTUIIndex(
+			m.snapshot.SelectedMaintenance,
+			delta,
+			tuiMaintenanceRowCount,
 		)
 	}
 }
@@ -1287,7 +1377,7 @@ func (m *tuiModel) stageTUIAdjustedPort(key tuiKey) {
 	m.stagedSettings = cloneTUISettings(&m.snapshot.Settings)
 	m.settingsDirty = true
 	m.snapshot.Status = fmt.Sprintf(
-		"Mixed port %d staged; enable System proxy or start Service to apply",
+		"Mixed port %d staged; enable System proxy or start Core to apply",
 		port,
 	)
 	m.persistStagedTUISettings()
@@ -1325,12 +1415,17 @@ func (m *tuiModel) stageTUISetting(key tuiKey) {
 	m.pendingMixedPort = &port
 	m.stagedSettings = cloneTUISettings(&m.snapshot.Settings)
 	m.settingsDirty = true
-	m.snapshot.Status = "Settings staged; enable System proxy or start Service to apply"
+	m.snapshot.Status = "Settings staged; enable System proxy or start Core to apply"
 	m.persistStagedTUISettings()
 }
 
 func (m *tuiModel) persistStagedTUISettings() {
 	if m.stagedSettings == nil {
+		return
+	}
+	if m.service != nil {
+		m.settingsDirty = true
+		m.snapshot.Status += "; pending backend commit"
 		return
 	}
 	if err := persistTUISettings(m.paths.configPath, *m.stagedSettings); err != nil {
@@ -1350,6 +1445,113 @@ func persistTUIOperationSettings(state *tuiOperationState) {
 		return
 	}
 	state.settingsDirty = false
+}
+
+func applyTUIOperationSetting(
+	state *tuiOperationState,
+	service *tuiServiceClient,
+	client controllerClient,
+	key tuiKey,
+) {
+	if service == nil {
+		if updateTUISettings(&state.snapshot, client, key) {
+			persistTUIOperationSettings(state)
+		}
+		return
+	}
+	settings := state.snapshot.Settings
+	if !changeTUISettingsValue(&settings, key) {
+		state.snapshot.Status = "Setting is already at its limit"
+		return
+	}
+	commitTUIOperationSettings(state, service, client, settings)
+}
+
+func commitTUIOperationSettings(
+	state *tuiOperationState,
+	service *tuiServiceClient,
+	client controllerClient,
+	settings tuiSettings,
+) {
+	if !prepareTUIBackendRevision(state, service) {
+		return
+	}
+	status, err := service.applySettings(settings, state.backendRevision)
+	if err != nil {
+		state.snapshot.Status = "Settings commit failed: " + err.Error()
+		return
+	}
+	state.backendRevision = status.Revision
+	state.snapshot.Settings = settings
+	state.snapshot.Settings.SystemProxy = status.SystemProxy
+	state.coreRunning = status.Running
+	state.settingsDirty = false
+	state.stagedSettings = nil
+	state.pendingMixedPort = nil
+	state.snapshot.Status = fmt.Sprintf(
+		"Settings committed at revision %d",
+		status.Revision,
+	)
+	refreshTUISnapshot(&state.snapshot, client)
+}
+
+func prepareTUIBackendRevision(
+	state *tuiOperationState,
+	service *tuiServiceClient,
+) bool {
+	if state.backendRevision > 0 {
+		return true
+	}
+	status, err := service.status()
+	if err != nil {
+		state.snapshot.Status = "Cannot read backend state: " + err.Error()
+		return false
+	}
+	state.backendRevision = status.Revision
+	state.coreRunning = status.Running
+	state.snapshot.Settings.SystemProxy = status.SystemProxy
+	return true
+}
+
+func changeTUISettingsValue(settings *tuiSettings, key tuiKey) bool {
+	switch key {
+	case tuiKeyAllowLAN:
+		settings.AllowLAN = !settings.AllowLAN
+	case tuiKeyIPv6:
+		settings.IPv6 = !settings.IPv6
+	case tuiKeyUnifiedDelay:
+		settings.UnifiedDelay = !settings.UnifiedDelay
+	case tuiKeyTCPConcurrent:
+		settings.TCPConcurrent = !settings.TCPConcurrent
+	case tuiKeyTun:
+		settings.TunEnabled = !settings.TunEnabled
+	case tuiKeyMode:
+		switch strings.ToLower(settings.Mode) {
+		case "rule":
+			settings.Mode = "global"
+		case "global":
+			settings.Mode = "direct"
+		default:
+			settings.Mode = "rule"
+		}
+	case tuiKeyLogLevel:
+		levels := []string{"silent", "error", "warning", "info", "debug"}
+		current := findTUIString(levels, strings.ToLower(settings.LogLevel))
+		settings.LogLevel = levels[wrapTUIIndex(current, 1, len(levels))]
+	case tuiKeyPortUp:
+		if settings.MixedPort >= 65535 {
+			return false
+		}
+		settings.MixedPort++
+	case tuiKeyPortDown:
+		if settings.MixedPort <= 0 {
+			return false
+		}
+		settings.MixedPort--
+	default:
+		return false
+	}
+	return true
 }
 
 func syncStoppedTUISettings(state *tuiOperationState) {
@@ -1375,12 +1577,45 @@ func reloadTUIOperationConfig(
 	client controllerClient,
 	ownsCore bool,
 ) error {
+	return reloadTUIOperationConfigExpected(
+		state,
+		service,
+		client,
+		ownsCore,
+		"",
+	)
+}
+
+func reloadTUIOperationConfigExpected(
+	state *tuiOperationState,
+	service *tuiServiceClient,
+	client controllerClient,
+	ownsCore bool,
+	expectedSHA256 string,
+) error {
 	if service != nil {
-		status, err := service.reload(state.paths.configPath)
+		if !prepareTUIBackendRevision(state, service) {
+			return errors.New("backend revision is unavailable")
+		}
+		var status tuiServiceStatus
+		var err error
+		if expectedSHA256 == "" {
+			status, err = service.reloadAtRevision(
+				state.paths.configPath,
+				state.backendRevision,
+			)
+		} else {
+			status, err = service.reloadAtRevisionWithDigest(
+				state.paths.configPath,
+				state.backendRevision,
+				expectedSHA256,
+			)
+		}
 		if err != nil {
 			return err
 		}
 		state.coreRunning = status.Running
+		state.backendRevision = status.Revision
 		state.snapshot.GroupOrder = loadTUIProxyGroupOrder(state.paths.configPath)
 		return nil
 	}
@@ -1502,6 +1737,12 @@ func persistTUISettings(path string, settings tuiSettings) error {
 }
 
 func ensureTUIFlClashDefaults(path string) error {
+	homeDir := filepath.Dir(path)
+	lease, err := acquireTUIProfileLocks(homeDir, path)
+	if err != nil {
+		return err
+	}
+	defer lease.release()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -1606,7 +1847,22 @@ func startTUIManagedCore(
 	}
 	port := state.snapshot.Settings.MixedPort
 	if state.stagedSettings != nil {
-		if state.settingsDirty {
+		if service != nil {
+			if !prepareTUIBackendRevision(state, service) {
+				return false
+			}
+			status, err := service.applySettings(
+				*state.stagedSettings,
+				state.backendRevision,
+			)
+			if err != nil {
+				state.snapshot.Status = "Cannot commit staged settings: " + err.Error()
+				return false
+			}
+			state.backendRevision = status.Revision
+			state.paths.configPath = status.ConfigPath
+			state.snapshot.Settings.SystemProxy = status.SystemProxy
+		} else if state.settingsDirty {
 			if err := persistTUISettings(
 				state.paths.configPath,
 				*state.stagedSettings,
@@ -1623,14 +1879,15 @@ func startTUIManagedCore(
 		}
 	}
 	if service != nil {
-		if _, err := service.reload(state.paths.configPath); err != nil {
-			state.snapshot.Status = "Cannot load profile: " + err.Error()
+		if !prepareTUIBackendRevision(state, service) {
 			return false
 		}
-		if _, err := service.start(); err != nil {
+		status, err := service.startAtRevision(state.backendRevision)
+		if err != nil {
 			state.snapshot.Status = "Cannot start core listeners: " + err.Error()
 			return false
 		}
+		state.backendRevision = status.Revision
 	} else if !handleStartListener() {
 		state.snapshot.Status = "Cannot start core listeners"
 		return false
@@ -1651,10 +1908,16 @@ func stopTUIManagedCore(
 		return true
 	}
 	if service != nil {
-		if _, err := service.stop(); err != nil {
+		if !prepareTUIBackendRevision(state, service) {
+			return false
+		}
+		status, err := service.stopAtRevision(state.backendRevision)
+		if err != nil {
 			state.snapshot.Status = "Cannot stop core listeners: " + err.Error()
 			return false
 		}
+		state.backendRevision = status.Revision
+		state.snapshot.Settings.SystemProxy = status.SystemProxy
 	} else if !handleStopListener() {
 		state.snapshot.Status = "Cannot stop core listeners"
 		return false
@@ -1665,7 +1928,7 @@ func stopTUIManagedCore(
 	state.stagedSettings = cloneTUISettings(&state.snapshot.Settings)
 	state.settingsDirty = false
 	state.snapshot.Status = "Core listeners stopped"
-	if state.systemProxyManaged && state.snapshot.Settings.SystemProxy {
+	if service == nil && state.systemProxyManaged && state.snapshot.Settings.SystemProxy {
 		if !linuxSystemProxyMatches(state.snapshot.Settings.MixedPort) {
 			state.snapshot.Settings.SystemProxy = false
 			state.systemProxyManaged = false
@@ -1751,21 +2014,20 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			}
 		})
 	case tuiPageTools:
-		if m.snapshot.SelectedTool < tuiSettingsRowCount {
-			return m.selectTUISetting(m.snapshot.SelectedTool)
-		}
-		switch m.snapshot.SelectedTool {
-		case tuiToolsEditConfigRow:
+		return m.selectTUISetting(m.snapshot.SelectedTool)
+	case tuiPageMaintenance:
+		switch m.snapshot.SelectedMaintenance {
+		case tuiMaintenanceEditConfigRow:
 			return m.startEditor(m.paths.configPath)
-		case tuiToolsBackupRow:
+		case tuiMaintenanceBackupRow:
 			return m.runTool(1)
-		case tuiToolsRestoreRow:
+		case tuiMaintenanceRestoreRow:
 			return m.runTool(2)
-		case tuiToolsGeoUpdateRow:
+		case tuiMaintenanceGeoUpdateRow:
 			return m.runTool(3)
-		case tuiToolsResetTrafficRow:
+		case tuiMaintenanceResetTrafficRow:
 			return m.runTool(4)
-		case tuiToolsUpdateRow:
+		case tuiMaintenanceUpdateRow:
 			return m.runTool(5)
 		}
 	}
@@ -1794,13 +2056,26 @@ func switchTUIServiceProfile(
 		state.snapshot.Status = "Profile defaults failed: " + err.Error()
 		return
 	}
-	status, err := service.reload(profile.Path)
+	expectedSHA256, err := tuiFileSHA256(profile.Path)
+	if err != nil {
+		state.snapshot.Status = "Profile read failed: " + err.Error()
+		return
+	}
+	if !prepareTUIBackendRevision(state, service) {
+		return
+	}
+	status, err := service.reloadAtRevisionWithDigest(
+		profile.Path,
+		state.backendRevision,
+		expectedSHA256,
+	)
 	if err != nil {
 		state.snapshot.Status = "Profile hot-reload failed: " + err.Error()
 		return
 	}
 	state.paths.configPath = profile.Path
 	state.coreRunning = status.Running
+	state.backendRevision = status.Revision
 	state.snapshot.GroupOrder = loadTUIProxyGroupOrder(profile.Path)
 	state.snapshot.ProxyNodeFocus = false
 	state.snapshot.Status = "Active profile: " + profile.Name
@@ -1851,17 +2126,55 @@ func (m *tuiModel) runTool(index int) tea.Cmd {
 				state.snapshot.Status = "Backup created: " + filepath.Base(backupPath)
 			}
 		case 2:
-			if backupPath, err := restoreLatestTUIConfig(state.paths.configPath); err != nil {
+			backupPath, backup, err := restoreLatestTUIConfigLocked(
+				state.paths.homeDir,
+				state.paths.configPath,
+			)
+			if err != nil {
 				state.snapshot.Status = "Restore failed: " + err.Error()
 			} else {
-				if reloadErr := reloadTUIOperationConfig(
+				defer backup.release()
+				if m.service != nil {
+					backup.release()
+				}
+				if reloadErr := reloadTUIOperationConfigExpected(
 					state,
 					m.service,
 					m.client,
 					m.ownsCore,
+					backup.updatedSHA256,
 				); reloadErr != nil {
-					state.snapshot.Status = "Restore applied with errors: " +
-						reloadErr.Error()
+					var rollbackErr error
+					if backup.lock != nil {
+						rollbackErr = restoreTUISubscriptionProfile(
+							state.paths.configPath,
+							backup,
+						)
+					} else {
+						rollbackErr = restoreTUIProfileIfUnchanged(
+							state.paths.homeDir,
+							state.paths.configPath,
+							backup,
+						)
+					}
+					state.snapshot.Status = "Restore hot-reload failed: " + reloadErr.Error()
+					if rollbackErr == nil {
+						originalReloadErr := reloadTUIOperationConfigExpected(
+							state,
+							m.service,
+							m.client,
+							m.ownsCore,
+							tuiBytesSHA256(backup.data),
+						)
+						if originalReloadErr == nil {
+							state.snapshot.Status += "; original restored"
+						} else {
+							state.snapshot.Status += "; file restored but Core reload failed: " +
+								originalReloadErr.Error()
+						}
+					} else {
+						state.snapshot.Status += "; rollback skipped: " + rollbackErr.Error()
+					}
 				} else {
 					state.snapshot.Status = "Restored and hot-reloaded: " +
 						filepath.Base(backupPath)
@@ -1953,7 +2266,7 @@ func (m *tuiModel) testSelectedProxyGroupDelays() tea.Cmd {
 
 func (m *tuiModel) testDashboardDelay() tea.Cmd {
 	if m.service == nil {
-		m.snapshot.Status = "Dashboard delay test requires the managed Service"
+		m.snapshot.Status = "Dashboard delay test requires the managed backend"
 		return nil
 	}
 	m.snapshot.DashboardDelay = -2
@@ -1976,7 +2289,7 @@ func (m *tuiModel) testDashboardDelay() tea.Cmd {
 
 func (m *tuiModel) testDashboardSpeed() tea.Cmd {
 	if m.service == nil {
-		m.snapshot.Status = "Dashboard speed test requires the managed Service"
+		m.snapshot.Status = "Dashboard speed test requires the managed backend"
 		return nil
 	}
 	m.snapshot.DashboardSpeed = tuiSpeedResult{Testing: true}
@@ -1995,7 +2308,7 @@ func (m *tuiModel) testDashboardSpeed() tea.Cmd {
 
 func (m *tuiModel) testSelectedProxySpeed() tea.Cmd {
 	if m.service == nil {
-		m.snapshot.Status = "Proxy speed testing requires the managed Service"
+		m.snapshot.Status = "Proxy speed testing requires the managed backend"
 		return nil
 	}
 	if m.snapshot.SelectedGroup < 0 ||
@@ -2036,7 +2349,7 @@ func (m *tuiModel) testSelectedProxySpeed() tea.Cmd {
 
 func (m *tuiModel) testSelectedProxyGroupSpeeds() tea.Cmd {
 	if m.service == nil {
-		m.snapshot.Status = "Proxy speed testing requires the managed Service"
+		m.snapshot.Status = "Proxy speed testing requires the managed backend"
 		return nil
 	}
 	if m.snapshot.SelectedGroup < 0 ||
@@ -2245,23 +2558,35 @@ func (m *tuiModel) startEditor(path string) tea.Cmd {
 	if editor == "" {
 		editor = "vi"
 	}
-	info, err := os.Lstat(path)
+	lease, err := acquireTUIProfileLocks(m.paths.homeDir, path)
 	if err != nil {
 		m.snapshot.Status = "Editor failed: " + err.Error()
 		return nil
 	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		lease.release()
+		m.snapshot.Status = "Editor failed: " + err.Error()
+		return nil
+	}
 	if !info.Mode().IsRegular() {
+		lease.release()
 		m.snapshot.Status = "Editor failed: configuration must be a regular file"
 		return nil
 	}
 	backup, err := os.ReadFile(path)
 	if err != nil {
+		lease.release()
 		m.snapshot.Status = "Editor failed: " + err.Error()
 		return nil
 	}
 	command := exec.Command("sh", "-c", editor+" -- \"$1\"", "flclash-tui-editor", path)
 	m.editorPath = path
-	m.editorBackup = tuiProfileBackup{data: backup, mode: info.Mode()}
+	m.editorBackup = tuiProfileBackup{
+		data: backup,
+		mode: info.Mode(),
+		lock: lease,
+	}
 	m.busy = true
 	m.snapshot.Status = "Editor open"
 	return tea.ExecProcess(command, func(err error) tea.Msg {
@@ -2344,6 +2669,7 @@ func (m *tuiModel) startProfileSubscriptionUpdate(
 			state.snapshot.Status = "Subscription update failed: " + err.Error()
 			return
 		}
+		defer backup.release()
 		if err := rememberTUISubscriptionSource(
 			state.paths.homeDir,
 			profilePath,
@@ -2359,20 +2685,24 @@ func (m *tuiModel) startProfileSubscriptionUpdate(
 		}
 
 		if isActive {
-			if reloadErr := reloadTUIOperationConfig(
+			if m.service != nil {
+				backup.release()
+			}
+			if reloadErr := reloadTUIOperationConfigExpected(
 				state,
 				m.service,
 				m.client,
 				m.ownsCore,
+				backup.updatedSHA256,
 			); reloadErr != nil {
-				rollbackErr := restoreTUISubscriptionProfile(profilePath, backup)
-				var restoreReloadErr error
-				if rollbackErr == nil {
-					restoreReloadErr = reloadTUIOperationConfig(
-						state,
-						m.service,
-						m.client,
-						m.ownsCore,
+				var rollbackErr error
+				if backup.lock != nil {
+					rollbackErr = restoreTUISubscriptionProfile(profilePath, backup)
+				} else {
+					rollbackErr = restoreTUIProfileIfUnchanged(
+						state.paths.homeDir,
+						profilePath,
+						backup,
 					)
 				}
 				state.snapshot.Status = "Subscription refresh failed to hot-reload: " +
@@ -2381,11 +2711,20 @@ func (m *tuiModel) startProfileSubscriptionUpdate(
 				case rollbackErr != nil:
 					state.snapshot.Status += "; profile rollback failed: " +
 						rollbackErr.Error()
-				case restoreReloadErr != nil:
-					state.snapshot.Status += "; original profile restored but reload failed: " +
-						restoreReloadErr.Error()
 				default:
-					state.snapshot.Status += "; original profile restored"
+					originalReloadErr := reloadTUIOperationConfigExpected(
+						state,
+						m.service,
+						m.client,
+						m.ownsCore,
+						tuiBytesSHA256(backup.data),
+					)
+					if originalReloadErr == nil {
+						state.snapshot.Status += "; original profile restored"
+					} else {
+						state.snapshot.Status += "; file restored but Core reload failed: " +
+							originalReloadErr.Error()
+					}
 				}
 				return
 			}
@@ -2407,7 +2746,6 @@ func (m *tuiModel) startProfileSubscriptionUpdate(
 func (m *tuiModel) handleInput(message tea.KeyMsg) tea.Cmd {
 	switch message.Type {
 	case tea.KeyCtrlC:
-		m.stopServiceOnExit = true
 		return tea.Quit
 	case tea.KeyEsc:
 		m.resetInput()
@@ -2543,13 +2881,19 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			m.stagedSettings = cloneTUISettings(&m.snapshot.Settings)
 			m.settingsDirty = true
 			m.snapshot.Status = fmt.Sprintf(
-				"Mixed port %d staged; enable System proxy or start Service to apply",
+				"Mixed port %d staged; enable System proxy or start Core to apply",
 				port,
 			)
 			m.persistStagedTUISettings()
 			return nil
 		}
 		return m.startOperation(func(state *tuiOperationState) {
+			if m.service != nil {
+				settings := state.snapshot.Settings
+				settings.MixedPort = port
+				commitTUIOperationSettings(state, m.service, m.client, settings)
+				return
+			}
 			if applyTUIMixedPort(&state.snapshot, m.client, port) {
 				persistTUIOperationSettings(state)
 			}
@@ -2647,6 +2991,11 @@ func renameTUIProfile(homeDir, sourcePath, requestedName string) (string, error)
 	if destinationPath == sourcePath {
 		return sourcePath, nil
 	}
+	lease, err := acquireTUIProfileLocks(homeDir, sourcePath, destinationPath)
+	if err != nil {
+		return "", err
+	}
+	defer lease.release()
 	if _, err := os.Lstat(destinationPath); err == nil {
 		return "", fmt.Errorf("%s already exists", name)
 	} else if !os.IsNotExist(err) {
@@ -2768,8 +3117,18 @@ func writeTUIProfileAtomically(path string, data []byte, mode os.FileMode) error
 }
 
 type tuiProfileBackup struct {
-	data []byte
-	mode os.FileMode
+	data          []byte
+	mode          os.FileMode
+	updatedSHA256 string
+	lock          *tuiProfileLockLease
+}
+
+func (b *tuiProfileBackup) release() {
+	if b == nil || b.lock == nil {
+		return
+	}
+	b.lock.release()
+	b.lock = nil
 }
 
 func updateTUISubscriptionProfile(
@@ -2780,6 +3139,16 @@ func updateTUISubscriptionProfile(
 	if _, err := tuiProfileStateKey(homeDir, path); err != nil {
 		return tuiProfileBackup{}, err
 	}
+	lease, err := acquireTUIProfileLocks(homeDir, path)
+	if err != nil {
+		return tuiProfileBackup{}, err
+	}
+	releaseOnError := true
+	defer func() {
+		if releaseOnError {
+			lease.release()
+		}
+	}()
 	info, err := os.Lstat(path)
 	if err != nil {
 		return tuiProfileBackup{}, err
@@ -2799,7 +3168,7 @@ func updateTUISubscriptionProfile(
 	if err := writeTUIProfileAtomically(path, updated, info.Mode()); err != nil {
 		return tuiProfileBackup{}, err
 	}
-	backup := tuiProfileBackup{data: previous, mode: info.Mode()}
+	backup := tuiProfileBackup{data: previous, mode: info.Mode(), lock: lease}
 	if previousSettings != nil {
 		if err := persistTUISettings(path, *previousSettings); err != nil {
 			rollbackErr := restoreTUISubscriptionProfile(path, backup)
@@ -2813,11 +3182,38 @@ func updateTUISubscriptionProfile(
 			return tuiProfileBackup{}, fmt.Errorf("preserve local settings: %w", err)
 		}
 	}
+	updatedData, err := os.ReadFile(path)
+	if err != nil {
+		_ = restoreTUISubscriptionProfile(path, backup)
+		return tuiProfileBackup{}, err
+	}
+	backup.updatedSHA256 = tuiBytesSHA256(updatedData)
+	releaseOnError = false
 	return backup, nil
 }
 
 func restoreTUISubscriptionProfile(path string, backup tuiProfileBackup) error {
 	return writeTUIProfileAtomically(path, backup.data, backup.mode)
+}
+
+func restoreTUIProfileIfUnchanged(
+	homeDir,
+	path string,
+	backup tuiProfileBackup,
+) error {
+	lease, err := acquireTUIProfileLocks(homeDir, path)
+	if err != nil {
+		return err
+	}
+	defer lease.release()
+	actualSHA256, err := tuiFileSHA256(path)
+	if err != nil {
+		return err
+	}
+	if backup.updatedSHA256 == "" || actualSHA256 != backup.updatedSHA256 {
+		return errors.New("profile changed concurrently")
+	}
+	return restoreTUISubscriptionProfile(path, backup)
 }
 
 func newTUISubscriptionRequest(value string) (*nethttp.Request, error) {
@@ -2885,6 +3281,8 @@ func tuiKeyFromTea(message tea.KeyMsg) (tuiKey, bool) {
 		return tuiKeyLogs, true
 	case "7":
 		return tuiKeyTools, true
+	case "8":
+		return tuiKeyMaintenance, true
 	case "P":
 		return tuiKeyProviders, true
 	case "x", "X":
