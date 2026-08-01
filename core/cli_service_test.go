@@ -4,13 +4,138 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
+
+type tuiServiceMemoryConnection struct {
+	reader   *bytes.Reader
+	written  bytes.Buffer
+	writeErr error
+}
+
+func (connection *tuiServiceMemoryConnection) Read(data []byte) (int, error) {
+	return connection.reader.Read(data)
+}
+
+func (connection *tuiServiceMemoryConnection) Write(data []byte) (int, error) {
+	if connection.writeErr != nil {
+		return 0, connection.writeErr
+	}
+	return connection.written.Write(data)
+}
+
+func (connection *tuiServiceMemoryConnection) Close() error { return nil }
+
+func (connection *tuiServiceMemoryConnection) LocalAddr() net.Addr { return nil }
+
+func (connection *tuiServiceMemoryConnection) RemoteAddr() net.Addr { return nil }
+
+func (connection *tuiServiceMemoryConnection) SetDeadline(time.Time) error { return nil }
+
+func (connection *tuiServiceMemoryConnection) SetReadDeadline(time.Time) error { return nil }
+
+func (connection *tuiServiceMemoryConnection) SetWriteDeadline(time.Time) error { return nil }
+
+func TestReapTUIServiceProcessWaitsForChild(t *testing.T) {
+	command := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := command.Process.Pid
+	select {
+	case err := <-reapTUIServiceProcess(command):
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("child process was not reaped")
+	}
+	if command.ProcessState == nil || !command.ProcessState.Exited() {
+		t.Fatalf("child process state = %#v", command.ProcessState)
+	}
+	var status syscall.WaitStatus
+	if waited, err := syscall.Wait4(pid, &status, syscall.WNOHANG, nil); waited != -1 || !errors.Is(err, syscall.ECHILD) {
+		t.Fatalf("child remained waitable: pid=%d err=%v", waited, err)
+	}
+}
+
+func TestTUIServiceShutdownWritesACKBeforeSignallingExit(t *testing.T) {
+	directory := t.TempDir()
+	var connection *tuiServiceMemoryConnection
+	shutdownCalled := false
+	runtime := newTUIServiceRuntime(
+		cliPaths{
+			homeDir:    directory,
+			configPath: filepath.Join(directory, "config.yaml"),
+		},
+		defaultCLITestURL,
+		filepath.Join(directory, "core.sock"),
+		nil,
+		func() {
+			var status tuiServiceStatus
+			if err := json.Unmarshal(bytes.TrimSpace(connection.written.Bytes()), &status); err != nil {
+				t.Errorf("shutdown signalled before a complete ACK was written: %v", err)
+			} else if !status.OK || !status.ShuttingDown {
+				t.Errorf("shutdown ACK = %+v", status)
+			}
+			shutdownCalled = true
+		},
+	)
+	request, err := json.Marshal(tuiServiceRequest{
+		ProtocolVersion: tuiServiceProtocolVersion,
+		RequestID:       "shutdown-with-ack",
+		Action:          "shutdown",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection = &tuiServiceMemoryConnection{reader: bytes.NewReader(request)}
+	serveTUIServiceConnection(runtime, connection)
+	if !shutdownCalled {
+		t.Fatal("backend exit was not signalled after the shutdown ACK")
+	}
+}
+
+func TestTUIServiceShutdownDoesNotExitWhenACKWriteFails(t *testing.T) {
+	directory := t.TempDir()
+	shutdownCalled := false
+	runtime := newTUIServiceRuntime(
+		cliPaths{
+			homeDir:    directory,
+			configPath: filepath.Join(directory, "config.yaml"),
+		},
+		defaultCLITestURL,
+		filepath.Join(directory, "core.sock"),
+		nil,
+		func() { shutdownCalled = true },
+	)
+	request, err := json.Marshal(tuiServiceRequest{
+		ProtocolVersion: tuiServiceProtocolVersion,
+		RequestID:       "shutdown-write-failure",
+		Action:          "shutdown",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := &tuiServiceMemoryConnection{
+		reader:   bytes.NewReader(request),
+		writeErr: io.ErrClosedPipe,
+	}
+	serveTUIServiceConnection(runtime, connection)
+	if shutdownCalled {
+		t.Fatal("backend exited even though the shutdown ACK was not delivered")
+	}
+}
 
 func TestTUIServiceReloadUsesExtendedTimeout(t *testing.T) {
 	homeDir := t.TempDir()

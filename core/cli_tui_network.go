@@ -66,6 +66,9 @@ func (m *tuiModel) startNetworkCheck(force bool) tea.Cmd {
 }
 
 func (m *tuiModel) networkCheckProxyPort() int {
+	if strings.EqualFold(m.snapshot.Settings.Mode, tuiSilentMode) {
+		return 0
+	}
 	if m.snapshot.Settings.MixedPort <= 0 {
 		return 0
 	}

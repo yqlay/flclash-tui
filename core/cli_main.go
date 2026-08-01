@@ -58,22 +58,30 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  flclash COMMAND [OPTIONS]       Manage the shared backend")
 	fmt.Fprintln(w, "  flc COMMAND [ARG...]            Run a command through FlClash")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Lifecycle:")
-	fmt.Fprintln(w, "  start             Start the proxy Core (starts the backend if needed)")
-	fmt.Fprintln(w, "  stop              Stop the proxy Core; keep the backend available")
-	fmt.Fprintln(w, "  restart           Restart the proxy Core")
-	fmt.Fprintln(w, "  reload            Validate and reload the active profile")
+	fmt.Fprintln(w, "Dashboard commands:")
+	fmt.Fprintln(w, "  core              Start, stop, restart, reload, or inspect Core")
+	fmt.Fprintln(w, "  sys               Turn System proxy on/off or inspect it")
+	fmt.Fprintln(w, "  tun               Turn TUN on/off or inspect it")
+	fmt.Fprintln(w, "  mode              Select rule/global/direct/silent mode")
+	fmt.Fprintln(w, "  port              Get, set, or disable the normal Proxy port")
+	fmt.Fprintln(w, "  flc               Select or test the private silent-mode command proxy")
+	fmt.Fprintln(w, "  net               Show or test Dashboard network detection")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Lifecycle shortcuts:")
+	fmt.Fprintln(w, "  start             Alias for core start")
+	fmt.Fprintln(w, "  stop              Alias for core stop; keep the backend available")
+	fmt.Fprintln(w, "  restart           Alias for core restart")
+	fmt.Fprintln(w, "  reload            Alias for core reload")
 	fmt.Fprintln(w, "  status            Show backend, Core, profile, port, and frontend state")
 	fmt.Fprintln(w, "  logs              Read or follow the managed backend log")
-	fmt.Fprintln(w, "  service           Manage the per-user backend process")
+	fmt.Fprintln(w, "  backend           Manage the per-user Backend process")
+	fmt.Fprintln(w, "  shutdown          Stop Backend and Core; disconnect all frontends")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Configuration and runtime:")
 	fmt.Fprintln(w, "  profile           Import, select, update, rename, edit, or list profiles")
 	fmt.Fprintln(w, "  proxy             List groups/nodes, select nodes, or run tests")
 	fmt.Fprintln(w, "  config            Inspect, validate, edit, back up, or restore config")
-	fmt.Fprintln(w, "  system-proxy      Enable, disable, or inspect the Linux system proxy")
-	fmt.Fprintln(w, "  tun               Enable, disable, or inspect TUN")
-	fmt.Fprintln(w, "  mode              Get or set rule/global/direct mode")
+	fmt.Fprintln(w, "  history           Show, follow, or clear recent connection history")
 	fmt.Fprintln(w, "  connections       List or close active connections")
 	fmt.Fprintln(w, "  geo               Inspect or update Mihomo Geo resources")
 	fmt.Fprintln(w, "  env               Print the active proxy environment")
@@ -274,7 +282,28 @@ func proxyCommand(args []string) error {
 		if len(positional) != 2 {
 			return errors.New("usage: flclash proxy select GROUP NODE")
 		}
-		return client.selectProxy(positional[0], positional[1])
+		if service == nil {
+			return client.selectProxy(positional[0], positional[1])
+		}
+		status, err := service.status()
+		if err != nil {
+			return err
+		}
+		status, err = service.selectProxy(
+			positional[0],
+			positional[1],
+			status.Revision,
+		)
+		if err != nil {
+			return err
+		}
+		fmt.Printf(
+			"selected %q in %q (revision %d)\n",
+			positional[1],
+			positional[0],
+			status.Revision,
+		)
+		return nil
 	case "delay":
 		positional := fs.Args()
 		if len(positional) != 1 {
@@ -392,23 +421,30 @@ func profileCommand(args []string) error {
 		if len(positional) != 1 {
 			return errors.New("usage: flclash profile import URL")
 		}
-		path, err := downloadTUIProfile(paths.homeDir, positional[0])
+		data, err := fetchTUISubscription(positional[0])
 		if err != nil {
 			return err
 		}
-		if err := rememberTUISubscriptionSource(
-			paths.homeDir,
-			path,
-			positional[0],
-		); err != nil {
-			lease, lockErr := acquireTUIProfileLocks(paths.homeDir, path)
-			if lockErr == nil {
-				_ = os.Remove(path)
-				lease.release()
-			}
-			return fmt.Errorf("remember imported subscription: %w", err)
+		client, status, err := currentManagedService()
+		if err != nil {
+			return err
 		}
-		fmt.Println(path)
+		path := filepath.Join(
+			status.HomeDir,
+			fmt.Sprintf("profile-%d.yaml", time.Now().UnixNano()),
+		)
+		status, err = client.putProfile(
+			path,
+			data,
+			"",
+			true,
+			&positional[0],
+			status.Revision,
+		)
+		if err != nil {
+			return err
+		}
+		fmt.Println(status.ResultPath)
 		return nil
 	case "use":
 		if len(positional) != 1 {
@@ -437,37 +473,33 @@ func profileCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		backup, err := updateTUISubscriptionProfile(paths.homeDir, target, sourceURL)
+		previous, err := os.ReadFile(target)
 		if err != nil {
 			return err
 		}
-		defer backup.release()
-		if filepath.Clean(target) == filepath.Clean(paths.configPath) {
-			client, status, statusErr := currentManagedService()
-			if statusErr == nil {
-				backup.release()
-				if _, err := client.reloadAtRevisionWithDigest(
-					target,
-					status.Revision,
-					backup.updatedSHA256,
-				); err != nil {
-					rollbackErr := rollbackManagedProfile(
-						client,
-						status,
-						paths.homeDir,
-						target,
-						backup,
-					)
-					if rollbackErr != nil {
-						return fmt.Errorf(
-							"reload updated profile: %v; rollback failed: %w",
-							err,
-							rollbackErr,
-						)
-					}
-					return fmt.Errorf("reload updated profile: %w; original restored", err)
-				}
+		updated, err := fetchTUISubscription(sourceURL)
+		if err != nil {
+			return err
+		}
+		if previousSettings := loadTUIConfiguredSettings(target, true); previousSettings != nil {
+			updated, err = applyTUISettingsToConfig(updated, *previousSettings)
+			if err != nil {
+				return fmt.Errorf("preserve local settings: %w", err)
 			}
+		}
+		client, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
+		if _, err := client.putProfile(
+			target,
+			updated,
+			tuiBytesSHA256(previous),
+			false,
+			nil,
+			status.Revision,
+		); err != nil {
+			return err
 		}
 		fmt.Printf("Updated %s\n", filepath.Base(target))
 		return nil
@@ -482,11 +514,15 @@ func profileCommand(args []string) error {
 		if filepath.Clean(target) == filepath.Clean(paths.configPath) {
 			return errors.New("activate another profile before renaming the current profile")
 		}
-		renamed, err := renameTUIProfile(paths.homeDir, target, positional[1])
+		client, status, err := currentManagedService()
 		if err != nil {
 			return err
 		}
-		fmt.Println(renamed)
+		status, err = client.renameProfile(target, positional[1], status.Revision)
+		if err != nil {
+			return err
+		}
+		fmt.Println(status.ResultPath)
 		return nil
 	case "edit":
 		target, err := cliProfileTarget(paths, positional)
@@ -505,20 +541,13 @@ func profileCommand(args []string) error {
 		if filepath.Clean(target) == filepath.Clean(paths.configPath) {
 			return errors.New("cannot delete the active profile")
 		}
-		lease, err := acquireTUIProfileLocks(paths.homeDir, target)
+		client, status, err := currentManagedService()
 		if err != nil {
 			return err
 		}
-		defer lease.release()
-		if err := os.Remove(target); err != nil {
+		if _, err := client.deleteProfile(target, status.Revision); err != nil {
 			return err
 		}
-		_ = updateTUIState(paths.homeDir, func(state *tuiPersistentState) {
-			key, keyErr := tuiProfileStateKey(paths.homeDir, target)
-			if keyErr == nil {
-				delete(state.SubscriptionSources, key)
-			}
-		})
 		fmt.Printf("Deleted %s\n", filepath.Base(target))
 		return nil
 	case "link":
@@ -532,10 +561,14 @@ func profileCommand(args []string) error {
 		if _, err := newTUISubscriptionRequest(sourceURL); err != nil {
 			return err
 		}
-		if err := rememberTUISubscriptionSource(
-			paths.homeDir,
+		client, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
+		if _, err := client.linkProfile(
 			paths.configPath,
 			sourceURL,
+			status.Revision,
 		); err != nil {
 			return err
 		}

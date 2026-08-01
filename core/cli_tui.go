@@ -124,6 +124,7 @@ type tuiUpdateInfo struct {
 
 const (
 	tuiSettingsModeRow = iota
+	tuiSettingsFLCOutboundRow
 	tuiSettingsMixedPortRow
 	tuiSettingsAllowLANRow
 	tuiSettingsIPv6Row
@@ -224,6 +225,8 @@ type tuiSnapshot struct {
 	ServiceRunning      bool
 	ExternalCore        bool
 	ManagedService      bool
+	FLCEnabled          bool
+	FLCOutbound         string
 	Frontends           []cliProcessOwner
 	InputTitle          string
 	InputValue          string
@@ -318,12 +321,9 @@ func tuiCommand(args []string) error {
 	if !isInteractiveTUI() {
 		return errors.New("TUI requires an interactive terminal; use run or proxy commands in non-interactive shells")
 	}
-	if err := ensureTUIConfig(paths, *configArg == ""); err != nil {
-		return err
-	}
-	if !*noStartArg {
-		if err := ensureTUIFlClashDefaults(paths.configPath); err != nil {
-			return fmt.Errorf("apply FlClash defaults: %w", err)
+	if *configArg != "" || *noStartArg {
+		if err := ensureTUIConfig(paths, false); err != nil {
+			return err
 		}
 	}
 	originalLogOutput := logrus.StandardLogger().Out
@@ -359,7 +359,6 @@ func tuiCommand(args []string) error {
 		controllerUnix = status.CoreSocket
 		coreRunning = status.Running
 	}
-	_ = rememberTUIActiveProfile(paths)
 	options := controllerOptions{
 		address:    controllerAddress,
 		unixSocket: controllerUnix,
@@ -651,7 +650,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 				if snapshot.Page == tuiPageRequests {
 					snapshot.Requests = nil
 					snapshot.SelectedRequest = 0
-					snapshot.Status = "Request history cleared"
+					snapshot.Status = "History cleared"
 					break
 				}
 				if snapshot.Page == tuiPageLogs {
@@ -1537,7 +1536,7 @@ func switchTUIProfile(
 		} else {
 			snapshot.Settings.SystemProxy = enableSystemProxy
 			if !enableSystemProxy {
-				snapshot.Status += "; system proxy disabled because the profile has no mixed port"
+				snapshot.Status += "; System proxy disabled because the profile has no Proxy port"
 			}
 		}
 	}
@@ -1718,13 +1717,13 @@ func updateTUISettings(snapshot *tuiSnapshot, client controllerClient, key tuiKe
 		patch["log-level"] = levels[wrapTUIIndex(current, 1, len(levels))]
 	case tuiKeyPortUp:
 		if snapshot.Settings.MixedPort >= 65535 {
-			snapshot.Status = "Mixed port is already at 65535"
+			snapshot.Status = "Proxy port is already at 65535"
 			return false
 		}
 		patch["mixed-port"] = snapshot.Settings.MixedPort + 1
 	case tuiKeyPortDown:
 		if snapshot.Settings.MixedPort <= 0 {
-			snapshot.Status = "Mixed port is already at 0"
+			snapshot.Status = "Proxy port is already at 0"
 			return false
 		}
 		patch["mixed-port"] = snapshot.Settings.MixedPort - 1
@@ -1743,10 +1742,10 @@ func updateTUISettings(snapshot *tuiSnapshot, client controllerClient, key tuiKe
 			snapshot.Status = "Port changed, but system proxy update failed: " + err.Error()
 		} else if !enableSystemProxy {
 			snapshot.Settings.SystemProxy = false
-			snapshot.Status = "Mixed port disabled; system proxy disabled"
+			snapshot.Status = "Proxy port disabled; System proxy disabled"
 		} else {
 			snapshot.Settings.SystemProxy = true
-			snapshot.Status = fmt.Sprintf("Mixed port changed to %d", snapshot.Settings.MixedPort)
+			snapshot.Status = fmt.Sprintf("Proxy port changed to %d", snapshot.Settings.MixedPort)
 		}
 	}
 	return true
@@ -1755,7 +1754,7 @@ func updateTUISettings(snapshot *tuiSnapshot, client controllerClient, key tuiKe
 func toggleTUISystemProxy(snapshot *tuiSnapshot) bool {
 	port := snapshot.Settings.MixedPort
 	if port <= 0 {
-		snapshot.Status = "System proxy requires a positive mixed port"
+		snapshot.Status = "System proxy requires a positive Proxy port"
 		return false
 	}
 	enable := !snapshot.Settings.SystemProxy
@@ -1776,7 +1775,7 @@ func setTUIMixedPort(snapshot *tuiSnapshot, client controllerClient, oldState **
 	selectedPort := currentPort
 	changed := false
 	err := runTUICooked(oldState, func() error {
-		_, _ = fmt.Fprintf(os.Stdout, "Mixed port [0-65535] (current %d, empty cancels): ", currentPort)
+		_, _ = fmt.Fprintf(os.Stdout, "Proxy port [0-65535] (current %d, empty cancels): ", currentPort)
 		value, readErr := readTUILine(os.Stdin)
 		if readErr != nil && len(value) == 0 {
 			return readErr
@@ -1787,7 +1786,7 @@ func setTUIMixedPort(snapshot *tuiSnapshot, client controllerClient, oldState **
 		}
 		port, parseErr := strconv.Atoi(value)
 		if parseErr != nil || port < 0 || port > 65535 {
-			return errors.New("mixed port must be a number from 0 to 65535")
+			return errors.New("Proxy port must be a number from 0 to 65535")
 		}
 		selectedPort = port
 		changed = selectedPort != currentPort
@@ -1815,11 +1814,11 @@ func setTUIMixedPort(snapshot *tuiSnapshot, client controllerClient, oldState **
 		}
 		snapshot.Settings.SystemProxy = enableSystemProxy
 		if !enableSystemProxy {
-			snapshot.Status = "Mixed port disabled; system proxy disabled"
+			snapshot.Status = "Proxy port disabled; System proxy disabled"
 			return
 		}
 	}
-	snapshot.Status = fmt.Sprintf("Mixed port changed to %d", snapshot.Settings.MixedPort)
+	snapshot.Status = fmt.Sprintf("Proxy port changed to %d", snapshot.Settings.MixedPort)
 }
 
 func linuxSystemProxyEnabled() bool {
@@ -2349,7 +2348,7 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	snapshot.ExternalCore = !ownsCore
 	if ownsCore && coreRunning && snapshot.Settings.MixedPort <= 0 &&
 		(snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Core listeners started") {
-		snapshot.Status = "No mixed listener active; select Mixed port in Dashboard or Settings"
+		snapshot.Status = "No proxy listener active; select Proxy port in Dashboard or Settings"
 	}
 	if width < 88 || height < 18 {
 		return renderTUICompact(
@@ -2399,12 +2398,12 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 		b.WriteByte('\n')
 	}
 
-	footer := "  ←→ panel  ↑↓/ws move  Enter apply  Esc nav  ? help  q/Ctrl+C detach"
+	footer := "  ←→ panel  ↑↓/ws move  Enter apply  Esc nav  ? help  q detach  ^C shutdown"
 	if width >= 110 {
-		footer = "  ←→ panel  ↑↓/ws move  Enter open/apply  Esc back  d delay  ? help  q/Ctrl+C detach"
+		footer = "  ←→ panel  ↑↓/ws move  Enter open/apply  Esc back  d delay  ? help  q detach  ^C shutdown"
 	}
 	if snapshot.Page == tuiPageDashboard && bodyHeight < 27 {
-		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  Esc nav  q detach"
+		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  q detach  ^C shutdown"
 	}
 	if snapshot.Status != "" && snapshot.Status != "Connected" {
 		statusWidth := maxTUIWidth(width-tuiDisplayWidth(footer)-5, 0)
@@ -2513,7 +2512,7 @@ func tuiPageName(page tuiPage) string {
 	case tuiPageProfiles:
 		return "Profiles"
 	case tuiPageRequests:
-		return "Requests"
+		return "History"
 	case tuiPageConnections:
 		return "Connections"
 	case tuiPageLogs:
@@ -2650,7 +2649,7 @@ func renderTUITooSmall(width, height int) string {
 		fmt.Sprintf("  Terminal: %dx%d", width, height),
 		"  Resize to at least 40x10",
 		"",
-		"  q/Ctrl+C detach UI",
+		"  q detach · Ctrl+C shutdown",
 	}
 	var b strings.Builder
 	for row := 0; row < height; row++ {
@@ -2680,7 +2679,7 @@ func renderTUITiny(
 	if snapshot.Status != "" {
 		lines = append(lines, snapshot.Status)
 	}
-	lines = append(lines, "q/Ctrl+C detach")
+	lines = append(lines, "q detach · ^C shutdown")
 	var b strings.Builder
 	for row := 0; row < height; row++ {
 		line := ""
@@ -2846,7 +2845,7 @@ func tuiSidebar(snapshot tuiSnapshot, width, height int) []string {
 		"@  Dashboard",
 		"*  Proxies",
 		"+  Profiles",
-		">  Requests",
+		">  History",
 		"~  Connections",
 		"=  Logs",
 		":  Settings",
@@ -3237,12 +3236,12 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 		"Dashboard      d route delay · v 100 MB/5s speed · n refresh IP detection",
 		"Proxies        Enter nodes · d group/node delay · v group/node speed · Esc groups",
 		"Profiles       Enter activate · U refresh subscription · F2/u rename · e edit · n import",
-		"Requests       x clears local history · Connections: x close all · d close selected",
+		"History        x clears shared history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
 		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
 		"Settings       Enter applies row · a LAN · v IPv6 · p port",
 		"Maintenance    Edit, backup, restore, Geo, traffic reset, and updates",
-		"Exit           q or Ctrl+C detaches this TUI frontend",
+		"Exit           q detaches this TUI · Ctrl+C shuts down Backend and Core",
 	}
 	if height < 28 {
 		rows = rows[:minTUI(5, len(rows))]
@@ -3261,9 +3260,9 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 	controls := []string{
 		fmt.Sprintf("Core          %s", serviceLabel),
 		fmt.Sprintf("System proxy  %s", systemProxyLabel),
-		fmt.Sprintf("TUN           %s", tuiOnOff(snapshot.Settings.TunEnabled)),
-		fmt.Sprintf("Outbound mode %s", snapshot.Settings.Mode),
-		fmt.Sprintf("Mixed port    %d", snapshot.Settings.MixedPort),
+		fmt.Sprintf("TUN           %s", tuiTUNLabel(snapshot)),
+		fmt.Sprintf("Mode          %s", snapshot.Settings.Mode),
+		fmt.Sprintf("Proxy port    %s", tuiProxyPortLabel(snapshot)),
 	}
 	tuiTitle(
 		b,
@@ -3342,7 +3341,7 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 				formatBytes(snapshot.TotalTraffic.Down),
 			),
 			fmt.Sprintf(
-				"Activity      %d active · %d recent requests",
+				"Activity      %d active · %d history entries",
 				len(snapshot.Connections),
 				len(snapshot.Requests),
 			),
@@ -3415,12 +3414,9 @@ func tuiCompactDashboardRows(
 			"System proxy  %s",
 			tuiSystemProxyLabel(snapshot),
 		),
-		fmt.Sprintf(
-			"TUN           %s",
-			tuiOnOff(snapshot.Settings.TunEnabled),
-		),
-		fmt.Sprintf("Outbound mode %s", snapshot.Settings.Mode),
-		fmt.Sprintf("Mixed port    %d", snapshot.Settings.MixedPort),
+		fmt.Sprintf("TUN           %s", tuiTUNLabel(snapshot)),
+		fmt.Sprintf("Mode          %s", snapshot.Settings.Mode),
+		fmt.Sprintf("Proxy port    %s", tuiProxyPortLabel(snapshot)),
 	}
 	rows := make([]tuiDashboardCompactRow, 0, 24)
 	for index, control := range controls {
@@ -3499,7 +3495,7 @@ func tuiCompactDashboardRows(
 		},
 		tuiDashboardCompactRow{
 			value: fmt.Sprintf(
-				"Activity      %d active · %d requests",
+				"Activity      %d active · %d history entries",
 				len(snapshot.Connections),
 				len(snapshot.Requests),
 			),
@@ -3610,12 +3606,12 @@ func formatTUIUintBytes(value uint64) string {
 func drawTUIRequests(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 	tuiTitle(
 		b,
-		"Requests",
-		fmt.Sprintf("%d recent · active and completed · x clear", len(snapshot.Requests)),
+		"History",
+		fmt.Sprintf("%d shared entries · active and completed · x clear", len(snapshot.Requests)),
 		width,
 	)
 	if len(snapshot.Requests) == 0 {
-		tuiRow(b, "No requests captured since this TUI opened", width, false, tuiDim)
+		tuiRow(b, "No connection history captured by Backend", width, false, tuiDim)
 		tuiEndPanel(b, width)
 		return
 	}
@@ -3754,14 +3750,15 @@ func drawTUISettings(b *strings.Builder, snapshot tuiSnapshot, width, height int
 	}
 	tuiEndPanel(b, width)
 	if height >= len(rows)+7 {
-		tuiEmptyPanel(b, "Optional keys", "a LAN · v IPv6 · t TUN · m mode · p port · +/- adjust · S system proxy · c service", width)
+		tuiEmptyPanel(b, "Optional keys", "a LAN · v IPv6 · t TUN · m mode · p port · +/- adjust · S system proxy · c Core", width)
 	}
 }
 
 func tuiSettingsRows(snapshot tuiSnapshot) []string {
 	return []string{
 		fmt.Sprintf("Mode          %s", snapshot.Settings.Mode),
-		fmt.Sprintf("Mixed port    %d", snapshot.Settings.MixedPort),
+		fmt.Sprintf("FLC outbound  %s", cliDisplayValue(snapshot.FLCOutbound)),
+		fmt.Sprintf("Proxy port    %s", tuiProxyPortLabel(snapshot)),
 		fmt.Sprintf("Allow LAN     %s", tuiOnOff(snapshot.Settings.AllowLAN)),
 		fmt.Sprintf("IPv6          %s", tuiOnOff(snapshot.Settings.IPv6)),
 		fmt.Sprintf(
@@ -3773,7 +3770,7 @@ func tuiSettingsRows(snapshot tuiSnapshot) []string {
 			tuiOnOff(snapshot.Settings.TCPConcurrent),
 		),
 		fmt.Sprintf("Log level     %s", snapshot.Settings.LogLevel),
-		fmt.Sprintf("TUN           %s", tuiOnOff(snapshot.Settings.TunEnabled)),
+		fmt.Sprintf("TUN           %s", tuiTUNLabel(snapshot)),
 		fmt.Sprintf("Core          %s", tuiServiceLabel(snapshot)),
 		fmt.Sprintf("System proxy  %s", tuiSystemProxyLabel(snapshot)),
 	}
@@ -3790,6 +3787,9 @@ func tuiServiceLabel(snapshot tuiSnapshot) string {
 }
 
 func tuiSystemProxyLabel(snapshot tuiSnapshot) string {
+	if snapshot.Settings.Mode == tuiSilentMode {
+		return "DISABLED · locked by silent mode"
+	}
 	if snapshot.Settings.SystemProxy {
 		return "ENABLED · Enter to disable"
 	}
@@ -3797,6 +3797,31 @@ func tuiSystemProxyLabel(snapshot tuiSnapshot) string {
 		return "DISABLED · Enter to enable (starts Core)"
 	}
 	return "DISABLED · Enter to enable"
+}
+
+func tuiTUNLabel(snapshot tuiSnapshot) string {
+	if snapshot.Settings.Mode == tuiSilentMode {
+		return "OFF · locked by silent mode"
+	}
+	return tuiOnOff(snapshot.Settings.TunEnabled)
+}
+
+func tuiProxyPortLabel(snapshot tuiSnapshot) string {
+	if snapshot.Settings.Mode == tuiSilentMode {
+		state := "FLC NOT READY"
+		if snapshot.FLCEnabled {
+			state = "FLC private listener ready"
+		}
+		return fmt.Sprintf(
+			"OFF · configured %d · %s",
+			snapshot.Settings.MixedPort,
+			state,
+		)
+	}
+	if snapshot.Settings.MixedPort <= 0 {
+		return "OFF"
+	}
+	return strconv.Itoa(snapshot.Settings.MixedPort)
 }
 
 func tuiOnOff(enabled bool) string {

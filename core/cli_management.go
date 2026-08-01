@@ -4,12 +4,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -34,11 +36,10 @@ func startManagedCommand(args []string) error {
 		return err
 	}
 	paths = preferManagedActivePaths(paths, configExplicit, directoryExplicit)
-	if err := ensureTUIConfig(paths, !configExplicit); err != nil {
-		return err
-	}
-	if err := ensureTUIFlClashDefaults(paths.configPath); err != nil {
-		return fmt.Errorf("apply FlClash defaults: %w", err)
+	if configExplicit {
+		if err := ensureTUIConfig(paths, false); err != nil {
+			return err
+		}
 	}
 	client, current, err := ensureTUIService(
 		paths,
@@ -107,7 +108,7 @@ func reloadManagedCommand(args []string) error {
 func statusManagedCommand(args []string) error {
 	if cliSubcommandHelp(args) {
 		fmt.Println("Usage: flclash status [--json] [--watch]")
-		fmt.Println("Show backend, Core, active profile, Mixed Port, and frontend state.")
+		fmt.Println("Show Backend, Core, active profile, Proxy port, mode, and frontends.")
 		return nil
 	}
 	fs := newCLIFlagSet("status")
@@ -150,11 +151,17 @@ func statusManagedCommand(args []string) error {
 }
 
 func printManagedStatus(status tuiServiceStatus, jsonOutput bool) error {
-	mixedPort := 0
-	mode := ""
-	if config, err := managedConfig(status); err == nil {
-		mixedPort = config.MixedPort
-		mode = config.Mode
+	proxyPort := status.ProxyPort
+	mode := status.Mode
+	if (proxyPort == 0 || mode == "") && status.Running {
+		if config, err := managedConfig(status); err == nil {
+			if proxyPort == 0 {
+				proxyPort = config.MixedPort
+			}
+			if mode == "" {
+				mode = config.Mode
+			}
+		}
 	}
 	if jsonOutput {
 		return writeCLIJSON(os.Stdout, map[string]any{
@@ -165,8 +172,11 @@ func printManagedStatus(status tuiServiceStatus, jsonOutput bool) error {
 			"backend_pid":      status.PID,
 			"core":             cliOnOff(status.Running),
 			"profile":          status.ConfigPath,
-			"mixed_port":       mixedPort,
+			"proxy_port":       proxyPort,
+			"mixed_port":       proxyPort,
 			"mode":             mode,
+			"flc_enabled":      status.FLCEnabled,
+			"flc_outbound":     status.FLCOutbound,
 			"system_proxy":     status.SystemProxy,
 			"frontends":        status.FrontendCount,
 		})
@@ -175,13 +185,18 @@ func printManagedStatus(status tuiServiceStatus, jsonOutput bool) error {
 	fmt.Printf("Version:      %s (protocol %d)\n", status.Version, status.ProtocolVersion)
 	fmt.Printf("Core:         %s\n", cliOnOff(status.Running))
 	fmt.Printf("Profile:      %s\n", status.ConfigPath)
-	if mixedPort > 0 {
-		fmt.Printf("Mixed Port:   %d\n", mixedPort)
+	if mode == tuiSilentMode {
+		fmt.Printf("Proxy port:   off (configured %d)\n", proxyPort)
+	} else if proxyPort > 0 {
+		fmt.Printf("Proxy port:   %d (Mihomo mixed-port)\n", proxyPort)
 	}
 	if mode != "" {
 		fmt.Printf("Mode:         %s\n", mode)
 	}
-	fmt.Printf("System Proxy: %s\n", cliOnOff(status.SystemProxy))
+	if status.FLCOutbound != "" {
+		fmt.Printf("FLC outbound: %s\n", status.FLCOutbound)
+	}
+	fmt.Printf("System proxy: %s\n", cliOnOff(status.SystemProxy))
 	fmt.Printf("Frontends:    %d\n", status.FrontendCount)
 	return nil
 }
@@ -208,10 +223,14 @@ func logsManagedCommand(args []string) error {
 }
 
 func serviceManagementCommand(args []string) error {
-	if len(args) == 0 || cliSubcommandHelp(args) {
-		fmt.Println("Usage: flclash service start|stop|restart|status|logs|clients")
-		fmt.Println("service stop terminates the backend and disconnects all frontends.")
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash backend [start|stop|restart|status|logs|clients]")
+		fmt.Println("backend stop terminates Backend and Core and disconnects all frontends.")
+		fmt.Println("Compatibility alias: flclash service")
 		return nil
+	}
+	if len(args) == 0 {
+		args = []string{"status"}
 	}
 	switch args[0] {
 	case "start":
@@ -223,11 +242,10 @@ func serviceManagementCommand(args []string) error {
 			return err
 		}
 		paths = preferManagedActivePaths(paths, configExplicit, directoryExplicit)
-		if err := ensureTUIConfig(paths, !configExplicit); err != nil {
-			return err
-		}
-		if err := ensureTUIFlClashDefaults(paths.configPath); err != nil {
-			return fmt.Errorf("apply FlClash defaults: %w", err)
+		if configExplicit {
+			if err := ensureTUIConfig(paths, false); err != nil {
+				return err
+			}
 		}
 		client, status, err := ensureTUIService(
 			paths,
@@ -271,12 +289,6 @@ func serviceManagementCommand(args []string) error {
 		} else {
 			paths = preferManagedActivePaths(paths, false, false)
 		}
-		if err := ensureTUIConfig(paths, true); err != nil {
-			return err
-		}
-		if err := ensureTUIFlClashDefaults(paths.configPath); err != nil {
-			return fmt.Errorf("apply FlClash defaults: %w", err)
-		}
 		client, status, err = ensureTUIService(paths, defaultCLITestURL, false, false)
 		if err != nil {
 			return err
@@ -307,7 +319,7 @@ func serviceManagementCommand(args []string) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("unknown service command %q; use `flclash service -help`", args[0])
+		return fmt.Errorf("unknown backend command %q; use `flclash backend -help`", args[0])
 	}
 }
 
@@ -336,50 +348,25 @@ func configCommand(args []string) error {
 		}
 		fmt.Printf("configuration is valid: %s\n", paths.configPath)
 	case "backup":
-		backupPath, err := backupTUIConfig(paths.configPath)
+		client, status, err := currentManagedService()
 		if err != nil {
 			return err
 		}
-		fmt.Println(backupPath)
+		status, err = client.backupProfile(paths.configPath, status.Revision)
+		if err != nil {
+			return err
+		}
+		fmt.Println(status.ResultPath)
 	case "restore":
-		backupPath, backup, err := restoreLatestTUIConfigLocked(
-			paths.homeDir,
-			paths.configPath,
-		)
+		client, status, err := currentManagedService()
 		if err != nil {
 			return err
 		}
-		defer backup.release()
-		if client, status, statusErr := currentManagedService(); statusErr == nil {
-			backup.release()
-			if _, err := client.reloadAtRevisionWithDigest(
-				paths.configPath,
-				status.Revision,
-				backup.updatedSHA256,
-			); err != nil {
-				rollbackErr := rollbackManagedProfile(
-					client,
-					status,
-					paths.homeDir,
-					paths.configPath,
-					backup,
-				)
-				if rollbackErr != nil {
-					return fmt.Errorf(
-						"restored %s but reload failed: %v; rollback skipped: %w",
-						backupPath,
-						err,
-						rollbackErr,
-					)
-				}
-				return fmt.Errorf(
-					"restored %s but reload failed: %w; original restored",
-					backupPath,
-					err,
-				)
-			}
+		status, err = client.restoreProfile(paths.configPath, status.Revision)
+		if err != nil {
+			return err
 		}
-		fmt.Printf("Restored %s\n", backupPath)
+		fmt.Printf("Restored %s\n", status.ResultPath)
 	case "edit":
 		return editManagedConfig(paths.configPath)
 	default:
@@ -388,10 +375,234 @@ func configCommand(args []string) error {
 	return nil
 }
 
-func systemProxyCommand(args []string) error {
-	if len(args) == 0 || cliSubcommandHelp(args) {
-		fmt.Println("Usage: flclash system-proxy on|off|status")
+func coreCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash core [start|stop|restart|reload|status]")
+		fmt.Println("This command matches the Core row on Dashboard.")
 		return nil
+	}
+	if len(args) == 0 {
+		args = []string{"status"}
+	}
+	switch args[0] {
+	case "start":
+		return startManagedCommand(args[1:])
+	case "stop":
+		return stopCommand(args[1:])
+	case "restart":
+		return restartManagedCommand(args[1:])
+	case "reload":
+		return reloadManagedCommand(args[1:])
+	case "status":
+		if len(args) != 1 {
+			return errors.New("usage: flclash core status")
+		}
+		_, status, err := currentManagedServiceRaw()
+		if err != nil {
+			fmt.Println("STOPPED")
+			return nil
+		}
+		fmt.Println(cliUpperRunning(status.Running))
+		return nil
+	default:
+		return fmt.Errorf(
+			"unknown core command %q; use `flclash core -help`",
+			args[0],
+		)
+	}
+}
+
+func systemProxyCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash sys [on|off|status]")
+		fmt.Println("`sys on` starts Core when necessary; silent mode rejects it.")
+		fmt.Println("Compatibility alias: flclash system-proxy")
+		return nil
+	}
+	if len(args) == 0 {
+		args = []string{"status"}
+	}
+	if len(args) != 1 {
+		return errors.New("usage: flclash sys [on|off|status]")
+	}
+	action := strings.ToLower(args[0])
+	if action != "enable" && action != "disable" &&
+		action != "on" && action != "off" && action != "status" {
+		return errors.New("sys requires on, off, or status")
+	}
+	client, status, err := currentManagedService()
+	if err != nil {
+		return err
+	}
+	if action == "status" {
+		fmt.Println(cliEnabledDisabled(status.SystemProxy))
+		return nil
+	}
+	enabled := action == "enable" || action == "on"
+	autoStarted := false
+	if enabled && !status.Running {
+		status, err = client.startAtRevision(status.Revision)
+		if err != nil {
+			return fmt.Errorf("start Core for System proxy: %w", err)
+		}
+		autoStarted = true
+	}
+	status, err = client.setSystemProxy(enabled, status.Revision)
+	if err != nil {
+		if autoStarted {
+			if rolledBack, rollbackErr := client.stopAtRevision(status.Revision); rollbackErr != nil {
+				return fmt.Errorf(
+					"update System proxy: %v; automatic Core rollback failed: %w",
+					err,
+					rollbackErr,
+				)
+			} else {
+				status = rolledBack
+			}
+		}
+		return fmt.Errorf("update System proxy: %w", err)
+	}
+	fmt.Printf(
+		"System proxy %s (revision %d)\n",
+		cliEnabledDisabled(status.SystemProxy),
+		status.Revision,
+	)
+	return nil
+}
+
+func tunCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash tun [on|off|status]")
+		fmt.Println("This command matches the TUN row on Dashboard.")
+		return nil
+	}
+	if len(args) == 0 {
+		args = []string{"status"}
+	}
+	if len(args) != 1 {
+		return errors.New("usage: flclash tun [on|off|status]")
+	}
+	action := strings.ToLower(args[0])
+	if action != "enable" && action != "disable" &&
+		action != "on" && action != "off" && action != "status" {
+		return errors.New("tun requires on, off, or status")
+	}
+	client, status, settings, err := currentManagedSettings()
+	if err != nil {
+		return err
+	}
+	if action == "status" {
+		fmt.Println(cliUpperOnOff(settings.TunEnabled))
+		return nil
+	}
+	settings.TunEnabled = action == "enable" || action == "on"
+	status, err = client.applySettings(*settings, status.Revision)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("TUN %s (revision %d)\n", cliUpperOnOff(settings.TunEnabled), status.Revision)
+	return nil
+}
+
+func modeCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash mode [rule|global|direct|silent]")
+		fmt.Println("No value shows the current mode; silent allows only flc commands.")
+		fmt.Println("Compatibility syntax: flclash mode get|set MODE")
+		return nil
+	}
+	if len(args) == 0 || len(args) == 1 && (args[0] == "get" || args[0] == "status") {
+		_, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
+		fmt.Println(strings.ToLower(status.Mode))
+		return nil
+	}
+	if len(args) == 2 && args[0] == "set" {
+		args = args[1:]
+	}
+	if len(args) != 1 {
+		return errors.New("usage: flclash mode [rule|global|direct|silent]")
+	}
+	mode := strings.ToLower(args[0])
+	if mode != "rule" && mode != "global" && mode != "direct" && mode != tuiSilentMode {
+		return errors.New("mode must be rule, global, direct, or silent")
+	}
+	client, status, err := currentManagedService()
+	if err != nil {
+		return err
+	}
+	status, err = client.setMode(mode, status.Revision)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Mode %s (revision %d)\n", status.Mode, status.Revision)
+	return nil
+}
+
+func portCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash port [PORT|off]")
+		fmt.Println("No value shows the configured HTTP/SOCKS proxy port.")
+		fmt.Println("Silent mode saves the value but keeps the public listener off.")
+		fmt.Println("Compatibility syntax: flclash port get|set PORT")
+		return nil
+	}
+	if len(args) == 0 || len(args) == 1 && (args[0] == "get" || args[0] == "status") {
+		_, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
+		if status.Mode == tuiSilentMode {
+			fmt.Printf("OFF (configured %d)\n", status.ProxyPort)
+		} else if status.ProxyPort <= 0 {
+			fmt.Println("OFF")
+		} else {
+			fmt.Println(status.ProxyPort)
+		}
+		return nil
+	}
+	if len(args) == 2 && args[0] == "set" {
+		args = args[1:]
+	}
+	if len(args) != 1 {
+		return errors.New("usage: flclash port [PORT|off]")
+	}
+	value := strings.ToLower(args[0])
+	port := 0
+	var err error
+	if value != "off" {
+		port, err = strconv.Atoi(value)
+	}
+	if err != nil || port < 0 || port > 65535 {
+		return errors.New("proxy port must be a number from 1 to 65535, or off")
+	}
+	client, status, settings, err := currentManagedSettings()
+	if err != nil {
+		return err
+	}
+	settings.MixedPort = port
+	status, err = client.applySettings(*settings, status.Revision)
+	if err != nil {
+		return err
+	}
+	if port == 0 {
+		fmt.Printf("Proxy port OFF (revision %d)\n", status.Revision)
+	} else {
+		fmt.Printf("Proxy port %d (revision %d)\n", port, status.Revision)
+	}
+	return nil
+}
+
+func flcManagementCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash flc [status|select NAME|test|env]")
+		fmt.Println("Manage the private command proxy used by flc in silent mode.")
+		return nil
+	}
+	if len(args) == 0 {
+		args = []string{"status"}
 	}
 	client, status, err := currentManagedService()
 	if err != nil {
@@ -399,92 +610,253 @@ func systemProxyCommand(args []string) error {
 	}
 	switch args[0] {
 	case "status":
-		fmt.Println(cliOnOff(status.SystemProxy))
+		if len(args) != 1 {
+			return errors.New("usage: flclash flc status")
+		}
+		fmt.Printf("Mode:     %s\n", status.Mode)
+		fmt.Printf("Listener: %s\n", cliEnabledDisabled(status.FLCEnabled))
+		fmt.Printf("Outbound: %s\n", cliDisplayValue(status.FLCOutbound))
 		return nil
-	case "on", "off":
-		enabled := args[0] == "on"
-		status, err = client.setSystemProxy(enabled, status.Revision)
+	case "select":
+		if len(args) != 2 {
+			return errors.New("usage: flclash flc select NAME")
+		}
+		status, err = client.setFLCOutbound(args[1], status.Revision)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("System proxy %s (revision %d)\n", cliOnOff(enabled), status.Revision)
+		fmt.Printf("FLC outbound %s (revision %d)\n", status.FLCOutbound, status.Revision)
 		return nil
+	case "test":
+		if len(args) != 1 {
+			return errors.New("usage: flclash flc test")
+		}
+		proxyAddress, err := activeCLIProxyURL()
+		if err != nil {
+			return err
+		}
+		proxyURL, err := url.Parse(proxyAddress)
+		if err != nil || proxyURL.Scheme == "" || proxyURL.Host == "" {
+			return errors.New("FlClash returned an invalid command proxy URL")
+		}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = http.ProxyURL(proxyURL)
+		transport.DisableCompression = true
+		defer transport.CloseIdleConnections()
+		delay, err := runTUIRouteDelayTest(
+			context.Background(),
+			&http.Client{Transport: transport},
+			defaultCLITestURL,
+		)
+		if err != nil {
+			return fmt.Errorf("FLC route test failed: %w", err)
+		}
+		fmt.Printf("FLC route ready · %d ms · %s\n", delay, cliDisplayValue(status.FLCOutbound))
+		return nil
+	case "env":
+		return envCommand(args[1:])
 	default:
-		return errors.New("system-proxy requires explicit on, off, or status")
+		return fmt.Errorf("unknown flc command %q; use `flclash flc -help`", args[0])
 	}
 }
 
-func tunCommand(args []string) error {
-	return changeManagedSetting("tun", args, func(settings *tuiSettings, value string) error {
-		switch value {
-		case "on":
-			settings.TunEnabled = true
-		case "off":
-			settings.TunEnabled = false
-		default:
-			return errors.New("tun requires explicit on, off, or status")
-		}
-		return nil
-	})
-}
-
-func modeCommand(args []string) error {
-	if len(args) > 0 && args[0] == "get" {
-		args[0] = "status"
-	} else if len(args) > 1 && args[0] == "set" {
-		args = args[1:]
+func cliDisplayValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "NOT SELECTED"
 	}
-	return changeManagedSetting("mode", args, func(settings *tuiSettings, value string) error {
-		switch strings.ToLower(value) {
-		case "rule", "global", "direct":
-			settings.Mode = strings.ToLower(value)
-		default:
-			return errors.New("mode must be rule, global, or direct")
-		}
-		return nil
-	})
+	return value
 }
 
-func changeManagedSetting(
-	name string,
-	args []string,
-	change func(*tuiSettings, string) error,
-) error {
-	if len(args) == 0 || cliSubcommandHelp(args) {
-		fmt.Printf("Usage: flclash %s status|VALUE\n", name)
+func historyCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash history show [--follow] [--json] | clear")
+		fmt.Println("History is the shared recent connection history shown by the TUI.")
+		fmt.Println("Compatibility alias: flclash requests")
 		return nil
+	}
+	if len(args) == 0 {
+		args = []string{"show"}
 	}
 	client, status, err := currentManagedService()
 	if err != nil {
 		return err
 	}
-	settings := loadTUIConfiguredSettings(status.ConfigPath, true)
-	if settings == nil {
-		return errors.New("could not load active settings")
-	}
-	if args[0] == "status" {
-		if name == "tun" {
-			fmt.Println(cliOnOff(settings.TunEnabled))
-		} else {
-			fmt.Println(settings.Mode)
+	switch args[0] {
+	case "show", "watch":
+		fs := newCLIFlagSet("history show")
+		follow := fs.Bool("follow", args[0] == "watch", "follow new history entries")
+		jsonOutput := fs.Bool("json", false, "print JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
 		}
+		if len(fs.Args()) != 0 {
+			return errors.New("usage: flclash history show [--follow] [--json]")
+		}
+		seen := map[string]bool{}
+		interrupt := make(chan os.Signal, 1)
+		if *follow {
+			signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
+			defer signal.Stop(interrupt)
+		}
+		for {
+			status, err = client.history()
+			if err != nil {
+				return err
+			}
+			if *jsonOutput {
+				if err := writeCLIJSON(os.Stdout, status.History); err != nil {
+					return err
+				}
+			} else {
+				printCLIHistory(status.History, seen, *follow)
+			}
+			if !*follow {
+				return nil
+			}
+			select {
+			case <-interrupt:
+				return nil
+			case <-time.After(time.Second):
+			}
+		}
+	case "clear":
+		if len(args) != 1 {
+			return errors.New("usage: flclash history clear")
+		}
+		status, err = client.clearHistory(status.Revision)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("History cleared (revision %d)\n", status.Revision)
+		return nil
+	default:
+		return fmt.Errorf("unknown history command %q; use `flclash history -help`", args[0])
+	}
+}
+
+func printCLIHistory(history []tuiRequest, seen map[string]bool, onlyNew bool) {
+	for index := len(history) - 1; index >= 0; index-- {
+		request := history[index]
+		if onlyNew && seen[request.ID] {
+			continue
+		}
+		state := "done"
+		if request.Active {
+			state = "active"
+		}
+		fmt.Printf(
+			"%s %-6s %-4s %-36s %s\n",
+			request.FirstSeen.Format("15:04:05"),
+			state,
+			strings.ToUpper(request.Network),
+			request.Host,
+			request.Chain,
+		)
+		seen[request.ID] = true
+	}
+}
+
+func networkCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash net [show|refresh|delay|speed]")
+		fmt.Println("Matches Network detection on Dashboard.")
 		return nil
 	}
-	if err := change(settings, args[0]); err != nil {
-		return err
+	if len(args) == 0 {
+		args = []string{"show"}
 	}
-	status, err = client.applySettings(*settings, status.Revision)
+	if len(args) != 1 {
+		return errors.New("usage: flclash net [show|refresh|delay|speed]")
+	}
+	client, status, err := currentManagedService()
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%s updated (revision %d)\n", name, status.Revision)
-	return nil
+	proxyPort := 0
+	if status.Running && status.Mode != tuiSilentMode {
+		proxyPort = status.ProxyPort
+	}
+	switch args[0] {
+	case "show", "refresh":
+		info := detectTUINetwork(proxyPort)
+		fmt.Printf("Public IP:   %s\n", cliDisplayValue(info.PublicIP))
+		fmt.Printf("Country:     %s\n", cliDisplayValue(info.Country))
+		fmt.Printf("Intranet IP: %s\n", cliDisplayValue(info.IntranetIP))
+		fmt.Printf("Route:       %s\n", info.Route)
+		if info.Error != "" {
+			return errors.New(info.Error)
+		}
+		return nil
+	case "delay":
+		if proxyPort <= 0 {
+			return errors.New("normal Proxy port is not active; use `flclash flc test` in silent mode")
+		}
+		delay, err := client.testRouteDelay(proxyPort, defaultCLITestURL)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Route latency: %d ms\n", delay)
+		return nil
+	case "speed":
+		if proxyPort <= 0 {
+			return errors.New("normal Proxy port is not active; use `flclash flc test` in silent mode")
+		}
+		result, err := client.testRouteSpeed(proxyPort)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Download test: %s\n", formatTUISpeed(result))
+		return nil
+	default:
+		return fmt.Errorf("unknown net command %q; use `flclash net -help`", args[0])
+	}
+}
+
+func currentManagedSettings() (
+	*tuiServiceClient,
+	tuiServiceStatus,
+	*tuiSettings,
+	error,
+) {
+	client, status, err := currentManagedService()
+	if err != nil {
+		return nil, tuiServiceStatus{}, nil, err
+	}
+	settings := loadTUIConfiguredSettings(status.ConfigPath, true)
+	if settings == nil {
+		return nil, tuiServiceStatus{}, nil, errors.New("could not load active settings")
+	}
+	return client, status, settings, nil
+}
+
+func cliUpperRunning(value bool) string {
+	if value {
+		return "RUNNING"
+	}
+	return "STOPPED"
+}
+
+func cliEnabledDisabled(value bool) string {
+	if value {
+		return "ENABLED"
+	}
+	return "DISABLED"
+}
+
+func cliUpperOnOff(value bool) string {
+	if value {
+		return "ON"
+	}
+	return "OFF"
 }
 
 func connectionsCommand(args []string) error {
-	if len(args) == 0 || cliSubcommandHelp(args) {
-		fmt.Println("Usage: flclash connections list|close ID|close-all [--json]")
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash connections [show] | close ID | close all")
 		return nil
+	}
+	if len(args) == 0 {
+		args = []string{"show"}
 	}
 	_, status, err := currentManagedService()
 	if err != nil {
@@ -492,7 +864,7 @@ func connectionsCommand(args []string) error {
 	}
 	client := managedController(status)
 	switch args[0] {
-	case "list":
+	case "list", "show":
 		data, err := client.request(http.MethodGet, "/connections", nil)
 		if err != nil {
 			return err
@@ -504,7 +876,10 @@ func connectionsCommand(args []string) error {
 		return printCLIConnections(data)
 	case "close":
 		if len(args) != 2 {
-			return errors.New("usage: flclash connections close ID")
+			return errors.New("usage: flclash connections close ID|all")
+		}
+		if args[1] == "all" {
+			return client.closeAllConnections()
 		}
 		return client.closeConnection(args[1])
 	case "close-all":
@@ -590,9 +965,9 @@ func doctorCommand(args []string) error {
 	checks["controller"] = controllerErr == nil
 	if status.Running {
 		_, proxyErr := activeCLIProxyURL()
-		checks["mixed_port"] = proxyErr == nil
+		checks["proxy_entry"] = proxyErr == nil
 		if proxyErr != nil {
-			checks["mixed_port_error"] = proxyErr.Error()
+			checks["proxy_entry_error"] = proxyErr.Error()
 		}
 	}
 	_ = client
@@ -604,16 +979,83 @@ func completionCommand(args []string) error {
 		fmt.Println("Usage: flclash completion bash|zsh|fish")
 		return nil
 	}
-	commands := "tui run start stop restart reload status logs service profile proxy config system-proxy tun mode connections geo env doctor completion update exec version help"
+	commands := "tui core sys tun mode port flc net start stop restart reload status backend shutdown profile proxy history connections logs config geo env doctor completion check update run version help"
+	groups := []struct {
+		command string
+		values  string
+	}{
+		{"tui", "--config --directory --controller --secret --test-url --no-start"},
+		{"core", "start stop restart reload status"},
+		{"sys", "on off status"},
+		{"tun", "on off status"},
+		{"mode", "rule global direct silent"},
+		{"port", "off"},
+		{"flc", "status select test env"},
+		{"net", "show refresh delay speed"},
+		{"status", "--json --watch"},
+		{"backend", "start stop restart status logs clients"},
+		{"profile", "list import current use update rename edit delete link"},
+		{"proxy", "groups nodes select delay speed"},
+		{"history", "show clear"},
+		{"connections", "show close"},
+		{"logs", "--follow --lines"},
+		{"config", "path show validate edit backup restore"},
+		{"geo", "status update"},
+		{"env", "--json"},
+		{"doctor", "--json"},
+		{"completion", "bash zsh fish"},
+		{"check", "--config --directory"},
+		{"update", "--check --download-only --yes"},
+		{"run", "--config --directory --test-url"},
+	}
 	switch args[0] {
 	case "bash":
-		fmt.Printf("_flclash(){ COMPREPLY=( $(compgen -W '%s' -- \"${COMP_WORDS[1]}\") ); }; complete -F _flclash flclash\n", commands)
+		fmt.Println("_flclash() {")
+		fmt.Println("  local current words")
+		fmt.Println("  current=\"${COMP_WORDS[COMP_CWORD]}\"")
+		fmt.Println("  if (( COMP_CWORD == 1 )); then")
+		fmt.Printf("    words='%s'\n", commands)
+		fmt.Println("  elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == connections && ${COMP_WORDS[2]} == close ]]; then")
+		fmt.Println("    words='all'")
+		fmt.Println("  else")
+		fmt.Println("    case \"${COMP_WORDS[1]}\" in")
+		for _, group := range groups {
+			fmt.Printf("      %s) words='%s' ;;\n", group.command, group.values)
+		}
+		fmt.Println("      *) words='' ;;")
+		fmt.Println("    esac")
+		fmt.Println("  fi")
+		fmt.Println("  COMPREPLY=( $(compgen -W \"$words\" -- \"$current\") )")
+		fmt.Println("}")
+		fmt.Println("complete -F _flclash flclash")
 	case "zsh":
-		fmt.Printf("#compdef flclash\n_arguments '1:command:(%s)'\n", commands)
+		fmt.Printf("#compdef flclash\n_arguments '1:command:(%s)' '*::argument:->args'\n", commands)
+		fmt.Println("case $words[2] in")
+		for _, group := range groups {
+			if group.command == "connections" {
+				fmt.Printf(
+					"  connections) if (( CURRENT >= 4 )) && [[ $words[3] == close ]]; then _values 'argument' all; else _values 'argument' %s; fi ;;\n",
+					group.values,
+				)
+				continue
+			}
+			fmt.Printf("  %s) _values 'argument' %s ;;\n", group.command, group.values)
+		}
+		fmt.Println("esac")
 	case "fish":
 		for _, command := range strings.Fields(commands) {
 			fmt.Printf("complete -c flclash -f -n '__fish_use_subcommand' -a %s\n", command)
 		}
+		for _, group := range groups {
+			for _, value := range strings.Fields(group.values) {
+				fmt.Printf(
+					"complete -c flclash -f -n '__fish_seen_subcommand_from %s' -a %s\n",
+					group.command,
+					value,
+				)
+			}
+		}
+		fmt.Println("complete -c flclash -f -n '__fish_seen_subcommand_from connections; and __fish_seen_subcommand_from close' -a all")
 	default:
 		return fmt.Errorf("unsupported shell %q", args[0])
 	}
@@ -690,7 +1132,7 @@ func validateCurrentTUIService(status tuiServiceStatus) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"backend %s uses protocol %d; run `flclash service restart` to upgrade to %s protocol %d",
+		"backend %s uses protocol %d; run `flclash backend restart` to upgrade to %s protocol %d",
 		status.Version,
 		status.ProtocolVersion,
 		cliVersion,
@@ -818,20 +1260,11 @@ func readManagedLog(path string, lineCount int, follow bool) error {
 }
 
 func editManagedConfig(path string) error {
-	homeDir := filepath.Dir(path)
-	lease, err := acquireTUIProfileLocks(homeDir, path)
-	if err != nil {
-		return err
-	}
-	defer lease.release()
 	before, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
+	expectedSHA256 := tuiBytesSHA256(before)
 	editor := strings.TrimSpace(os.Getenv("VISUAL"))
 	if editor == "" {
 		editor = strings.TrimSpace(os.Getenv("EDITOR"))
@@ -839,71 +1272,59 @@ func editManagedConfig(path string) error {
 	if editor == "" {
 		return errors.New("set $VISUAL or $EDITOR before using config edit")
 	}
-	command := exec.Command("sh", "-c", editor+" -- \"$1\"", "flclash-editor", path)
+	temporary, err := os.CreateTemp("", "flclash-edit-*.yaml")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(before); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	command := exec.Command(
+		"sh",
+		"-c",
+		editor+" -- \"$1\"",
+		"flclash-editor",
+		temporaryPath,
+	)
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	if err := command.Run(); err != nil {
-		_ = writeTUIProfileAtomically(path, before, info.Mode())
 		return err
 	}
-	if message := handleValidateConfig(path); message != "" {
-		_ = writeTUIProfileAtomically(path, before, info.Mode())
-		return errors.New("edited configuration is invalid; original restored: " + message)
-	}
-	editedSHA256, err := tuiFileSHA256(path)
+	edited, err := os.ReadFile(temporaryPath)
 	if err != nil {
 		return err
 	}
-	if client, status, statusErr := currentManagedService(); statusErr == nil &&
-		filepath.Clean(status.ConfigPath) == filepath.Clean(path) {
-		lease.release()
-		backup := tuiProfileBackup{
-			data:          before,
-			mode:          info.Mode(),
-			updatedSHA256: editedSHA256,
-		}
-		if _, err := client.reloadAtRevisionWithDigest(
-			path,
-			status.Revision,
-			editedSHA256,
-		); err != nil {
-			rollbackErr := rollbackManagedProfile(
-				client,
-				status,
-				homeDir,
-				path,
-				backup,
-			)
-			if rollbackErr != nil {
-				return fmt.Errorf(
-					"reload edited configuration: %v; rollback failed: %w",
-					err,
-					rollbackErr,
-				)
-			}
-			return fmt.Errorf("reload edited configuration: %w; original restored", err)
-		}
+	if message := validateConfigBytes(edited); message != "" {
+		return errors.New("edited configuration is invalid: " + message)
 	}
-	return nil
-}
-
-func rollbackManagedProfile(
-	client *tuiServiceClient,
-	status tuiServiceStatus,
-	homeDir,
-	path string,
-	backup tuiProfileBackup,
-) error {
-	if err := restoreTUIProfileIfUnchanged(homeDir, path, backup); err != nil {
+	client, status, err := currentManagedService()
+	if err != nil {
 		return err
 	}
-	_, err := client.reloadAtRevisionWithDigest(
+	_, err = client.putProfile(
 		path,
+		edited,
+		expectedSHA256,
+		false,
+		nil,
 		status.Revision,
-		tuiBytesSHA256(backup.data),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func printCLIConnections(data []byte) error {

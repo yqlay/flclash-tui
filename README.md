@@ -1,62 +1,62 @@
 # FlClash TUI
 
+[**中文文档**](README_zh_CN.md)
+
 [![Release](https://img.shields.io/github/v/release/yqlay/flclash-tui?style=flat-square)](https://github.com/yqlay/flclash-tui/releases)
 [![Downloads](https://img.shields.io/github/downloads/yqlay/flclash-tui/total?style=flat-square)](https://github.com/yqlay/flclash-tui/releases)
 [![License](https://img.shields.io/github/license/yqlay/flclash-tui?style=flat-square)](LICENSE)
 
-FlClash TUI 是一款面向 Linux 和无头主机的 Clash/Mihomo 代理客户端。它以全屏终端界面（TUI）提供接近图形客户端的使用体验，同时保留适合脚本、SSH 和服务器环境的命令行功能。
+FlClash TUI is a Linux terminal proxy manager for Mihomo/Clash configurations. It combines a full-screen TUI for interactive use with a predictable CLI for SSH sessions, headless hosts, and scripts. Running `flclash` opens the TUI; running `flclash COMMAND` performs one management operation; prefixing an external program with `flc` runs only that program through FlClash.
 
-本项目基于 [FlClash](https://github.com/chen08209/FlClash) 衍生，复用其 Go/Mihomo 核心，并针对纯终端使用重新设计了配置、订阅、服务控制和状态查看流程。运行 `flclash` 即可进入界面，不要求用户先手写 `config.yaml`。
+This is an unofficial derivative of [FlClash](https://github.com/chen08209/FlClash). It reuses FlClash's Go/Mihomo integration but has a terminal-specific lifecycle, Backend, command set, and interface. It is not an official FlClash or Mihomo release. See [NOTICE](NOTICE) and [LICENSE](LICENSE).
 
-> 本项目是非官方衍生版本，不是 FlClash 官方发布版本，也不代表 FlClash 或 Mihomo 维护者。版权和许可证说明见 [NOTICE](NOTICE) 与 [LICENSE](LICENSE)。
+## The four states that matter
 
-## v0.4.0 最新更新
+The Dashboard deliberately shows these as separate rows:
 
-- 每个用户只运行一个后端，多个 TUI/CLI 前端通过带 revision 的 IPC 协议安全并发管理；冲突修改会被拒绝并要求刷新。
-- 新增 `flc COMMAND...` 独立入口。`flclash` 只负责 TUI 和管理命令，未知命令不再被当作外部程序执行。
-- 丰富 `start/stop/restart/reload/status/logs/service/profile/proxy/config` 等命令，并支持 `flclash -help` 与逐级 `-help`。
-- TUI 将 Settings 与 Maintenance 分页，`q` 和 `Ctrl+C` 都只退出当前前端；完整操作界面适配到 `40x10`。
-- 后端状态读取不再被测速阻塞，配置提交使用验证、原子写入、热重载和失败回滚事务。
+| State | What it controls | What it does not mean |
+| --- | --- | --- |
+| **Backend** | The detached per-user coordinator, private IPC, profile transactions, shared History, Core lifecycle, and System proxy changes | A running Backend does not mean proxy listeners are running |
+| **Core** | The managed Mihomo executor and its listeners | Starting Core does not automatically change desktop proxy settings |
+| **System proxy** | Linux desktop HTTP/HTTPS proxy settings, currently through GNOME/MATE `gsettings` | Applications that ignore system proxy settings are not captured |
+| **TUN** | Network-layer interception configured in Mihomo | It is independent of System proxy and can require additional Linux privileges |
 
-完整安装包与更新说明见 [FlClash TUI v0.4.0 Release](https://github.com/yqlay/flclash-tui/releases/tag/v0.4.0)。
+`flclash core stop` therefore stops Core listeners but leaves Backend available for CLI/TUI clients. `flclash backend stop`, `flclash shutdown`, or managed-TUI `Ctrl+C` stops both Backend and Core and disconnects every frontend.
 
-## 适合哪些场景
+### Proxy port and Mihomo `mixed-port`
 
-- 通过 SSH 管理 Linux 服务器、工作站或 WSL 环境
-- 不安装桌面环境，只在终端中管理代理
-- 希望从多个 SSH/终端窗口共同管理同一个代理后端
-- 既需要交互式界面，也需要命令行检查、启动和切换节点
+The interface calls this value **Proxy port**. In Mihomo YAML its key is `mixed-port` because one TCP port accepts both HTTP proxy and SOCKS5 proxy clients; “mixed” describes the protocols accepted by the listener, not mixed or random traffic. For example, a Proxy port of `7891` can be used as `http://127.0.0.1:7891` by HTTP/HTTPS-aware applications and as `socks5://127.0.0.1:7891` by SOCKS5-aware applications.
 
-## 主要功能
+## Architecture and write boundary
 
-- **全屏 TUI**：响应式布局、键盘操作，不会不断向终端追加界面内容
-- **订阅与配置管理**：在界面中导入/更新订阅、切换配置、重命名配置和编辑 YAML
-- **完整代理控制**：查看代理组和 Provider、切换节点，并对单节点或整组执行延迟与下载速度测试
-- **后台 Service**：TUI 与 Core 进程分离；退出界面后代理可以继续运行，再次进入会自动重连
-- **常用设置可视化**：支持模式、Mixed Port、TUN、Allow LAN、IPv6、日志等级、Unified Delay 和 TCP Concurrent
-- **状态与诊断**：显示公网/内网 IP、实时流量、连接、请求、日志、系统内存、本进程和 Core 内存
-- **状态持久化**：保存当前 Profile、代理组选择及配置设置，下次进入时自动恢复
-- **安全更新**：从本仓库的 GitHub Releases 检查更新，校验 SHA-256 后再安装
-- **脚本化命令**：支持让任意外部命令临时使用当前代理，以及前台运行、配置校验、查询代理组和切换节点
+In managed mode there is exactly one Backend per Linux user and any number of CLI/TUI frontends:
 
-界面包含以下栏目：
+```text
+TUI pages (including Dashboard) ─┐
+                                  ├─ revisioned requests ─▶ Backend ─▶ private Core socket ─▶ Mihomo
+flclash CLI commands ──────────┘                         ├─ atomic YAML/profile writes
+                                                            ├─ Linux System proxy
+                                                            └─ shared History and state
+```
 
-| 栏目 | 用途 |
-| --- | --- |
-| Dashboard | 服务、系统代理、TUN、模式、端口、网络、延迟、下载速度和内存状态 |
-| Proxies | 代理组、节点、Provider、节点切换、延迟测试和下载速度测试 |
-| Profiles | 导入/更新订阅、激活/重命名配置、编辑 YAML |
-| Requests | 查看本次运行期间的活动请求和近期请求 |
-| Connections | 查看和关闭当前连接 |
-| Logs | 查看、清空和导出 Core 日志 |
-| Settings | Core、网络、TUN、模式、端口和系统代理设置 |
-| Maintenance | YAML 编辑、备份恢复、Geo 数据库、流量重置和版本检查 |
+The Dashboard is a TUI page, not a separate daemon. “All frontends modify state through Backend” means that CLI and every TUI page submit a request over a user-only Unix socket. Backend validates the expected revision and profile digest, performs an atomic write or OS operation, asks Core to reload, and rolls back on failure. Frontends may read and display data, but they do not directly overwrite the shared YAML or set the System proxy. This prevents two terminals from silently overwriting each other.
 
-## 安装
+An explicit external-controller session (`flclash tui --no-start --controller ...` or `flclash proxy ... --controller ...`) is the advanced exception: it can inspect or select nodes in that external Core, but it does not own FlClash's shared YAML, Backend lifecycle, or System proxy.
 
-目前 Release 提供 Debian/Ubuntu 的 `amd64` 和 `arm64` 安装包。
+Backend and Core management use private Unix sockets rather than a public TCP controller. The Backend socket is mode `0600`; mutations carry a monotonically increasing revision and retry IDs. Profile edits additionally use content digests and per-profile locks.
 
-AMD64：
+## Install
+
+### Debian or Ubuntu packages
+
+Choose the package matching `dpkg --print-architecture` from [GitHub Releases](https://github.com/yqlay/flclash-tui/releases). Version 0.4.0 packages are named:
+
+```text
+flclash-tui_0.4.0_amd64.deb
+flclash-tui_0.4.0_arm64.deb
+```
+
+Example for AMD64:
 
 ```bash
 wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.0/flclash-tui_0.4.0_amd64.deb
@@ -65,206 +65,9 @@ sha256sum -c flclash-tui_0.4.0_amd64.deb.sha256
 sudo dpkg -i flclash-tui_0.4.0_amd64.deb
 ```
 
-ARM64：
+The package installs `/usr/bin/flclash`, the `/usr/bin/flc` entry point, documentation, and bundled GeoIP/GeoSite/ASN data. Missing or unusable Geo files can be restored locally before Core initialization, so first startup does not depend on downloading those files from GitHub.
 
-```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.0/flclash-tui_0.4.0_arm64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.0/flclash-tui_0.4.0_arm64.deb.sha256
-sha256sum -c flclash-tui_0.4.0_arm64.deb.sha256
-sudo dpkg -i flclash-tui_0.4.0_arm64.deb
-```
-
-查看本机 CPU 架构：
-
-```bash
-dpkg --print-architecture
-```
-
-输出为 `amd64` 或 `arm64` 时，选择名称中架构一致的安装包。其他发行版
-可以从源码构建。
-
-## 快速开始
-
-安装后直接运行：
-
-```bash
-flclash
-```
-
-首次启动会自动创建一个安全的 DIRECT 配置，但不会启动代理服务，也不会占用 Mixed Port。安装包已经包含 FlClash 自带的 `GEOIP.metadb`、`GEOIP.dat`、`GEOSITE.dat` 和 `ASN.mmdb`；缺失或损坏的基础 Geo 数据会在 Core 初始化前从本地安装包恢复，不依赖首次访问 GitHub。推荐的使用顺序是：
-
-1. 进入 **Profiles**。
-2. 选择 **Import subscription URL**，粘贴订阅链接并按 Enter。
-3. 选中下载完成的 Profile 并激活。
-4. 在 **Proxies** 中选择需要的节点。
-5. 在 **Dashboard** 中确认模式和端口，然后将 **System proxy** 切换为 ON。
-
-开启 **System proxy** 时，程序会自动应用当前设置、启动 Core，再设置桌面系统代理，不需要手动先启动核心。停止 Core 时，后端管理的系统代理也会关闭。
-
-每个 Linux 用户只会运行一个 FlClash 后端/Core。可以在多个终端执行
-`flclash`，所有 TUI 都连接同一个后端；新前端会显示其他前端的 PID 和
-TTY。`q` 只退出当前 TUI 并返回 Shell，后台代理和其他 TUI 不受影响。
-`Ctrl+C` 与 `q` 一样只退出当前前端。`flclash stop` 停止 Core 但保留后端；
-`flclash service stop` 才会终止共享后端并断开所有前端。
-
-导入成功后，程序会安全保存该 Profile 与订阅 URL 的绑定。在 **Profiles** 中选中它并按 `U`，程序会直接从已保存的 URL 重新拉取配置，不会再次要求输入链接。活动 Profile 会立即热重载，Service 运行时不会停止监听端口；更新会保留端口、模式、TUN、IPv6 等本地设置，验证或热重载失败时自动回滚。旧版本留下的未绑定 Profile 会被明确标记为本地配置，可用 `flclash profile link --config PROFILE URL` 一次性建立绑定。
-
-## 基本操作
-
-```text
-← 聚焦侧栏       → 打开栏目并聚焦内容       Tab 切换焦点
-↑↓/ws             移动选择                  Enter 打开/执行
-PgUp/PgDn         滚动紧凑 Dashboard         鼠标滚轮同样可用
-1～8             快速打开对应栏目           r 刷新
-[/]              切换代理组/Provider        Esc 返回代理组
-d                Dashboard 测当前路由延迟；Proxies 测全组/单节点延迟
-v                Dashboard 测当前路由速度；Proxies 测全组/单节点速度
-S                开关系统代理               c 启动/停止 Core
-U                刷新已绑定订阅             n 导入新订阅
-q / Ctrl+C       仅退出当前 TUI             c 启动/停止 Core
-```
-
-所有主要功能都可以通过界面中的可选行完成，快捷键只是辅助操作，不要求记忆。
-
-下载速度测试请求最多 `100 MB` 数据并持续最多 `5 秒`。若在 5 秒内完成，
-结果按 `100 MB / 实际耗时` 计算；否则按 `实际下载量 / 5 秒` 计算。整组测速
-会逐个节点串行执行，避免节点互相争抢带宽；最大流量约为节点数乘以 100 MB。
-
-## 系统代理与 TUN
-
-- **System proxy**：设置桌面环境的 HTTP/HTTPS 系统代理，当前主要支持 GNOME 和 MATE 的 `gsettings`。
-- **TUN**：在网络层接管更多流量，适合不读取系统代理设置的应用；Linux 下可能需要额外网络权限。
-- **Global 模式**：决定被代理流量统一走所选节点，不等同于自动接管系统全部流量。
-
-`ping` 使用 ICMP，不经过 HTTP/SOCKS 系统代理，因此不能用 `ping google.com` 判断本工具的代理是否可用。可以使用：
-
-```bash
-curl -I --max-time 10 https://www.google.com
-curl -x http://127.0.0.1:7890 -I --max-time 10 https://www.google.com
-```
-
-第二条命令中的端口应替换为界面里显示的 Mixed Port。
-
-## 命令行模式
-
-让任意外部命令临时使用当前正在运行的 FlClash Mixed Port：
-
-```bash
-flc git clone https://github.com/owner/repository.git
-flc curl https://example.com
-flc wget https://example.com/file
-flc npm install
-```
-
-FlClash 会为子命令设置大小写形式的 `HTTP_PROXY`、`HTTPS_PROXY` 和
-`ALL_PROXY`，其值为 `http://127.0.0.1:<当前 Mixed Port>`。这里即使访问
-HTTPS 网站，代理 URL 仍以 `http://` 开头，因为 Mixed Port 通过 HTTP
-CONNECT 转发 HTTPS。变量不会写入 Shell 配置，命令退出后自动消失。
-外部程序仍需支持这些标准代理环境变量；例如 `git`、`curl`、`wget`、npm
-支持，而完全忽略代理变量的程序不会因此自动代理。
-
-`flc wget ...` 会额外传入 GNU Wget 的 `--no-config`，防止
-`~/.wgetrc` 中持久保存的旧代理覆盖实时 Mixed Port；用户文件不会被修改。
-
-如果 Core 未运行、Core API 无法访问、Mixed Port 未监听或外部命令
-不存在，程序会同时显示英文和中文原因。`exec` 是等价的显式写法；当外部
-程序名称与 FlClash 内置命令冲突时使用 `--`：
-
-```bash
-flclash exec curl https://example.com
-flclash exec -- curl https://example.com
-```
-
-包装器不会自动解释管道或重定向。需要 Shell 语法时显式调用 Shell：
-
-```bash
-flc sh -c 'curl -s https://example.com | jq .'
-```
-
-打开 TUI（默认行为）：
-
-```bash
-flclash
-flclash tui --directory ~/.config/flclash-work
-flclash tui --config /path/to/config.yaml
-```
-
-以前台进程运行 Core：
-
-```bash
-flclash run --config /path/to/config.yaml
-```
-
-检查配置：
-
-```bash
-flclash check --config /path/to/config.yaml
-```
-
-连接已有的 Mihomo Controller：
-
-```bash
-flclash proxy list --controller 127.0.0.1:9090
-flclash proxy select --controller 127.0.0.1:9090 GROUP NODE
-```
-
-停止 Core 并保留共享后端：
-
-```bash
-flclash stop
-```
-
-终止共享后端并断开所有前端：
-
-```bash
-flclash service stop
-```
-
-查看完整命令及子命令帮助：
-
-```bash
-flclash -help
-flclash stop -help
-flclash profile -help
-flc -help
-```
-
-为旧版本的本地 Profile 一次性绑定订阅来源：
-
-```bash
-flclash profile link --config ~/.config/flclash/profile.yaml 'https://example.com/subscription'
-```
-
-`--directory` 和 `--config` 用于选择数据或配置位置，不会创建第二个后端。
-如果当前用户已有后端，普通 `flclash` 会直接重连；显式指定了不同目录或配置
-时会提示先停止现有后端，避免悄悄启动第二套端口和系统代理。
-
-更完整的参数和操作说明见 [CLI_LINUX.md](CLI_LINUX.md)。
-
-## 更新
-
-仅检查是否有新版本：
-
-```bash
-flclash update --check
-```
-
-下载、校验并安装新版本：
-
-```bash
-flclash update
-```
-
-更新器从本仓库 GitHub Release 元数据中识别当前 CPU 架构的 Debian 包，
-兼容包名调整、仓库重命名后的 Release 地址、同名 `.sha256` 和统一
-`SHA256SUMS`。安装前会同时验证 Release 来源、SHA-256，以及 Debian 包内的
-包名、版本和架构。
-
-> **如果当前版本使用正常，请勿轻易更新。**
-
-## 从源码构建
-
-需要 Go、Git、Make，并需要初始化 Mihomo 子模块：
+### Build from source
 
 ```bash
 git clone --recurse-submodules https://github.com/yqlay/flclash-tui.git
@@ -273,26 +76,284 @@ make cli-linux
 ./dist/flclash
 ```
 
-构建产物位于 `dist/flclash`，离线 Geo 数据位于 `dist/data/`，移动二进制时需将该目录一起移动。本仓库保留了上游 FlClash Flutter 工程，因为 CLI 复用了其中的核心集成和平台代码；构建纯 CLI 不需要启动 Flutter 图形界面。
+The build writes `dist/flclash`, creates `dist/flc` as a symlink to the same binary, and copies Geo resources to `dist/data/`. Keep `data/` beside a portable source build. The terminal build needs Go, Git, Make, and the Mihomo submodule; it does not require starting the Flutter application.
 
-## 数据位置
+## Quick start
 
-默认数据目录为：
+```bash
+flclash
+```
+
+With the implicit default data directory, Backend creates a minimal DIRECT-only profile when none exists. Core remains stopped, so the Proxy port is not occupied yet.
+
+1. Open **Profiles**, select **Import subscription URL**, paste the URL, and press Enter.
+2. Select the downloaded profile and press Enter to activate it.
+3. Open **Proxies**, open a group, and select a node.
+4. Return to **Dashboard** and choose `rule`, `global`, `direct`, or `silent` mode.
+5. Start **Core**. If desktop applications should use the normal Proxy port, enable **System proxy**; that action starts Core automatically when needed.
+
+On a headless server, use `flc`, an application's explicit proxy setting, or TUN instead of expecting desktop `gsettings` to affect remote shells.
+
+## Traffic modes and `flc`
+
+### Native modes
+
+- `rule`: traffic reaching Mihomo follows rules in the active profile.
+- `global`: traffic reaching Mihomo uses Mihomo's global selection.
+- `direct`: traffic reaching Mihomo is sent directly.
+
+These modes decide what Mihomo does **after traffic reaches it**. They do not by themselves redirect every process on the machine; use System proxy, an explicit Proxy port, `flc`, or TUN to provide an entry path.
+
+### Silent mode
+
+`silent` is a FlClash runtime mode rather than a Mihomo YAML mode. It means: **ordinary programs remain direct, and only commands prefixed with `flc` receive a proxy environment**.
+
+In silent mode Backend builds a temporary runtime overlay that:
+
+- turns off the normal Proxy port and all ordinary HTTP/SOCKS/redir/tproxy listeners;
+- disables System proxy, TUN, LAN access, DNS listening, external controllers, user listeners, tunnels, and server listeners in the runtime copy;
+- exposes exactly one random loopback-only mixed listener for `flc`;
+- protects that listener with random per-runtime credentials;
+- routes it directly through the selected FLC outbound (a node or proxy group);
+- leaves the shared profile YAML byte-for-byte unchanged and removes runtime overlays during shutdown.
+
+Select an outbound before entering silent mode:
+
+```bash
+flclash core start
+flclash flc select PROXY
+flclash mode silent
+flc curl https://example.com
+```
+
+`flc COMMAND [ARG...]` sets upper- and lower-case `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` only for its child process. In silent mode it obtains the authenticated private URL from Backend; in `rule`, `global`, or `direct` mode it uses the normal Proxy port. It checks that the entry is reachable and **fails closed** if Backend, Core, or the relevant listener is unavailable—it never silently runs the requested command directly.
+
+```bash
+flc curl https://example.com
+flc wget https://example.com/file
+flc git clone https://github.com/owner/repository.git
+flc sh -c 'curl -s https://example.com | jq .'
+```
+
+Pipes and redirections require an explicit shell as in the final example. The child application must honor standard proxy variables; `flc` cannot force an application that ignores them through a proxy. GNU Wget is invoked with `--no-config` so a stale `~/.wgetrc` proxy cannot override the live entry.
+
+Useful management commands:
+
+```bash
+flclash flc status
+flclash flc select 'Proxy Group'
+flclash flc test
+flclash flc env
+```
+
+`flclash flc test` performs a real HTTP request through the active command proxy. `flclash flc env` (and `flclash env`) prints shell exports; in silent mode that output contains temporary credentials, so do not paste it into logs or a persistent shell profile.
+
+## Command reference
+
+Use `flclash --help`, `flclash COMMAND --help`, and `flc --help` as the executable source of truth.
+
+### Dashboard and lifecycle commands
+
+| Command | Meaning |
+| --- | --- |
+| `flclash` or `flclash tui` | Open a TUI frontend; starts/reuses Backend but leaves Core's existing state unchanged |
+| `flclash core [status]` | Print `RUNNING` or `STOPPED` |
+| `flclash core start` | Start Core listeners; starts Backend first if necessary |
+| `flclash core stop` | Stop Core and the System proxy owned by Backend; keep Backend running |
+| `flclash core restart` | Stop and start Core without replacing Backend |
+| `flclash core reload [--config PATH]` | Validate and reload/switch the active profile |
+| `flclash backend [status]` | Show Backend and Core status |
+| `flclash backend start` | Start the detached Backend without requiring Core listeners to start |
+| `flclash backend restart` | Replace Backend; preserve whether Core was running |
+| `flclash backend stop` | Gracefully stop Backend and Core and disconnect frontends |
+| `flclash backend logs` | Read Backend logs; accepts the same options as `logs` |
+| `flclash backend clients` | List attached TUI PIDs, TTYs, and start times |
+| `flclash shutdown` | Alias for `flclash backend stop` |
+| `flclash status [--json] [--watch]` | Show Backend PID/version/revision, Core, profile, mode, Proxy port, FLC, System proxy, and frontend count |
+| `flclash logs [--lines N] [--follow]` | Show or follow the detached Backend log |
+
+Top-level `start`, `stop`, `restart`, and `reload` are compatibility shortcuts for the corresponding Core operations.
+
+### Commands matching Dashboard rows
+
+| Command | Meaning |
+| --- | --- |
+| `flclash sys [status]` | Show whether the managed Linux System proxy is enabled |
+| `flclash sys on` | Start Core if necessary, then enable System proxy; rejected in silent mode |
+| `flclash sys off` | Disable the System proxy without stopping Core |
+| `flclash tun [status\|on\|off]` | Show or transactionally change TUN in the active profile |
+| `flclash mode` | Print the current synthetic/native traffic mode |
+| `flclash mode rule\|global\|direct\|silent` | Change mode; silent uses a runtime overlay |
+| `flclash port` | Print the configured Proxy port; silent reports it as off while retaining the configured value |
+| `flclash port PORT` | Set Mihomo `mixed-port` to `1..65535` |
+| `flclash port off` | Set the normal Proxy port to `0` |
+| `flclash flc status\|select NAME\|test\|env` | Manage the command-only proxy entry |
+| `flclash net show` or `net refresh` | Detect public IP, country, intranet address, and route (`DIRECT` or Proxy port) |
+| `flclash net delay` | Test the current normal Proxy-port route latency |
+| `flclash net speed` | Download up to 100 MB for at most five seconds through the normal route |
+
+In silent mode use `flclash flc test`; normal-route `net delay` and `net speed` are intentionally unavailable.
+
+### Profiles and configuration
+
+| Command | Meaning |
+| --- | --- |
+| `flclash profile list [--json]` | List `.yaml`/`.yml` profiles; `*` marks active and the type is local/subscription |
+| `flclash profile current` | Print the active profile path |
+| `flclash profile import URL` | Download, validate, and create a linked profile through Backend |
+| `flclash profile use NAME` | Validate and activate a profile by name/path |
+| `flclash profile update [NAME]` | Refresh a profile from its saved subscription URL while preserving local settings |
+| `flclash profile rename NAME NEW_NAME` | Rename an inactive profile safely |
+| `flclash profile edit [NAME]` | Edit a temporary copy with `$VISUAL`/`$EDITOR`, then validate and submit it |
+| `flclash profile delete NAME` | Delete an inactive profile |
+| `flclash profile link --config PATH URL` | Attach a saved subscription source to an older local profile |
+| `flclash config path\|show\|validate` | Inspect the active profile |
+| `flclash config edit` | Transactionally edit and hot-reload the active profile |
+| `flclash config backup` | Create a timestamped backup through Backend |
+| `flclash config restore` | Restore the newest valid backup and reload Core |
+| `flclash check --config PATH` | Validate a YAML profile without starting Core |
+
+Profile creation, editing, subscription refresh, rename, delete, backup, restore, active-profile switching, local setting changes, and proxy selections use Backend transactions. A stale revision or content digest is rejected rather than overwriting a newer change.
+
+### Proxies, History, and active connections
+
+| Command | Meaning |
+| --- | --- |
+| `flclash proxy groups [--json]` | List selectable groups and their current nodes |
+| `flclash proxy nodes GROUP [--json]` | List nodes in one group |
+| `flclash proxy select GROUP NODE` | Validate membership, select through Backend, and remember it; roll back Core if saving fails |
+| `flclash proxy delay NODE [--test-url URL]` | Test one node's delay |
+| `flclash proxy speed NODE` | Run the Backend-managed 100 MB/5 s download test |
+| `flclash history show [--follow] [--json]` | Show or follow the shared recent connection History |
+| `flclash history clear` | Clear History only; active Core connections stay open |
+| `flclash connections show [--json]` | Show connections currently open in Core |
+| `flclash connections close ID` | Close one active connection |
+| `flclash connections close all` | Close every active connection |
+
+**History is not an HTTP body/request recorder.** Backend samples Mihomo's active connections, records when a flow first appears, keeps active and recently completed entries (up to 500), and displays destination host/address, network, route chain, and activity state. It is shared by all TUI/CLI frontends and continues collecting while Backend runs even if no TUI is attached. Clearing History does not close Connections; closing Connections does not erase History.
+
+For an explicitly managed external controller, proxy inspection/selection accepts `--controller ADDRESS` and optional `--secret SECRET`. Managed mode uses the private Core Unix socket and does not require a TCP controller.
+
+### Diagnostics, shell integration, and advanced commands
+
+| Command | Meaning |
+| --- | --- |
+| `flclash geo status\|update` | Inspect bundled Geo resources or ask Core to update them |
+| `flclash env [--json]` | Print proxy environment values for the active normal/private entry |
+| `flclash doctor [--json]` | Check Backend protocol, Core API, profile validity, and active proxy entry |
+| `flclash completion bash\|zsh\|fish` | Generate top-level and subcommand completion definitions |
+| `flclash update --check` | Check the trusted GitHub Release channel without installing |
+| `flclash update [--yes] [--download-only]` | Download, verify checksum/package metadata, and optionally install a Debian update |
+| `flclash run [--config PATH]` | Advanced foreground Core mode without shared Backend; `Ctrl+C` stops it and `SIGHUP` reloads |
+| `flclash version` | Print the CLI version |
+
+Install generated completion for the current shell, for example:
+
+```bash
+flclash completion bash > ~/.local/share/bash-completion/completions/flclash
+flclash completion zsh > ~/.zfunc/_flclash
+flclash completion fish > ~/.config/fish/completions/flclash.fish
+```
+
+Compatibility spellings remain available: `service` for `backend`, `system-proxy` for `sys`, `outbound-mode` for `mode`, `mixed-port` for `port`, `requests` for `history`, `connections close-all` for `connections close all`, and `flclash exec -- COMMAND` for `flc COMMAND`. New documentation uses the shorter primary names.
+
+## TUI guide
+
+### Pages
+
+| Key | Page | Contents and Enter action |
+| --- | --- | --- |
+| `1` | **Dashboard** | Core, System proxy, TUN, Mode, Proxy port, network detection, route tests, memory, traffic, History count, frontends, and active profile |
+| `2` | **Proxies** | Groups, nodes, Providers, saved selection, delay tests, and serial download tests; Enter opens/selects/updates |
+| `3` | **Profiles** | Import subscription, activate, refresh, rename, and edit profiles |
+| `4` | **History** | Shared active/recent connection history; `x` clears History without closing connections |
+| `5` | **Connections** | Current Core connections; `d` closes selected and `x` closes all |
+| `6` | **Logs** | Captured Core events; `e` exports and `x` clears the displayed buffer |
+| `7` | **Settings** | Mode, FLC outbound, Proxy port, LAN, IPv6, unified delay, TCP concurrent, log level, TUN, Core, and System proxy |
+| `8` | **Maintenance** | Edit current YAML, backup/restore, update Geo resources, reset traffic counters, and check releases |
+
+Rows show the current state first and the available action second. For example, `Core STOPPED · Enter to start` describes the current state, not the result of pressing Enter.
+
+### Navigation and keys
+
+```text
+← / Esc       focus/open navigation        → / Enter    open content or apply selected row
+↑↓ or w/s    move selection               Tab/Shift-Tab switch sidebar/content focus
+1..8          open a page directly          ?            toggle the in-app key guide
+r             refresh displayed state       R            reload active configuration
+PgUp/PgDn     scroll compact Dashboard      [ / ]        switch Groups/Providers
+
+Dashboard:    d route delay · v route speed · n refresh network detection
+Proxies:      Enter open/select · Esc groups · d node/group delay · v speed · A group delay
+Profiles:     Enter activate/import · n import · U refresh linked · F2/u rename · e edit
+History:      x clear shared History
+Connections: d close selected · x close all
+Logs:        e export · x clear view
+Settings:    S System proxy · c Core · t TUN · m mode · p set port · +/- adjust
+Maintenance: b backup · B restore · g Geo update · z reset traffic
+
+q             detach only this TUI; Backend/Core and other frontends continue
+Ctrl+C        managed mode: gracefully stop Backend and Core, then disconnect all frontends
+```
+
+Long-running network tests and profile operations run outside the input/render loop. Whole-group speed tests run serially so nodes do not compete for bandwidth. Each speed test reads at most 100 MB and lasts at most five seconds.
+
+The layout is responsive. At normal sizes it shows sidebar and content together. Narrow terminals switch to a full-width navigation/content layout; Dashboard becomes scrollable. The complete interface remains operable at `40x10`, while smaller terminals show the required size instead of drawing broken borders.
+
+### Multiple frontends and graceful shutdown
+
+Opening `flclash` in another terminal attaches to the same Backend. Dashboard shows frontend count, and `flclash backend clients` lists sessions. `q` unregisters and detaches only the current TUI. `Ctrl+C` waits for Backend's shutdown acknowledgement, stops the managed System proxy and Core, closes Backend, and causes other frontends to exit. Child processes are waited/reaped, so normal detach/restart/shutdown does not leave zombie Backend processes.
+
+In explicit external mode (`--no-start`) the TUI does not own the external Core; `Ctrl+C` can only leave that frontend and does not kill the unrelated process.
+
+## Profiles, data, and security
+
+The default data directory is:
 
 ```text
 ~/.config/flclash/
 ```
 
-其中保存配置文件、下载的 Profile、运行状态、日志和备份。也可以使用
-`--directory` 或 `--config` 指定其他位置。Service 管理 socket 和用户级
-后端锁固定保存在 `/run/user/<UID>/flclash/`（无用户运行目录时使用带 UID 的
-安全临时目录），因此改变数据目录或 `XDG_CONFIG_HOME` 也不能绕过单后端限制。
+It contains profiles, the active-state file, logs, backups, the private Core socket, and working data. The Backend manager socket and per-user ownership lock normally live under `/run/user/<UID>/flclash/`, with a UID-specific secure temporary fallback when no user runtime directory exists. `--directory` and `--config` select data/profile paths; they do not bypass the one-Backend-per-user rule.
 
-## 项目关系与许可
+Relevant behavior:
 
-- 上游图形客户端：[chen08209/FlClash](https://github.com/chen08209/FlClash)
-- Mihomo/Clash.Meta Core：以 Git 子模块形式保留在 `core/Clash.Meta`
-- TUI 交互层参考并改编自 [SaladDay/cc-switch-cli](https://github.com/SaladDay/cc-switch-cli)
-- 本项目遵循 [GNU General Public License v3.0](LICENSE)
+- shared profile and state files are written atomically with user-only state permissions;
+- active profile changes are validated before hot reload;
+- failed writes/reloads restore the previous file and Core state where possible;
+- subscription refresh preserves local port, mode, TUN, LAN, IPv6, unified-delay, TCP-concurrent, and log-level settings;
+- Backend accepts profiles only inside its managed data directory and rejects symlink/non-regular profile transaction targets;
+- the private silent listener is loopback-only, authenticated, randomized, and absent outside silent mode;
+- no private FLC URL is exposed by ordinary status output.
 
-各上游项目及第三方组件仍归原作者所有，具体归属、许可证和免责声明请查看 [NOTICE](NOTICE)。
+## Troubleshooting
+
+- **Backend running, Core stopped:** this is normal. Run `flclash core start`; Backend can remain available without occupying a Proxy port.
+- **`sys on` does not affect a shell/server app:** System proxy is a desktop preference. Use `flc COMMAND`, configure the application with the Proxy port, or use TUN.
+- **`ping` still fails:** ICMP does not use HTTP/SOCKS proxy variables. Test with `flclash flc test`, `flclash net delay`, or `curl`.
+- **Silent mode rejects System proxy/TUN/network speed:** intentional; silent mode provides only the private `flc` path. Use `flclash flc test`.
+- **`flc` refuses to run:** it fails closed. Check `flclash status`, `flclash flc status`, the selected FLC outbound, and `flclash doctor`.
+- **A mutation reports a revision/content conflict:** another frontend changed state. Refresh (`r` or rerun the command) and apply the choice again.
+- **A different `--directory` is rejected:** one managed Backend is allowed per user. Stop the active Backend before intentionally switching its data directory.
+- **TUN cannot start:** ensure the host/kernel/container provides TUN and the process has the required network capabilities.
+- **HTTPS uses an `http://` proxy URL:** this is expected. HTTPS clients use HTTP `CONNECT` through the mixed Proxy port.
+
+## Update
+
+```bash
+flclash update --check
+flclash update
+```
+
+The updater reads releases from `yqlay/flclash-tui`, selects the current architecture's Debian package, verifies its SHA-256 and internal package name/version/architecture, then invokes `sudo dpkg -i`. `--download-only` verifies without installing and `--yes` confirms non-interactively.
+
+> If the current version works well, do not update lightly.
+
+## Project relationship and license
+
+- Original graphical client: [chen08209/FlClash](https://github.com/chen08209/FlClash)
+- Mihomo/Clash.Meta Core: retained as the `core/Clash.Meta` submodule
+- TUI interaction layer includes work adapted from [SaladDay/cc-switch-cli](https://github.com/SaladDay/cc-switch-cli)
+- License: [GNU General Public License v3.0](LICENSE)
+
+Third-party components remain the property of their authors. See [NOTICE](NOTICE) for attribution and disclaimers.

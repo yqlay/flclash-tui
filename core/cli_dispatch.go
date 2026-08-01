@@ -29,6 +29,8 @@ func dispatchCLI(program string, args []string) error {
 		return tuiCommand(commandArgs)
 	case "run":
 		return runCommand(commandArgs)
+	case "core":
+		return coreCommand(commandArgs)
 	case "start":
 		return startManagedCommand(commandArgs)
 	case "stop":
@@ -41,8 +43,10 @@ func dispatchCLI(program string, args []string) error {
 		return statusManagedCommand(commandArgs)
 	case "logs":
 		return logsManagedCommand(commandArgs)
-	case "service":
+	case "backend", "service":
 		return serviceManagementCommand(commandArgs)
+	case "shutdown":
+		return serviceManagementCommand([]string{"stop"})
 	case "_service":
 		return serviceCommand(commandArgs)
 	case "check", "validate":
@@ -53,12 +57,20 @@ func dispatchCLI(program string, args []string) error {
 		return profileCommand(commandArgs)
 	case "config":
 		return configCommand(commandArgs)
-	case "system-proxy":
+	case "sys", "system-proxy":
 		return systemProxyCommand(commandArgs)
 	case "tun":
 		return tunCommand(commandArgs)
-	case "mode":
+	case "mode", "outbound-mode":
 		return modeCommand(commandArgs)
+	case "port", "mixed-port":
+		return portCommand(commandArgs)
+	case "flc":
+		return flcManagementCommand(commandArgs)
+	case "history", "requests":
+		return historyCommand(commandArgs)
+	case "net":
+		return networkCommand(commandArgs)
 	case "connections", "connection":
 		return connectionsCommand(commandArgs)
 	case "geo":
@@ -119,7 +131,7 @@ func dispatchFLC(args []string) error {
 }
 
 func printFLCUsage(w io.Writer) {
-	fmt.Fprintln(w, "flc - run an external command through the active FlClash Mixed Port")
+	fmt.Fprintln(w, "flc - run one external command through the active FlClash proxy entry")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  flc COMMAND [ARG...]")
@@ -130,7 +142,8 @@ func printFLCUsage(w io.Writer) {
 	fmt.Fprintln(w, "  flc wget https://example.com/file")
 	fmt.Fprintln(w, "  flc git clone https://github.com/owner/repository.git")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "flc fails closed when the Core or Mixed Port is unavailable; it never silently runs direct.")
+	fmt.Fprintln(w, "In silent mode flc uses an authenticated private listener; other modes use Proxy port.")
+	fmt.Fprintln(w, "flc fails closed when its proxy entry is unavailable; it never silently runs direct.")
 }
 
 func isCLIHelpArg(value string) bool {

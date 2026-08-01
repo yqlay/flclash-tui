@@ -213,7 +213,7 @@ func newTUIProxyNodeHTTPClient(proxyName string) (*http.Client, func(), error) {
 
 func newTUIRouteHTTPClient(mixedPort int) (*http.Client, func(), error) {
 	if mixedPort <= 0 || mixedPort > 65535 {
-		return nil, nil, errors.New("choose a valid mixed port before testing")
+		return nil, nil, errors.New("choose a valid Proxy port before testing")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = http.ProxyURL(&url.URL{

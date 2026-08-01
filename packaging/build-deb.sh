@@ -46,6 +46,7 @@ chmod 0755 "${WORK_DIR}" "${WORK_DIR}/DEBIAN" "${WORK_DIR}/usr" \
 chmod 0755 "${WORK_DIR}/usr/bin/flclash"
 ln -s flclash "${WORK_DIR}/usr/bin/flc"
 install -m 0644 "${ROOT_DIR}/README.md" "${WORK_DIR}/usr/share/doc/flclash-tui/README.md"
+install -m 0644 "${ROOT_DIR}/README_zh_CN.md" "${WORK_DIR}/usr/share/doc/flclash-tui/README_zh_CN.md"
 install -m 0644 "${ROOT_DIR}/CLI_LINUX.md" "${WORK_DIR}/usr/share/doc/flclash-tui/CLI_LINUX.md"
 install -m 0644 "${ROOT_DIR}/LICENSE" "${WORK_DIR}/usr/share/doc/flclash-tui/LICENSE"
 install -m 0644 "${ROOT_DIR}/NOTICE" "${WORK_DIR}/usr/share/doc/flclash-tui/NOTICE"
