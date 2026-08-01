@@ -1,3 +1,13 @@
+## FlClash TUI v0.4.2
+
+- Fixed automatic Backend migration across service protocol versions.
+- Added an unversioned compatibility handshake for discovering and gracefully
+  stopping an older per-user Backend during upgrades.
+- Wait for the old Backend PID to exit before starting its replacement, avoiding
+  a race with the per-user process lock.
+- Refuse automatic downgrade when the running Backend is newer than the client.
+- Added protocol-negotiation, shutdown, process-exit, and downgrade regression tests.
+
 ## FlClash TUI v0.4.1
 
 - Aligned Dashboard, CLI, and TUI actions behind the shared Backend transaction layer.
