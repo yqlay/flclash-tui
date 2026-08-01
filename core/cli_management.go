@@ -277,7 +277,7 @@ func serviceManagementCommand(args []string) error {
 			if err := client.shutdown(); err != nil {
 				return err
 			}
-			waitForManagedServiceExit(client, 3*time.Second)
+			waitForTUIServiceExit(client, status.PID, 3*time.Second)
 		}
 		paths, pathErr := resolvePaths("", "")
 		if pathErr != nil {
@@ -1119,7 +1119,7 @@ func currentManagedServiceRaw() (*tuiServiceClient, tuiServiceStatus, error) {
 		return nil, tuiServiceStatus{}, err
 	}
 	client := newTUIServiceClient(paths.homeDir)
-	status, err := client.status()
+	status, err := client.compatibleStatus()
 	if err != nil {
 		return nil, tuiServiceStatus{}, errors.New("no FlClash backend is running")
 	}
@@ -1195,16 +1195,6 @@ func cliOnOff(value bool) string {
 		return "running"
 	}
 	return "stopped"
-}
-
-func waitForManagedServiceExit(client *tuiServiceClient, timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := client.status(); err != nil {
-			return
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
 }
 
 func readManagedLog(path string, lineCount int, follow bool) error {

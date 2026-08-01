@@ -132,6 +132,19 @@ func (c *tuiServiceClient) requestPayload(
 	if request.ProtocolVersion == 0 {
 		request.ProtocolVersion = tuiServiceProtocolVersion
 	}
+	return c.sendRequest(request)
+}
+
+func (c *tuiServiceClient) requestPayloadUnversioned(
+	request tuiServiceRequest,
+) (tuiServiceStatus, error) {
+	request.ProtocolVersion = 0
+	return c.sendRequest(request)
+}
+
+func (c *tuiServiceClient) sendRequest(
+	request tuiServiceRequest,
+) (tuiServiceStatus, error) {
 	if request.RequestID == "" {
 		request.RequestID = newTUIServiceRequestID()
 	}
@@ -185,6 +198,20 @@ func newTUIServiceRequestID() string {
 
 func (c *tuiServiceClient) status() (tuiServiceStatus, error) {
 	return c.request("status", "")
+}
+
+func (c *tuiServiceClient) compatibleStatus() (tuiServiceStatus, error) {
+	status, err := c.status()
+	if !isUnsupportedTUIServiceProtocol(err) {
+		return status, err
+	}
+	return c.requestPayloadUnversioned(tuiServiceRequest{Action: "status"})
+}
+
+func isUnsupportedTUIServiceProtocol(err error) bool {
+	var serviceErr *tuiServiceError
+	return errors.As(err, &serviceErr) &&
+		serviceErr.Code == tuiServiceErrorUnsupported
 }
 
 func (c *tuiServiceClient) start() (tuiServiceStatus, error) {
@@ -406,6 +433,11 @@ func (c *tuiServiceClient) watch(
 
 func (c *tuiServiceClient) shutdown() error {
 	_, err := c.request("shutdown", "")
+	if isUnsupportedTUIServiceProtocol(err) {
+		_, err = c.requestPayloadUnversioned(tuiServiceRequest{
+			Action: "shutdown",
+		})
+	}
 	return err
 }
 
@@ -466,7 +498,7 @@ func ensureTUIService(
 	explicitDirectory bool,
 ) (*tuiServiceClient, tuiServiceStatus, error) {
 	client := newTUIServiceClient(paths.homeDir)
-	if status, err := client.status(); err == nil {
+	if status, err := client.compatibleStatus(); err == nil {
 		if status.Version == cliVersion &&
 			status.ProtocolVersion == tuiServiceProtocolVersion {
 			if err := validateTUIServiceTarget(
@@ -478,6 +510,9 @@ func ensureTUIService(
 				return nil, tuiServiceStatus{}, err
 			}
 			return client, status, nil
+		}
+		if err := validateTUIServiceUpgradeCandidate(status); err != nil {
+			return nil, tuiServiceStatus{}, err
 		}
 		wasRunning := status.Running
 		if status.HomeDir != "" {
@@ -496,13 +531,7 @@ func ensureTUIService(
 				err,
 			)
 		}
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, statusErr := client.status(); statusErr != nil {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
+		waitForTUIServiceExit(client, status.PID, 3*time.Second)
 		if err := spawnTUIService(paths, testURL, !explicitConfig); err != nil {
 			return waitForCompetingTUIService(
 				client,
@@ -556,13 +585,11 @@ func ensureTUIService(
 				err,
 			)
 		}
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, statusErr := legacyClient.status(); statusErr != nil {
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
+		waitForTUIServiceExit(
+			legacyClient,
+			legacyStatus.PID,
+			3*time.Second,
+		)
 		if err := spawnTUIService(paths, testURL, !explicitConfig); err != nil {
 			return waitForCompetingTUIService(
 				client,
@@ -611,6 +638,20 @@ func ensureTUIService(
 	return client, status, nil
 }
 
+func validateTUIServiceUpgradeCandidate(status tuiServiceStatus) error {
+	if status.ProtocolVersion > tuiServiceProtocolVersion ||
+		isNewerCLIVersion(status.Version, cliVersion) {
+		return fmt.Errorf(
+			"backend %s uses protocol %d, newer than this client %s protocol %d; update flclash instead of replacing the backend",
+			status.Version,
+			status.ProtocolVersion,
+			cliVersion,
+			tuiServiceProtocolVersion,
+		)
+	}
+	return nil
+}
+
 func findLegacyTUIService(
 	paths cliPaths,
 ) (*tuiServiceClient, tuiServiceStatus, bool) {
@@ -635,7 +676,7 @@ func findLegacyTUIService(
 		}
 		seen[directory] = true
 		client := newTUIServiceClientAt(directory)
-		status, err := client.status()
+		status, err := client.compatibleStatus()
 		if err == nil {
 			return client, status, true
 		}
@@ -713,6 +754,29 @@ func waitForTUIService(
 		"Backend did not become ready: %w",
 		lastErr,
 	)
+}
+
+func waitForTUIServiceExit(
+	client *tuiServiceClient,
+	pid int,
+	timeout time.Duration,
+) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		_, statusErr := client.compatibleStatus()
+		if statusErr != nil && !cliProcessRunning(pid) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func cliProcessRunning(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func spawnTUIService(paths cliPaths, testURL string, allowCreate bool) error {

@@ -69,6 +69,35 @@ func TestReapTUIServiceProcessWaitsForChild(t *testing.T) {
 	}
 }
 
+func TestWaitForTUIServiceExitWaitsForProcessAfterSocketCloses(t *testing.T) {
+	command := exec.Command("/bin/sh", "-c", "sleep 0.1")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- command.Wait()
+	}()
+
+	started := time.Now()
+	waitForTUIServiceExit(
+		newTUIServiceClientAt(t.TempDir()),
+		command.Process.Pid,
+		time.Second,
+	)
+	if elapsed := time.Since(started); elapsed < 75*time.Millisecond {
+		t.Fatalf("wait returned before process exit: %s", elapsed)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatal("process was still running after exit wait")
+	}
+}
+
 func TestTUIServiceShutdownWritesACKBeforeSignallingExit(t *testing.T) {
 	directory := t.TempDir()
 	var connection *tuiServiceMemoryConnection
@@ -198,6 +227,108 @@ func TestTUIServiceReloadUsesExtendedTimeout(t *testing.T) {
 	}
 }
 
+func TestTUIServiceClientNegotiatesOutdatedBackend(t *testing.T) {
+	homeDir := t.TempDir()
+	socketPath := filepath.Join(homeDir, tuiServiceSocketFilename)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	const oldProtocol = tuiServiceProtocolVersion - 1
+	serverDone := make(chan error, 1)
+	go func() {
+		defer close(serverDone)
+		for index := 0; index < 4; index++ {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				serverDone <- acceptErr
+				return
+			}
+			var request tuiServiceRequest
+			decodeErr := json.NewDecoder(
+				bufio.NewReader(connection),
+			).Decode(&request)
+			if decodeErr != nil {
+				_ = connection.Close()
+				serverDone <- decodeErr
+				return
+			}
+			if request.RequestID == "" {
+				_ = connection.Close()
+				serverDone <- errors.New("request ID is empty")
+				return
+			}
+			expectedAction := "status"
+			if index >= 2 {
+				expectedAction = "shutdown"
+			}
+			if request.Action != expectedAction {
+				_ = connection.Close()
+				serverDone <- fmt.Errorf(
+					"request %d action = %q, want %q",
+					index,
+					request.Action,
+					expectedAction,
+				)
+				return
+			}
+			expectedProtocol := tuiServiceProtocolVersion
+			if index%2 == 1 {
+				expectedProtocol = 0
+			}
+			if request.ProtocolVersion != expectedProtocol {
+				_ = connection.Close()
+				serverDone <- fmt.Errorf(
+					"request %d protocol = %d, want %d",
+					index,
+					request.ProtocolVersion,
+					expectedProtocol,
+				)
+				return
+			}
+
+			status := tuiServiceStatus{
+				ProtocolVersion: oldProtocol,
+				RequestID:       request.RequestID,
+				PID:             1234,
+				Version:         "0.4.0",
+			}
+			if index%2 == 0 {
+				status.ErrorCode = tuiServiceErrorUnsupported
+				status.Error = "unsupported service protocol"
+			} else {
+				status.OK = true
+				status.ShuttingDown = request.Action == "shutdown"
+			}
+			encodeErr := json.NewEncoder(connection).Encode(status)
+			_ = connection.Close()
+			if encodeErr != nil {
+				serverDone <- encodeErr
+				return
+			}
+		}
+	}()
+
+	client := newTUIServiceClientAt(homeDir)
+	status, err := client.compatibleStatus()
+	if err != nil {
+		t.Fatalf("compatible status failed: %v", err)
+	}
+	if status.Version != "0.4.0" ||
+		status.ProtocolVersion != oldProtocol ||
+		status.PID != 1234 {
+		t.Fatalf("compatible status = %+v", status)
+	}
+	if err := client.shutdown(); err != nil {
+		t.Fatalf("compatible shutdown failed: %v", err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFindLegacyTUIServiceOutsidePerUserRuntime(t *testing.T) {
 	runtimeDirectory := t.TempDir()
 	legacyDirectory := t.TempDir()
@@ -288,5 +419,28 @@ func TestValidateCurrentTUIServiceRequiresVersionedProtocol(t *testing.T) {
 		if err := validateCurrentTUIService(status); err == nil {
 			t.Fatalf("outdated backend was accepted: %+v", status)
 		}
+	}
+}
+
+func TestValidateTUIServiceUpgradeCandidateRejectsDowngrade(t *testing.T) {
+	for _, status := range []tuiServiceStatus{
+		{
+			Version:         cliVersion,
+			ProtocolVersion: tuiServiceProtocolVersion + 1,
+		},
+		{
+			Version:         "99.0.0",
+			ProtocolVersion: tuiServiceProtocolVersion,
+		},
+	} {
+		if err := validateTUIServiceUpgradeCandidate(status); err == nil {
+			t.Fatalf("newer backend was accepted: %+v", status)
+		}
+	}
+	if err := validateTUIServiceUpgradeCandidate(tuiServiceStatus{
+		Version:         "0.4.0",
+		ProtocolVersion: tuiServiceProtocolVersion - 1,
+	}); err != nil {
+		t.Fatalf("older backend was rejected: %v", err)
 	}
 }
