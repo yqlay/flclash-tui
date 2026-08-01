@@ -1,3 +1,25 @@
+## FlClash TUI v0.4.1
+
+- Aligned Dashboard, CLI, and TUI actions behind the shared Backend transaction layer.
+- Added silent proxy mode so only commands launched through `flc` use the proxy.
+- Simplified management commands to `core`, `sys`, `tun`, `mode`, `port`, `net`,
+  `history`, and `connections close all`, while retaining compatibility aliases.
+- Replaced Requests with a shared 500-entry History view across terminal frontends.
+- Made `q` detach only the current frontend, while `Ctrl+C` gracefully shuts down
+  Backend and Core and reaps managed child processes.
+- Updated bilingual documentation, shell completions, lifecycle tests, and packages.
+
+## FlClash TUI v0.4.0
+
+- Split `flclash` backend/TUI management from the `flc` command proxy.
+- Added a single per-user backend with multi-frontend IPC, revision conflicts,
+  request deduplication, watch notifications, profile locks, and transactional
+  config rollback.
+- Expanded lifecycle, service, profile, proxy, config, system-proxy, TUN,
+  mode, connection, Geo, environment, doctor, completion, and help commands.
+- Split Settings and Maintenance, made `q` and `Ctrl+C` detach only the current
+  frontend, and kept the complete TUI usable at `40x10`.
+
 ## v0.8.94
 
 - Fix macos performance issue

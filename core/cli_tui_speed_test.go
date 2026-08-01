@@ -182,7 +182,7 @@ func TestTUIVKeyIsScopedToDashboardAndProxies(t *testing.T) {
 		Type:  tea.KeyRunes,
 		Runes: []rune{'v'},
 	})
-	if model.snapshot.Status != "Dashboard speed test requires the managed Service" {
+	if model.snapshot.Status != "Dashboard speed test requires the managed backend" {
 		t.Fatalf("Dashboard v status = %q", model.snapshot.Status)
 	}
 
@@ -196,7 +196,7 @@ func TestTUIVKeyIsScopedToDashboardAndProxies(t *testing.T) {
 		Type:  tea.KeyRunes,
 		Runes: []rune{'v'},
 	})
-	if model.snapshot.Status != "Proxy speed testing requires the managed Service" {
+	if model.snapshot.Status != "Proxy speed testing requires the managed backend" {
 		t.Fatalf("Proxies v status = %q", model.snapshot.Status)
 	}
 

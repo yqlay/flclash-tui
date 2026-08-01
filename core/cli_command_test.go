@@ -97,8 +97,8 @@ func TestWrappedCommandReportsStoppedServiceBilingually(t *testing.T) {
 
 	err := wrappedCommand([]string{"curl", "https://example.com"})
 	if err == nil ||
-		!strings.Contains(err.Error(), "Service/Core is stopped") ||
-		!strings.Contains(err.Error(), "Service/Core 已停止") {
+		!strings.Contains(err.Error(), "Core is stopped") ||
+		!strings.Contains(err.Error(), "Core 已停止") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -108,8 +108,8 @@ func TestWrappedCommandReportsMissingServiceBilingually(t *testing.T) {
 
 	err := wrappedCommand([]string{"curl", "https://example.com"})
 	if err == nil ||
-		!strings.Contains(err.Error(), "FlClash is not running") ||
-		!strings.Contains(err.Error(), "FlClash 未运行") {
+		!strings.Contains(err.Error(), "backend is not running") ||
+		!strings.Contains(err.Error(), "FlClash 后端未运行") {
 		t.Fatalf("error = %v", err)
 	}
 }

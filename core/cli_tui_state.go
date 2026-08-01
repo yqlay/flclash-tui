@@ -9,11 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
 	tuiStateFilename = ".flclash-cli-state.json"
-	tuiStateVersion  = 1
+	tuiStateLockName = ".flclash-cli-state.lock"
+	tuiStateVersion  = 2
 )
 
 type tuiPersistentState struct {
@@ -21,6 +23,8 @@ type tuiPersistentState struct {
 	ActiveProfile       string            `json:"active_profile,omitempty"`
 	SelectedProxies     map[string]string `json:"selected_proxies,omitempty"`
 	SubscriptionSources map[string]string `json:"subscription_sources,omitempty"`
+	TrafficMode         string            `json:"traffic_mode,omitempty"`
+	FLCOutbound         string            `json:"flc_outbound,omitempty"`
 }
 
 func loadTUIState(homeDir string) (tuiPersistentState, error) {
@@ -40,12 +44,13 @@ func loadTUIState(homeDir string) (tuiPersistentState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return tuiPersistentState{}, fmt.Errorf("parse saved TUI state: %w", err)
 	}
-	if state.Version != tuiStateVersion {
+	if state.Version != 1 && state.Version != tuiStateVersion {
 		return tuiPersistentState{}, fmt.Errorf(
 			"unsupported saved TUI state version %d",
 			state.Version,
 		)
 	}
+	state.Version = tuiStateVersion
 	if state.SelectedProxies == nil {
 		state.SelectedProxies = map[string]string{}
 	}
@@ -53,6 +58,49 @@ func loadTUIState(homeDir string) (tuiPersistentState, error) {
 		state.SubscriptionSources = map[string]string{}
 	}
 	return state, nil
+}
+
+func loadTUITrafficMode(homeDir, configPath string) string {
+	state, err := loadTUIState(homeDir)
+	if err == nil {
+		mode := strings.ToLower(strings.TrimSpace(state.TrafficMode))
+		if mode == "silent" || mode == "rule" || mode == "global" || mode == "direct" {
+			return mode
+		}
+	}
+	settings := loadTUIConfiguredSettings(configPath, true)
+	if settings == nil {
+		return "rule"
+	}
+	return strings.ToLower(settings.Mode)
+}
+
+func rememberTUITrafficMode(homeDir, mode string) error {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode != "silent" && mode != "rule" && mode != "global" && mode != "direct" {
+		return fmt.Errorf("unsupported traffic mode %q", mode)
+	}
+	return updateTUIState(homeDir, func(state *tuiPersistentState) {
+		state.TrafficMode = mode
+	})
+}
+
+func loadTUIFLCOutbound(homeDir string) string {
+	state, err := loadTUIState(homeDir)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(state.FLCOutbound)
+}
+
+func rememberTUIFLCOutbound(homeDir, outbound string) error {
+	outbound = strings.TrimSpace(outbound)
+	if outbound == "" {
+		return errors.New("FLC outbound must not be empty")
+	}
+	return updateTUIState(homeDir, func(state *tuiPersistentState) {
+		state.FLCOutbound = outbound
+	})
 }
 
 func saveTUIState(homeDir string, state tuiPersistentState) error {
@@ -106,6 +154,30 @@ func updateTUIState(
 	homeDir string,
 	update func(*tuiPersistentState),
 ) error {
+	lockPath := filepath.Join(homeDir, tuiStateLockName)
+	owner := cliProcessOwner{
+		Kind:      "state-update",
+		PID:       os.Getpid(),
+		HomeDir:   homeDir,
+		StartedAt: time.Now(),
+	}
+	var lock *cliFileLock
+	var err error
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		lock, err = acquireCLIFileLock(lockPath, owner)
+		var busy *cliLockBusyError
+		if err == nil || !errors.As(err, &busy) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		return fmt.Errorf("lock shared state: %w", err)
+	}
+	defer func() {
+		lock.release()
+	}()
 	state, err := loadTUIState(homeDir)
 	if err != nil {
 		state = tuiPersistentState{

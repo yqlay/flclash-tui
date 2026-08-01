@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.3.15"
+const cliVersion = "0.4.1"
 
 type cliPaths struct {
 	homeDir    string
@@ -35,46 +35,14 @@ type controllerOptions struct {
 }
 
 func main() {
-	var err error
-	if len(os.Args) < 2 {
-		err = tuiCommand(nil)
-	} else {
-		switch os.Args[1] {
-		case "tui", "ui":
-			err = tuiCommand(os.Args[2:])
-		case "run", "start":
-			err = runCommand(os.Args[2:])
-		case "stop":
-			err = stopCommand(os.Args[2:])
-		case "_service":
-			err = serviceCommand(os.Args[2:])
-		case "check", "validate":
-			err = checkCommand(os.Args[2:])
-		case "proxy":
-			err = proxyCommand(os.Args[2:])
-		case "profile":
-			err = profileCommand(os.Args[2:])
-		case "update", "upgrade":
-			err = updateCommand(os.Args[2:])
-		case "exec":
-			err = wrappedCommand(os.Args[2:])
-		case "--":
-			err = wrappedCommand(os.Args[2:])
-		case "version", "--version", "-v":
-			fmt.Printf("FlClash TUI %s (Mihomo core)\n", cliVersion)
-		case "help", "--help", "-h":
-			printUsage(os.Stdout)
-		default:
-			if strings.HasPrefix(os.Args[1], "-") {
-				err = tuiCommand(os.Args[1:])
-			} else {
-				err = wrappedCommand(os.Args[1:])
-			}
-		}
-	}
+	program := filepath.Base(os.Args[0])
+	err := dispatchCLI(program, os.Args[1:])
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "flclash: %v\n", err)
+		if program != "flc" {
+			program = "flclash"
+		}
+		fmt.Fprintf(os.Stderr, "%s: %v\n", program, err)
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
@@ -83,38 +51,61 @@ func main() {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "FlClash TUI - Linux terminal client powered by the FlClash Mihomo core")
+	fmt.Fprintln(w, "FlClash TUI - one backend, multiple terminal clients")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  flclash [tui] --config ./config.yaml")
-	fmt.Fprintln(w, "  flclash run --config ./config.yaml")
-	fmt.Fprintln(w, "  flclash stop")
-	fmt.Fprintln(w, "  flclash check --config ./config.yaml")
-	fmt.Fprintln(w, "  flclash proxy list --controller 127.0.0.1:9090")
-	fmt.Fprintln(w, "  flclash proxy select --controller 127.0.0.1:9090 GROUP NODE")
-	fmt.Fprintln(w, "  flclash profile link --config ./profile.yaml URL")
-	fmt.Fprintln(w, "  flclash git clone https://github.com/owner/repository.git")
-	fmt.Fprintln(w, "  flclash curl https://example.com")
-	fmt.Fprintln(w, "  flclash exec COMMAND [ARG...]")
-	fmt.Fprintln(w, "  flclash update [--check]")
-	fmt.Fprintln(w, "  flclash version")
+	fmt.Fprintln(w, "  flclash                         Open a TUI frontend")
+	fmt.Fprintln(w, "  flclash COMMAND [OPTIONS]       Manage the shared backend")
+	fmt.Fprintln(w, "  flc COMMAND [ARG...]            Run a command through FlClash")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Commands:")
-	fmt.Fprintln(w, "  tui, ui           Open the full-screen terminal interface (default)")
-	fmt.Fprintln(w, "  run, start       Start the proxy in the foreground")
-	fmt.Fprintln(w, "  stop             Stop the detached background service")
+	fmt.Fprintln(w, "Dashboard commands:")
+	fmt.Fprintln(w, "  core              Start, stop, restart, reload, or inspect Core")
+	fmt.Fprintln(w, "  sys               Turn System proxy on/off or inspect it")
+	fmt.Fprintln(w, "  tun               Turn TUN on/off or inspect it")
+	fmt.Fprintln(w, "  mode              Select rule/global/direct/silent mode")
+	fmt.Fprintln(w, "  port              Get, set, or disable the normal Proxy port")
+	fmt.Fprintln(w, "  flc               Select or test the private silent-mode command proxy")
+	fmt.Fprintln(w, "  net               Show or test Dashboard network detection")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Lifecycle shortcuts:")
+	fmt.Fprintln(w, "  start             Alias for core start")
+	fmt.Fprintln(w, "  stop              Alias for core stop; keep the backend available")
+	fmt.Fprintln(w, "  restart           Alias for core restart")
+	fmt.Fprintln(w, "  reload            Alias for core reload")
+	fmt.Fprintln(w, "  status            Show backend, Core, profile, port, and frontend state")
+	fmt.Fprintln(w, "  logs              Read or follow the managed backend log")
+	fmt.Fprintln(w, "  backend           Manage the per-user Backend process")
+	fmt.Fprintln(w, "  shutdown          Stop Backend and Core; disconnect all frontends")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Configuration and runtime:")
+	fmt.Fprintln(w, "  profile           Import, select, update, rename, edit, or list profiles")
+	fmt.Fprintln(w, "  proxy             List groups/nodes, select nodes, or run tests")
+	fmt.Fprintln(w, "  config            Inspect, validate, edit, back up, or restore config")
+	fmt.Fprintln(w, "  history           Show, follow, or clear recent connection history")
+	fmt.Fprintln(w, "  connections       List or close active connections")
+	fmt.Fprintln(w, "  geo               Inspect or update Mihomo Geo resources")
+	fmt.Fprintln(w, "  env               Print the active proxy environment")
+	fmt.Fprintln(w, "  doctor            Diagnose backend, Core, port, and configuration")
+	fmt.Fprintln(w, "  completion        Generate shell completion scripts")
 	fmt.Fprintln(w, "  check, validate   Validate a Clash/Mihomo YAML configuration")
-	fmt.Fprintln(w, "  proxy             Inspect or change a running core through its API")
-	fmt.Fprintln(w, "  profile           Manage local profile metadata")
-	fmt.Fprintln(w, "  exec              Run any command through the active Mixed Port")
-	fmt.Fprintln(w, "  update, upgrade   Check GitHub Releases and securely install an update")
-	fmt.Fprintln(w, "  version           Print the CLI version")
+	fmt.Fprintln(w, "  update, upgrade   Check and securely install a GitHub Release")
+	fmt.Fprintln(w, "  exec              Compatibility alias for flc")
+	fmt.Fprintln(w, "  run               Run the Core in the foreground (advanced)")
+	fmt.Fprintln(w, "  version           Print the version")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Any unrecognized command is run through the active FlClash proxy.")
-	fmt.Fprintln(w, "Use `flclash -- COMMAND` when COMMAND has the same name as a built-in command.")
+	fmt.Fprintln(w, "Help:")
+	fmt.Fprintln(w, "  flclash -help | --help | help")
+	fmt.Fprintln(w, "  flclash COMMAND -help")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Unknown flclash commands are rejected. Use flc for external commands.")
 }
 
 func runCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash run [--config PATH] [--directory PATH]")
+		fmt.Println("Run Core in the foreground. This advanced mode does not use the shared backend.")
+		return nil
+	}
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	configArg := fs.String("config", "", "path to config.yaml")
@@ -173,6 +164,11 @@ func runCommand(args []string) error {
 }
 
 func checkCommand(args []string) error {
+	if cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash check --config PATH")
+		fmt.Println("Validate a Clash/Mihomo YAML configuration without starting Core.")
+		return nil
+	}
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	configArg := fs.String("config", "", "path to config.yaml")
@@ -233,66 +229,416 @@ func resolvePaths(configArg, directoryArg string) (cliPaths, error) {
 }
 
 func proxyCommand(args []string) error {
-	if len(args) == 0 {
-		return errors.New("proxy requires list or select")
+	if len(args) == 0 || cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash proxy groups|nodes|select|delay|speed [OPTIONS]")
+		fmt.Println("  groups [--json]                  List proxy groups")
+		fmt.Println("  nodes GROUP [--json]             List nodes in a group")
+		fmt.Println("  select GROUP NODE                Select a node")
+		fmt.Println("  delay NODE [--test-url URL]      Test node delay")
+		fmt.Println("  speed NODE                       Test node download speed")
+		return nil
 	}
 	fs := flag.NewFlagSet("proxy "+args[0], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	address := fs.String("controller", "127.0.0.1:9090", "Mihomo external controller address")
+	address := fs.String("controller", "", "Mihomo external controller address")
 	secret := fs.String("secret", "", "Mihomo external controller secret")
+	jsonOutput := fs.Bool("json", false, "print raw JSON")
+	testURL := fs.String("test-url", defaultCLITestURL, "delay test URL")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	client := controllerClient{options: controllerOptions{address: *address, secret: *secret}}
+	var client controllerClient
+	var service *tuiServiceClient
+	if *address != "" {
+		client = controllerClient{options: controllerOptions{address: *address, secret: *secret}}
+	} else {
+		managedService, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
+		service = managedService
+		client = managedController(status)
+	}
 
 	switch args[0] {
-	case "list":
+	case "list", "groups":
+		if *jsonOutput {
+			data, err := client.request(http.MethodGet, "/proxies", nil)
+			if err != nil {
+				return err
+			}
+			_, err = os.Stdout.Write(append(data, '\n'))
+			return err
+		}
 		return client.listProxies()
+	case "nodes":
+		positional := fs.Args()
+		if len(positional) != 1 {
+			return errors.New("usage: flclash proxy nodes GROUP")
+		}
+		return client.listProxyNodes(positional[0], *jsonOutput)
 	case "select":
 		positional := fs.Args()
 		if len(positional) != 2 {
-			return errors.New("usage: proxy select [--controller address] GROUP NODE")
+			return errors.New("usage: flclash proxy select GROUP NODE")
 		}
-		return client.selectProxy(positional[0], positional[1])
+		if service == nil {
+			return client.selectProxy(positional[0], positional[1])
+		}
+		status, err := service.status()
+		if err != nil {
+			return err
+		}
+		status, err = service.selectProxy(
+			positional[0],
+			positional[1],
+			status.Revision,
+		)
+		if err != nil {
+			return err
+		}
+		fmt.Printf(
+			"selected %q in %q (revision %d)\n",
+			positional[1],
+			positional[0],
+			status.Revision,
+		)
+		return nil
+	case "delay":
+		positional := fs.Args()
+		if len(positional) != 1 {
+			return errors.New("usage: flclash proxy delay NODE")
+		}
+		delay, err := client.testProxyDelay(positional[0], *testURL)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s: %d ms\n", positional[0], delay)
+		return nil
+	case "speed":
+		positional := fs.Args()
+		if len(positional) != 1 {
+			return errors.New("usage: flclash proxy speed NODE")
+		}
+		if service == nil {
+			return errors.New("proxy speed requires the managed FlClash backend")
+		}
+		result, err := service.testProxySpeed(positional[0])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s: %s\n", positional[0], formatTUISpeed(result))
+		return nil
 	default:
-		return fmt.Errorf("unknown proxy command %q", args[0])
+		return fmt.Errorf("unknown proxy command %q; use `flclash proxy -help`", args[0])
 	}
 }
 
-func profileCommand(args []string) error {
-	if len(args) == 0 || args[0] != "link" {
-		return errors.New("usage: profile link [--config path] [--directory path] URL")
-	}
-	fs := flag.NewFlagSet("profile link", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	configArg := fs.String("config", "", "path to the existing profile YAML")
-	directoryArg := fs.String("directory", "", "FlClash data directory")
-	if err := fs.Parse(args[1:]); err != nil {
+func (c controllerClient) listProxyNodes(group string, jsonOutput bool) error {
+	data, err := c.request(http.MethodGet, "/proxies", nil)
+	if err != nil {
 		return err
 	}
-	if len(fs.Args()) != 1 {
-		return errors.New("usage: profile link [--config path] [--directory path] URL")
+	var response tuiProxyResponse
+	if err := json.Unmarshal(data, &response); err != nil {
+		return err
+	}
+	proxy, ok := response.Proxies[group]
+	if !ok || len(proxy.All) == 0 {
+		return fmt.Errorf("proxy group %q was not found or has no nodes", group)
+	}
+	if jsonOutput {
+		return writeCLIJSON(os.Stdout, map[string]any{
+			"group": group,
+			"now":   proxy.Now,
+			"nodes": proxy.All,
+		})
+	}
+	for _, node := range proxy.All {
+		marker := " "
+		if node == proxy.Now {
+			marker = "*"
+		}
+		fmt.Printf("%s %s\n", marker, node)
+	}
+	return nil
+}
+
+func profileCommand(args []string) error {
+	if len(args) == 0 || cliSubcommandHelp(args) {
+		fmt.Println("Usage: flclash profile list|import|current|use|update|rename|edit|delete|link")
+		fmt.Println("Profile names resolve inside the active FlClash data directory.")
+		return nil
+	}
+	command := args[0]
+	fs := flag.NewFlagSet("profile "+command, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configArg := fs.String("config", "", "profile YAML path")
+	directoryArg := fs.String("directory", "", "FlClash data directory")
+	jsonOutput := fs.Bool("json", false, "print JSON")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
 	}
 	paths, err := resolvePaths(*configArg, *directoryArg)
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(paths.configPath); err != nil {
-		return err
+	if *configArg == "" && *directoryArg == "" {
+		_, status, statusErr := currentManagedService()
+		if statusErr == nil {
+			paths.homeDir = status.HomeDir
+			paths.configPath = status.ConfigPath
+		} else if restored, restoreErr := restoreTUIActiveProfile(paths); restoreErr == nil {
+			paths = restored
+		}
 	}
-	sourceURL := fs.Args()[0]
-	if _, err := newTUISubscriptionRequest(sourceURL); err != nil {
-		return err
+	positional := fs.Args()
+	switch command {
+	case "list":
+		profiles, err := listCLIProfiles(paths)
+		if err != nil {
+			return err
+		}
+		if *jsonOutput {
+			return writeCLIJSON(os.Stdout, profiles)
+		}
+		for _, profile := range profiles {
+			marker := " "
+			if profile.Current {
+				marker = "*"
+			}
+			kind := "local"
+			if profile.SubscriptionURL != "" {
+				kind = "subscription"
+			}
+			fmt.Printf("%s %-32s %s\n", marker, profile.Name, kind)
+		}
+		return nil
+	case "current":
+		fmt.Println(paths.configPath)
+		return nil
+	case "import":
+		if len(positional) != 1 {
+			return errors.New("usage: flclash profile import URL")
+		}
+		data, err := fetchTUISubscription(positional[0])
+		if err != nil {
+			return err
+		}
+		client, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(
+			status.HomeDir,
+			fmt.Sprintf("profile-%d.yaml", time.Now().UnixNano()),
+		)
+		status, err = client.putProfile(
+			path,
+			data,
+			"",
+			true,
+			&positional[0],
+			status.Revision,
+		)
+		if err != nil {
+			return err
+		}
+		fmt.Println(status.ResultPath)
+		return nil
+	case "use":
+		if len(positional) != 1 {
+			return errors.New("usage: flclash profile use NAME")
+		}
+		target, err := resolveCLIProfile(paths.homeDir, positional[0])
+		if err != nil {
+			return err
+		}
+		client, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
+		status, err = client.reloadAtRevision(target, status.Revision)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Active profile: %s (revision %d)\n", filepath.Base(target), status.Revision)
+		return nil
+	case "update":
+		target, err := cliProfileTarget(paths, positional)
+		if err != nil {
+			return err
+		}
+		sourceURL, err := loadTUISubscriptionSource(paths.homeDir, target)
+		if err != nil {
+			return err
+		}
+		previous, err := os.ReadFile(target)
+		if err != nil {
+			return err
+		}
+		updated, err := fetchTUISubscription(sourceURL)
+		if err != nil {
+			return err
+		}
+		if previousSettings := loadTUIConfiguredSettings(target, true); previousSettings != nil {
+			updated, err = applyTUISettingsToConfig(updated, *previousSettings)
+			if err != nil {
+				return fmt.Errorf("preserve local settings: %w", err)
+			}
+		}
+		client, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
+		if _, err := client.putProfile(
+			target,
+			updated,
+			tuiBytesSHA256(previous),
+			false,
+			nil,
+			status.Revision,
+		); err != nil {
+			return err
+		}
+		fmt.Printf("Updated %s\n", filepath.Base(target))
+		return nil
+	case "rename":
+		if len(positional) != 2 {
+			return errors.New("usage: flclash profile rename NAME NEW_NAME")
+		}
+		target, err := resolveCLIProfile(paths.homeDir, positional[0])
+		if err != nil {
+			return err
+		}
+		if filepath.Clean(target) == filepath.Clean(paths.configPath) {
+			return errors.New("activate another profile before renaming the current profile")
+		}
+		client, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
+		status, err = client.renameProfile(target, positional[1], status.Revision)
+		if err != nil {
+			return err
+		}
+		fmt.Println(status.ResultPath)
+		return nil
+	case "edit":
+		target, err := cliProfileTarget(paths, positional)
+		if err != nil {
+			return err
+		}
+		return editManagedConfig(target)
+	case "delete":
+		if len(positional) != 1 {
+			return errors.New("usage: flclash profile delete NAME")
+		}
+		target, err := resolveCLIProfile(paths.homeDir, positional[0])
+		if err != nil {
+			return err
+		}
+		if filepath.Clean(target) == filepath.Clean(paths.configPath) {
+			return errors.New("cannot delete the active profile")
+		}
+		client, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
+		if _, err := client.deleteProfile(target, status.Revision); err != nil {
+			return err
+		}
+		fmt.Printf("Deleted %s\n", filepath.Base(target))
+		return nil
+	case "link":
+		if len(positional) != 1 {
+			return errors.New("usage: flclash profile link [--config PATH] URL")
+		}
+		if _, err := os.Stat(paths.configPath); err != nil {
+			return err
+		}
+		sourceURL := positional[0]
+		if _, err := newTUISubscriptionRequest(sourceURL); err != nil {
+			return err
+		}
+		client, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
+		if _, err := client.linkProfile(
+			paths.configPath,
+			sourceURL,
+			status.Revision,
+		); err != nil {
+			return err
+		}
+		fmt.Printf("Linked %s to its subscription source\n", filepath.Base(paths.configPath))
+		return nil
+	default:
+		return fmt.Errorf("unknown profile command %q; use `flclash profile -help`", command)
 	}
-	if err := rememberTUISubscriptionSource(
-		paths.homeDir,
-		paths.configPath,
-		sourceURL,
-	); err != nil {
-		return err
+}
+
+func listCLIProfiles(paths cliPaths) ([]tuiProfile, error) {
+	entries, err := os.ReadDir(paths.homeDir)
+	if err != nil {
+		return nil, err
 	}
-	fmt.Printf("linked %s to its subscription source\n", filepath.Base(paths.configPath))
-	return nil
+	sources := loadTUISubscriptionSources(paths.homeDir)
+	profiles := make([]tuiProfile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		extension := strings.ToLower(filepath.Ext(entry.Name()))
+		if extension != ".yaml" && extension != ".yml" {
+			continue
+		}
+		path := filepath.Join(paths.homeDir, entry.Name())
+		profiles = append(profiles, tuiProfile{
+			Name:            entry.Name(),
+			Path:            path,
+			Current:         filepath.Clean(path) == filepath.Clean(paths.configPath),
+			SubscriptionURL: sources[entry.Name()],
+		})
+	}
+	sort.Slice(profiles, func(i, j int) bool { return profiles[i].Name < profiles[j].Name })
+	return profiles, nil
+}
+
+func resolveCLIProfile(homeDir, value string) (string, error) {
+	if value == "" {
+		return "", errors.New("profile name must not be empty")
+	}
+	path := value
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(homeDir, path)
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if _, err := tuiProfileStateKey(homeDir, path); err != nil {
+		return "", err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("profile must be a regular file")
+	}
+	return path, nil
+}
+
+func cliProfileTarget(paths cliPaths, positional []string) (string, error) {
+	if len(positional) == 0 {
+		return paths.configPath, nil
+	}
+	if len(positional) != 1 {
+		return "", errors.New("expected at most one profile name")
+	}
+	return resolveCLIProfile(paths.homeDir, positional[0])
 }
 
 type controllerClient struct {

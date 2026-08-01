@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,8 +28,8 @@ var (
 func wrappedCommand(args []string) error {
 	if len(args) == 0 {
 		return errors.New(
-			"no command specified; usage: flclash COMMAND [ARG...]\n" +
-				"未指定要执行的命令；用法：flclash 命令 [参数...]",
+			"no command specified; usage: flc COMMAND [ARG...]\n" +
+				"未指定要执行的命令；用法：flc 命令 [参数...]",
 		)
 	}
 
@@ -97,22 +98,50 @@ func activeCLIProxyURL() (string, error) {
 	}
 	if statusErr != nil {
 		return "", fmt.Errorf(
-			"FlClash is not running; open `flclash` and start Service first. Details: %v\n"+
-				"FlClash 未运行；请先打开 `flclash` 并启动 Service。详情：%v",
+			"FlClash backend is not running; run `flclash start` first. Details: %v\n"+
+				"FlClash 后端未运行；请先执行 `flclash start`。详情：%v",
 			statusErr,
 			statusErr,
 		)
 	}
 	if !status.Running {
 		return "", errors.New(
-			"FlClash Service/Core is stopped; open `flclash` and start Service first.\n" +
-				"FlClash Service/Core 已停止；请先打开 `flclash` 并启动 Service。",
+			"FlClash Core is stopped; run `flclash start` first.\n" +
+				"FlClash Core 已停止；请先执行 `flclash start`。",
 		)
+	}
+	if status.Mode == tuiSilentMode {
+		privateStatus, err := client.flcProxy()
+		if err != nil {
+			return "", fmt.Errorf(
+				"private FLC listener is unavailable: %v\nFLC 私有代理入口不可用：%v",
+				err,
+				err,
+			)
+		}
+		proxyURL, err := url.Parse(privateStatus.FLCProxyURL)
+		if err != nil || proxyURL.Host == "" || proxyURL.User == nil {
+			return "", errors.New(
+				"FlClash returned invalid private FLC credentials\n" +
+					"FlClash 返回了无效的 FLC 私有认证信息",
+			)
+		}
+		connection, err := net.DialTimeout("tcp", proxyURL.Host, cliCommandProxyTimeout)
+		if err != nil {
+			return "", fmt.Errorf(
+				"private FLC listener is not accepting connections: %v\n"+
+					"FLC 私有代理入口无法连接：%v",
+				err,
+				err,
+			)
+		}
+		_ = connection.Close()
+		return privateStatus.FLCProxyURL, nil
 	}
 	if strings.TrimSpace(status.CoreSocket) == "" {
 		return "", errors.New(
-			"FlClash reported no Core controller socket; restart Service and try again.\n" +
-				"FlClash 未返回 Core 控制套接字；请重启 Service 后再试。",
+			"FlClash reported no Core controller socket; restart the backend and try again.\n" +
+				"FlClash 未返回 Core 控制套接字；请重启后端再试。",
 		)
 	}
 
@@ -127,8 +156,8 @@ func activeCLIProxyURL() (string, error) {
 	data, err := controller.request(http.MethodGet, "/configs", nil)
 	if err != nil {
 		return "", fmt.Errorf(
-			"cannot read the active Mixed Port from FlClash Core: %v\n"+
-				"无法从 FlClash Core 读取当前 Mixed Port：%v",
+			"cannot read the active Proxy port (Mihomo mixed-port) from FlClash Core: %v\n"+
+				"无法从 FlClash Core 读取当前代理端口（Mihomo mixed-port）：%v",
 			err,
 			err,
 		)
@@ -144,8 +173,8 @@ func activeCLIProxyURL() (string, error) {
 	}
 	if config.MixedPort <= 0 || config.MixedPort > 65535 {
 		return "", fmt.Errorf(
-			"FlClash has no usable Mixed Port (current value: %d).\n"+
-				"FlClash 没有可用的 Mixed Port（当前值：%d）。",
+			"FlClash has no usable Proxy port (Mihomo mixed-port, current value: %d).\n"+
+				"FlClash 没有可用的代理端口（Mihomo mixed-port，当前值：%d）。",
 			config.MixedPort,
 			config.MixedPort,
 		)

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,6 +59,7 @@ func TestTUIRenderingFitsTerminalWidth(t *testing.T) {
 		height int
 	}{
 		{width: 40, height: 8},
+		{width: 40, height: 10},
 		{width: 44, height: 10},
 		{width: 50, height: 12},
 		{width: 64, height: 14},
@@ -67,7 +69,7 @@ func TestTUIRenderingFitsTerminalWidth(t *testing.T) {
 		{width: 80, height: 24},
 		{width: 120, height: 30},
 	} {
-		for page := tuiPageDashboard; page <= tuiPageTools; page++ {
+		for page := tuiPageDashboard; page < tuiPageCount; page++ {
 			snapshot := populatedTUISnapshot(page)
 			var output bytes.Buffer
 			drawTUIAtSize(&output, snapshot, paths, "127.0.0.1:9090", true, true, size.width, size.height)
@@ -91,7 +93,7 @@ func TestTUIRenderingFitsTerminalWidth(t *testing.T) {
 func TestTUIRenderingFitsEveryPositiveTerminalSize(t *testing.T) {
 	paths := cliPaths{configPath: "/tmp/flclash/config.yaml"}
 	snapshots := make([]tuiSnapshot, 0, int(tuiPageCount))
-	for page := tuiPageDashboard; page <= tuiPageTools; page++ {
+	for page := tuiPageDashboard; page < tuiPageCount; page++ {
 		snapshots = append(snapshots, populatedTUISnapshot(page))
 	}
 	for width := 1; width <= 160; width++ {
@@ -196,7 +198,7 @@ func TestTUICompactDashboardCanScrollEverySection(t *testing.T) {
 	model.snapshot.Frontends = []cliProcessOwner{{PID: 101}, {PID: 202}}
 
 	first := stripTUIANSI(model.View())
-	if !strings.Contains(first, "Service") ||
+	if !strings.Contains(first, "Core") ||
 		strings.Contains(first, "TUI frontends") {
 		t.Fatalf("first compact viewport is wrong:\n%s", first)
 	}
@@ -246,7 +248,8 @@ func TestTUICompactNavigationTracksSelectedPage(t *testing.T) {
 		10,
 	))
 	if !strings.Contains(output, "Navigation") ||
-		!strings.Contains(output, "7  Tools") {
+		!strings.Contains(output, "7  Settings") ||
+		!strings.Contains(output, "8  Maintenance") {
 		t.Fatalf("compact navigation hid selected page:\n%s", output)
 	}
 }
@@ -256,6 +259,7 @@ func TestTUIEscReturnsFromEveryPageToNavigationAtEveryLayout(t *testing.T) {
 		width  int
 		height int
 	}{
+		{width: 40, height: 10},
 		{width: 44, height: 10},
 		{width: 64, height: 14},
 		{width: 87, height: 17},
@@ -263,7 +267,7 @@ func TestTUIEscReturnsFromEveryPageToNavigationAtEveryLayout(t *testing.T) {
 		{width: 120, height: 30},
 	}
 	for _, size := range sizes {
-		for page := tuiPageDashboard; page <= tuiPageTools; page++ {
+		for page := tuiPageDashboard; page < tuiPageCount; page++ {
 			t.Run(fmt.Sprintf("%dx%d/%s", size.width, size.height, tuiPageName(page)), func(t *testing.T) {
 				model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 				model.width = size.width
@@ -286,7 +290,7 @@ func TestTUIEscReturnsFromEveryPageToNavigationAtEveryLayout(t *testing.T) {
 						page,
 					)
 				}
-				if size.width >= 44 &&
+				if size.width >= 40 &&
 					size.height >= 10 &&
 					(size.width < 88 || size.height < 18) {
 					output := stripTUIANSI(model.View())
@@ -546,57 +550,40 @@ func TestTUIProfilesExposeSubscriptionImportAsSelectableRow(t *testing.T) {
 	}
 }
 
-func TestTUIRenamesSelectedProfileFromVisibleAction(t *testing.T) {
+func TestBackendRenamesProfileRequestedByFrontend(t *testing.T) {
 	directory := t.TempDir()
 	sourcePath := filepath.Join(directory, "profile-old.yaml")
 	if err := os.WriteFile(sourcePath, []byte(defaultTUIConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	model := newTUIModel(
-		controllerClient{},
+	runtime := newTUIServiceRuntime(
 		cliPaths{
 			homeDir:    directory,
 			configPath: filepath.Join(directory, "config.yaml"),
 		},
+		defaultCLITestURL,
+		filepath.Join(directory, "core.sock"),
 		nil,
-		true,
+		nil,
 	)
-	model.snapshot.Page = tuiPageProfiles
-	model.snapshot.FocusSidebar = false
-	model.snapshot.Profiles = []tuiProfile{{
-		Name: "profile-old.yaml",
-		Path: sourcePath,
-	}}
-	model.snapshot.SelectedRow = 0
-
-	model.beginProfileRename()
-	if model.inputMode != tuiInputProfileName {
-		t.Fatalf("input mode = %d, want profile name", model.inputMode)
-	}
-	_, _ = model.Update(tea.KeyMsg{
-		Type:  tea.KeyRunes,
-		Runes: []rune("office"),
+	revision := uint64(1)
+	status := runtime.handle(tuiServiceRequest{
+		ProtocolVersion:  tuiServiceProtocolVersion,
+		RequestID:        "rename-profile",
+		ExpectedRevision: &revision,
+		Action:           "rename_profile",
+		ConfigPath:       sourcePath,
+		NewName:          "office",
 	})
-	command := model.submitInput()
-	if command == nil {
-		t.Fatal("profile rename did not return an operation")
-	}
-	_, _ = model.Update(command())
-
 	destinationPath := filepath.Join(directory, "office.yaml")
+	if !status.OK || status.ResultPath != destinationPath || status.Revision != 2 {
+		t.Fatalf("rename response = %+v", status)
+	}
 	if _, err := os.Stat(destinationPath); err != nil {
 		t.Fatalf("renamed profile: %v", err)
 	}
 	if _, err := os.Stat(sourcePath); !os.IsNotExist(err) {
 		t.Fatalf("old profile still exists: %v", err)
-	}
-	if model.snapshot.SelectedRow < 0 ||
-		model.snapshot.SelectedRow >= len(model.snapshot.Profiles) ||
-		model.snapshot.Profiles[model.snapshot.SelectedRow].Path != destinationPath {
-		t.Fatalf("renamed profile was not selected: %+v", model.snapshot)
-	}
-	if model.snapshot.Status != "Renamed profile to office.yaml" {
-		t.Fatalf("rename status = %q", model.snapshot.Status)
 	}
 }
 
@@ -693,7 +680,7 @@ func TestTUIQuitKeysUseGracefulShutdownPath(t *testing.T) {
 			expected: tuiKeyQuit,
 		},
 		{
-			name:              "ctrl+c stops service",
+			name:              "ctrl+c shuts down managed Backend",
 			key:               tea.KeyMsg{Type: tea.KeyCtrlC},
 			expected:          tuiKeyInterrupt,
 			stopServiceOnExit: true,
@@ -706,17 +693,26 @@ func TestTUIQuitKeysUseGracefulShutdownPath(t *testing.T) {
 				t.Fatalf("quit key = (%v, %v)", key, ok)
 			}
 			model := newTUIModel(controllerClient{}, cliPaths{}, nil, false)
+			if test.stopServiceOnExit {
+				model.ownsCore = true
+				model.service = &tuiServiceClient{}
+			}
 			command := model.handleTeaKey(test.key)
 			if command == nil {
 				t.Fatal("quit key did not return a command")
 			}
-			if _, ok := command().(tea.QuitMsg); !ok {
+			message := command()
+			if test.stopServiceOnExit {
+				if _, ok := message.(tuiShutdownResultMsg); !ok {
+					t.Fatalf("Ctrl+C command returned %T", message)
+				}
+			} else if _, ok := message.(tea.QuitMsg); !ok {
 				t.Fatal("quit key did not terminate the event loop")
 			}
-			if model.stopServiceOnExit != test.stopServiceOnExit {
+			if model.shutdownRequested != test.stopServiceOnExit {
 				t.Fatalf(
-					"stopServiceOnExit = %t, want %t",
-					model.stopServiceOnExit,
+					"shutdownRequested = %t, want %t",
+					model.shutdownRequested,
 					test.stopServiceOnExit,
 				)
 			}
@@ -781,22 +777,23 @@ func TestTUISettingsExposeAllInteractiveRows(t *testing.T) {
 	plain := stripTUIANSI(output.String())
 	for _, row := range []string{
 		"Mode          rule",
-		"Mixed port    17890",
+		"FLC outbound  NOT SELECTED",
+		"Proxy port    17890",
 		"Allow LAN     ON",
 		"IPv6          OFF",
 		"Log level     info",
 		"TUN           ON",
-		"Service       STOPPED · Enter to start",
-		"System proxy  DISABLED · Enter to enable (starts Service)",
+		"Core          STOPPED · Enter to start",
+		"System proxy  DISABLED · Enter to enable (starts Core)",
 	} {
 		if !strings.Contains(plain, row) {
 			t.Fatalf("settings view does not contain %q:\n%s", row, plain)
 		}
 	}
-	serviceIndex := strings.Index(plain, "Service       STOPPED · Enter to start")
+	serviceIndex := strings.Index(plain, "Core          STOPPED · Enter to start")
 	systemProxyIndex := strings.Index(
 		plain,
-		"System proxy  DISABLED · Enter to enable (starts Service)",
+		"System proxy  DISABLED · Enter to enable (starts Core)",
 	)
 	if serviceIndex < 0 || systemProxyIndex < 0 || serviceIndex >= systemProxyIndex {
 		t.Fatalf("service row must appear before system proxy:\n%s", plain)
@@ -823,7 +820,7 @@ func TestTUISettingsServiceRowUsesEnter(t *testing.T) {
 	}
 }
 
-func TestTUISettingsSystemProxyStartsStoppedService(t *testing.T) {
+func TestTUISettingsSystemProxyRequiresBackend(t *testing.T) {
 	model := newTUIModel(
 		controllerClient{},
 		cliPaths{},
@@ -834,11 +831,11 @@ func TestTUISettingsSystemProxyStartsStoppedService(t *testing.T) {
 	model.snapshot.FocusSidebar = false
 	model.snapshot.SelectedDashboard = tuiDashboardSystemProxyRow
 
-	if command := model.selectCurrent(); command == nil {
-		t.Fatal("system proxy did not schedule automatic service startup")
+	if command := model.selectCurrent(); command != nil {
+		t.Fatal("system proxy without Backend scheduled a mutation")
 	}
-	if !model.busy {
-		t.Fatal("automatic service startup did not mark the operation busy")
+	if !strings.Contains(model.snapshot.Status, "managed backend") {
+		t.Fatalf("system proxy status = %q", model.snapshot.Status)
 	}
 }
 
@@ -852,13 +849,13 @@ func TestTUISettingsRunningServiceUnlocksSystemProxy(t *testing.T) {
 	var output strings.Builder
 	drawTUISettings(&output, snapshot, 80, 24)
 	plain := stripTUIANSI(output.String())
-	if !strings.Contains(plain, "Service       RUNNING · Enter to stop") {
+	if !strings.Contains(plain, "Core          RUNNING · Enter to stop") {
 		t.Fatalf("running settings view has no clear service state:\n%s", plain)
 	}
 	if !strings.Contains(plain, "System proxy  DISABLED · Enter to enable") {
 		t.Fatalf("running settings view has no clear system proxy state:\n%s", plain)
 	}
-	if strings.Contains(plain, "(starts Service)") {
+	if strings.Contains(plain, "(starts Core)") {
 		t.Fatalf("running settings view kept automatic-start hint:\n%s", plain)
 	}
 }
@@ -878,10 +875,11 @@ func TestTUISidebarMatchesGraphicalInformationArchitecture(t *testing.T) {
 		"Dashboard",
 		"Proxies",
 		"Profiles",
-		"Requests",
+		"History",
 		"Connections",
 		"Logs",
-		"Tools",
+		"Settings",
+		"Maintenance",
 	}
 	previous := -1
 	for _, label := range labels {
@@ -894,7 +892,7 @@ func TestTUISidebarMatchesGraphicalInformationArchitecture(t *testing.T) {
 		}
 		previous = index
 	}
-	for _, removed := range []string{"Settings", "Providers"} {
+	for _, removed := range []string{"Providers"} {
 		if strings.Contains(plain, removed) {
 			t.Fatalf("sidebar still exposes standalone %s page:\n%s", removed, plain)
 		}
@@ -931,7 +929,7 @@ func TestTUIProxyViewsKeepProvidersInsideProxies(t *testing.T) {
 	}
 }
 
-func TestTUIToolsExposeSettingsAndMaintenance(t *testing.T) {
+func TestTUISeparatesSettingsAndMaintenance(t *testing.T) {
 	snapshot := tuiSnapshot{
 		Page: tuiPageTools,
 		Settings: tuiSettings{
@@ -945,17 +943,28 @@ func TestTUIToolsExposeSettingsAndMaintenance(t *testing.T) {
 	plain := stripTUIANSI(output.String())
 	for _, expected := range []string{
 		"Mode          rule",
-		"Mixed port    7891",
+		"FLC outbound  NOT SELECTED",
+		"Proxy port    7891",
 		"Unified delay",
 		"TCP concurrent",
 		"System proxy",
+	} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("Settings does not contain %q:\n%s", expected, plain)
+		}
+	}
+	output.Reset()
+	snapshot.Page = tuiPageMaintenance
+	drawTUIMaintenance(&output, snapshot, 100, 30)
+	plain = stripTUIANSI(output.String())
+	for _, expected := range []string{
 		"Edit current YAML",
 		"Update Mihomo Geo databases",
 		"Reset traffic counters",
 		"if stable, do not update lightly",
 	} {
 		if !strings.Contains(plain, expected) {
-			t.Fatalf("Tools does not contain %q:\n%s", expected, plain)
+			t.Fatalf("Maintenance does not contain %q:\n%s", expected, plain)
 		}
 	}
 }
@@ -1060,7 +1069,7 @@ func TestTUIEditKeyIsPageScoped(t *testing.T) {
 	if command := model.handleKey(tuiKeyEdit); command != nil {
 		t.Fatal("Dashboard edit key unexpectedly opened an editor")
 	}
-	if !strings.Contains(model.snapshot.Status, "Profiles and Tools") {
+	if !strings.Contains(model.snapshot.Status, "Profiles and Maintenance") {
 		t.Fatalf("Dashboard edit guidance = %q", model.snapshot.Status)
 	}
 
@@ -1881,7 +1890,7 @@ func TestTUIRunningCoreUsesLiveSettingsInsteadOfStagedYAML(t *testing.T) {
 	}
 }
 
-func TestTUIImportsSubscriptionBeforeCoreStart(t *testing.T) {
+func TestBackendImportsSubscriptionWithoutStartingCore(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.UserAgent() != tuiSubscriptionUserAgent {
 			http.Error(w, "forbidden", http.StatusForbidden)
@@ -1905,46 +1914,45 @@ rules:
 	defer server.Close()
 
 	directory := t.TempDir()
-	model := newTUIModel(
-		controllerClient{},
+	runtime := newTUIServiceRuntime(
 		cliPaths{
 			homeDir:    directory,
 			configPath: filepath.Join(directory, "config.yaml"),
 		},
+		defaultCLITestURL,
+		filepath.Join(directory, "core.sock"),
 		nil,
-		true,
+		nil,
 	)
-	model.snapshot.Page = tuiPageProfiles
-	model.inputMode = tuiInputSubscription
-	model.inputValue = []rune(server.URL)
-	command := model.submitInput()
-	if command == nil {
-		t.Fatal("subscription import did not return an operation")
+	data, err := fetchTUISubscription(server.URL)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, _ = model.Update(command())
-	if model.coreRunning {
+	path := filepath.Join(directory, "profile-imported.yaml")
+	revision := uint64(1)
+	sourceURL := server.URL
+	status := runtime.handle(tuiServiceRequest{
+		ProtocolVersion:  tuiServiceProtocolVersion,
+		RequestID:        "import-profile",
+		ExpectedRevision: &revision,
+		Action:           "put_profile",
+		ConfigPath:       path,
+		ProfileData:      data,
+		CreateOnly:       true,
+		SubscriptionURL:  &sourceURL,
+	})
+	if !status.OK {
+		t.Fatalf("import response = %+v", status)
+	}
+	if status.Running {
 		t.Fatal("subscription import started the core")
 	}
-	if model.snapshot.Status !=
-		"Subscription profile linked; U refreshes from the saved URL" {
-		t.Fatalf("subscription status = %q", model.snapshot.Status)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
 	}
-	found := false
-	for _, profile := range model.snapshot.Profiles {
-		if strings.HasPrefix(profile.Name, "profile-") {
-			if profile.SubscriptionURL != server.URL {
-				t.Fatalf(
-					"downloaded profile source = %q, want %q",
-					profile.SubscriptionURL,
-					server.URL,
-				)
-			}
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("downloaded profile missing: %+v", model.snapshot.Profiles)
+	linkedURL, err := loadTUISubscriptionSource(directory, path)
+	if err != nil || linkedURL != server.URL {
+		t.Fatalf("subscription source = %q, %v", linkedURL, err)
 	}
 }
 
@@ -2003,26 +2011,40 @@ rules:
 		t.Fatal(err)
 	}
 
-	model := newTUIModel(
-		controllerClient{},
+	runtime := newTUIServiceRuntime(
 		cliPaths{homeDir: directory, configPath: activePath},
+		defaultCLITestURL,
+		filepath.Join(directory, "core.sock"),
 		nil,
-		true,
+		nil,
 	)
-	model.snapshot.Page = tuiPageProfiles
-	model.snapshot.FocusSidebar = false
-	model.snapshot.Profiles = []tuiProfile{{
-		Name:            "work.yaml",
-		Path:            profilePath,
-		SubscriptionURL: server.URL,
-	}}
-	model.snapshot.SelectedRow = 0
-
-	command := model.handleKey(tuiKeyUpdateProfile)
-	if command == nil {
-		t.Fatal("subscription update did not return an operation")
+	updated, err := fetchTUISubscription(server.URL)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, _ = model.Update(command())
+	settings := loadTUIConfiguredSettings(profilePath, true)
+	if settings == nil {
+		t.Fatal("could not read original local settings")
+	}
+	updated, err = applyTUISettingsToConfig(updated, *settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := uint64(1)
+	sourceURL := server.URL
+	status := runtime.handle(tuiServiceRequest{
+		ProtocolVersion:  tuiServiceProtocolVersion,
+		RequestID:        "update-profile",
+		ExpectedRevision: &revision,
+		Action:           "put_profile",
+		ConfigPath:       profilePath,
+		ProfileData:      updated,
+		ExpectedSHA256:   tuiBytesSHA256([]byte(original)),
+		SubscriptionURL:  &sourceURL,
+	})
+	if !status.OK {
+		t.Fatalf("update response = %+v", status)
+	}
 
 	data, err := os.ReadFile(profilePath)
 	if err != nil {
@@ -2051,8 +2073,8 @@ rules:
 	if info.Mode().Perm() != 0o640 {
 		t.Fatalf("updated profile mode = %o, want 640", info.Mode().Perm())
 	}
-	if model.snapshot.Status != "Subscription refreshed: work.yaml" {
-		t.Fatalf("subscription update status = %q", model.snapshot.Status)
+	if status.ResultPath != profilePath || status.Revision != 2 {
+		t.Fatalf("subscription update status = %+v", status)
 	}
 }
 
@@ -2165,37 +2187,18 @@ rules:
 	}}
 	model.snapshot.SelectedRow = 0
 	command := model.handleKey(tuiKeyUpdateProfile)
-	if command == nil {
-		t.Fatal("active subscription update did not return an operation")
+	if command != nil {
+		t.Fatal("TUI without a backend scheduled a shared-profile mutation")
 	}
-	_, _ = model.Update(command())
-
-	if model.snapshot.Status !=
-		"Subscription refreshed and hot-reloaded: config.yaml" {
-		t.Fatalf("active update status = %q", model.snapshot.Status)
-	}
-	if model.coreRunning || canConnectTUITestPort(mixedPort) {
-		t.Fatal("active subscription update unexpectedly started proxy listeners")
+	if !strings.Contains(model.snapshot.Status, "managed backend") {
+		t.Fatalf("unmanaged update status = %q", model.snapshot.Status)
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	output := string(data)
-	if !strings.Contains(output, "name: UPDATED-DIRECT") ||
-		!strings.Contains(output, fmt.Sprintf("mixed-port: %d", mixedPort)) ||
-		!strings.Contains(output, "mode: rule") {
-		t.Fatalf("active updated profile did not preserve settings:\n%s", output)
-	}
-	if err := waitForController(client, 2*time.Second); err != nil {
-		t.Fatalf("controller did not recover after active profile reload: %v", err)
-	}
-	proxyData, err := client.request(http.MethodGet, "/proxies", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(proxyData, []byte("UPDATED-DIRECT")) {
-		t.Fatalf("active core did not reload updated proxies: %s", proxyData)
+	if !bytes.Equal(data, original) {
+		t.Fatal("unmanaged TUI modified the active profile")
 	}
 }
 
@@ -2264,6 +2267,7 @@ rules:
 			paths,
 			"https://www.gstatic.com/generate_204",
 			nil,
+			false,
 		)
 	}()
 	service := newTUIServiceClient(directory)
@@ -2371,10 +2375,12 @@ rules:
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(configPath)
+	temporary, err := os.CreateTemp("", "flclash-editor-test-*.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
+	temporaryPath := temporary.Name()
+	t.Cleanup(func() { _ = os.Remove(temporaryPath) })
 	edited := fmt.Appendf(nil, `mixed-port: %d
 mode: rule
 log-level: silent
@@ -2389,11 +2395,15 @@ proxy-groups:
 rules:
   - MATCH,PROXY
 `, mixedPort)
-	if err := os.WriteFile(configPath, edited, info.Mode()); err != nil {
+	if _, err := temporary.Write(edited); err != nil {
+		t.Fatal(err)
+	}
+	if err := temporary.Close(); err != nil {
 		t.Fatal(err)
 	}
 	model.editorPath = configPath
-	model.editorBackup = tuiProfileBackup{data: beforeEdit, mode: info.Mode()}
+	model.editorTempPath = temporaryPath
+	model.editorBackup = tuiProfileBackup{data: beforeEdit, mode: 0o600}
 	_, editorCommand := model.Update(tuiEditorResultMsg{})
 	if editorCommand == nil {
 		t.Fatal("active config edit did not schedule a hot-reload")
@@ -2412,22 +2422,12 @@ rules:
 	if !waitForTUITestPort(mixedPort, true, time.Second) {
 		t.Fatal("configuration edit interrupted the mixed listener")
 	}
-	model.stopServiceOnExit = true
 	model.shutdown()
-	if !waitForTUITestPort(mixedPort, false, 2*time.Second) {
-		t.Fatal("Ctrl+C-style shutdown did not stop the mixed listener")
+	if !waitForTUITestPort(mixedPort, true, time.Second) {
+		t.Fatal("Ctrl+C-style detach stopped the mixed listener")
 	}
-	serviceStopped := false
-	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := service.status(); err != nil {
-			serviceStopped = true
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !serviceStopped {
-		t.Fatal("Ctrl+C-style shutdown left the background service running")
+	if status, err := service.status(); err != nil || !status.Running {
+		t.Fatalf("Ctrl+C-style detach stopped the backend: %+v, %v", status, err)
 	}
 }
 
@@ -2486,7 +2486,7 @@ func TestTUIProfileRenameMovesSavedSubscriptionSource(t *testing.T) {
 	}
 }
 
-func TestTUIInvalidProfileEditRestoresOriginalFile(t *testing.T) {
+func TestTUIInvalidProfileEditNeverTouchesOriginalFile(t *testing.T) {
 	directory := t.TempDir()
 	configPath := filepath.Join(directory, "config.yaml")
 	original := []byte(defaultTUIConfig)
@@ -2501,9 +2501,18 @@ func TestTUIInvalidProfileEditRestoresOriginalFile(t *testing.T) {
 	)
 	model.editorPath = configPath
 	model.editorBackup = tuiProfileBackup{data: original, mode: 0o640}
-	if err := os.WriteFile(configPath, []byte("not a mihomo profile"), 0o640); err != nil {
+	temporary, err := os.CreateTemp("", "flclash-invalid-editor-test-*.yaml")
+	if err != nil {
 		t.Fatal(err)
 	}
+	temporaryPath := temporary.Name()
+	if _, err := temporary.Write([]byte("not a mihomo profile")); err != nil {
+		t.Fatal(err)
+	}
+	if err := temporary.Close(); err != nil {
+		t.Fatal(err)
+	}
+	model.editorTempPath = temporaryPath
 	_, command := model.Update(tuiEditorResultMsg{})
 	if command != nil {
 		t.Fatal("invalid edit unexpectedly scheduled a hot-reload")
@@ -2515,7 +2524,7 @@ func TestTUIInvalidProfileEditRestoresOriginalFile(t *testing.T) {
 	if !bytes.Equal(restored, original) {
 		t.Fatalf("invalid edit was not rolled back:\n%s", restored)
 	}
-	if !strings.Contains(model.snapshot.Status, "original restored") {
+	if !strings.Contains(model.snapshot.Status, "invalid") {
 		t.Fatalf("invalid edit status = %q", model.snapshot.Status)
 	}
 }
@@ -2642,6 +2651,97 @@ func TestTUIStateRestoresActiveProfileAndProxySelections(t *testing.T) {
 	}
 }
 
+func TestTUIStateConcurrentUpdatesKeepEveryMutation(t *testing.T) {
+	directory := t.TempDir()
+	const updates = 32
+	var wait sync.WaitGroup
+	wait.Add(updates)
+	errors := make(chan error, updates)
+	for index := 0; index < updates; index++ {
+		index := index
+		go func() {
+			defer wait.Done()
+			errors <- rememberTUIProxySelection(
+				directory,
+				fmt.Sprintf("group-%02d", index),
+				fmt.Sprintf("proxy-%02d", index),
+			)
+		}()
+	}
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	selected := loadTUISelectedProxies(directory)
+	if len(selected) != updates {
+		t.Fatalf("saved %d concurrent updates, want %d", len(selected), updates)
+	}
+	if _, err := os.Stat(filepath.Join(directory, tuiStateLockName)); err != nil {
+		t.Fatalf("stable state lock file is missing: %v", err)
+	}
+}
+
+func TestTUIProfileRollbackDoesNotOverwriteConcurrentChange(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.yaml")
+	original := []byte("mode: rule\n")
+	edited := []byte("mode: global\n")
+	concurrent := []byte("mode: direct\n")
+	if err := os.WriteFile(path, concurrent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backup := tuiProfileBackup{
+		data:          original,
+		mode:          0o600,
+		updatedSHA256: tuiBytesSHA256(edited),
+	}
+	if err := restoreTUIProfileIfUnchanged(directory, path, backup); err == nil {
+		t.Fatal("concurrent profile change was overwritten")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, concurrent) {
+		t.Fatalf("concurrent profile became %q", data)
+	}
+}
+
+func TestTUIProfileLockSerializesFrontends(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "config.yaml")
+	first, err := acquireTUIProfileLocks(directory, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		second, lockErr := acquireTUIProfileLocks(directory, path)
+		if lockErr == nil {
+			second.release()
+		}
+		result <- lockErr
+	}()
+	select {
+	case err := <-result:
+		first.release()
+		t.Fatalf("second frontend bypassed profile lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	first.release()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second frontend did not acquire released profile lock")
+	}
+}
+
 func TestTUIStateRejectsInvalidSavedProfileAndRecovers(t *testing.T) {
 	directory := t.TempDir()
 	defaultPath := filepath.Join(directory, "config.yaml")
@@ -2673,7 +2773,7 @@ func TestTUIStateRejectsInvalidSavedProfileAndRecovers(t *testing.T) {
 	}
 }
 
-func TestTUIStoppedSettingsAreSavedImmediately(t *testing.T) {
+func TestTUIStoppedSettingsStayStagedWithoutBackend(t *testing.T) {
 	directory := t.TempDir()
 	configPath := filepath.Join(directory, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(defaultTUIConfig), 0o600); err != nil {
@@ -2691,15 +2791,15 @@ func TestTUIStoppedSettingsAreSavedImmediately(t *testing.T) {
 	if command := model.handleKey(tuiKeyMode); command != nil {
 		t.Fatal("stopped setting unexpectedly started an asynchronous operation")
 	}
-	if model.settingsDirty {
-		t.Fatal("successfully saved stopped setting remained dirty")
+	if !model.settingsDirty {
+		t.Fatal("uncommitted stopped setting was marked clean")
 	}
-	if !strings.Contains(model.snapshot.Status, "saved for next launch") {
-		t.Fatalf("save confirmation missing: %q", model.snapshot.Status)
+	if !strings.Contains(model.snapshot.Status, "not saved without Backend") {
+		t.Fatalf("Backend boundary missing: %q", model.snapshot.Status)
 	}
 	reloaded := loadTUIConfiguredSettings(configPath, true)
-	if reloaded == nil || reloaded.Mode != "global" {
-		t.Fatalf("saved mode was not restored: %+v", reloaded)
+	if reloaded == nil || reloaded.Mode != "rule" {
+		t.Fatalf("frontend changed shared YAML without Backend: %+v", reloaded)
 	}
 }
 
@@ -2798,21 +2898,16 @@ rules:
 	_ = model.handleKey(tuiKeyAllowLAN)
 	_ = model.handleKey(tuiKeyIPv6)
 	_ = model.handleKey(tuiKeyMode)
-	model.systemProxyToggle = func(snapshot *tuiSnapshot) bool {
-		snapshot.Settings.SystemProxy = true
-		snapshot.Status = "System proxy enabled"
-		return true
-	}
-	startCommand := model.handleKey(tuiKeySystemProxy)
+	startCommand := model.handleKey(tuiKeyCoreToggle)
 	if startCommand == nil {
-		t.Fatal("system proxy did not return an automatic start operation")
+		t.Fatal("Core start did not return an operation")
 	}
 	_, _ = model.Update(startCommand())
 	if !model.coreRunning {
-		t.Fatalf("system proxy did not start the core: %s", model.snapshot.Status)
+		t.Fatalf("Core did not start: %s", model.snapshot.Status)
 	}
-	if !model.snapshot.Settings.SystemProxy || !model.systemProxyManaged {
-		t.Fatalf("system proxy was not enabled after automatic start: %+v", model.snapshot.Settings)
+	if model.snapshot.Settings.SystemProxy || model.systemProxyManaged {
+		t.Fatalf("Core start changed system proxy: %+v", model.snapshot.Settings)
 	}
 	if model.pendingMixedPort != nil {
 		t.Fatalf("pending mixed port was not applied: %d", *model.pendingMixedPort)
@@ -2848,20 +2943,11 @@ rules:
 		t.Fatalf("service did not stop before rollback test: %s", model.snapshot.Status)
 	}
 
-	model.systemProxyToggle = func(snapshot *tuiSnapshot) bool {
-		snapshot.Status = "System proxy update failed: simulated"
-		return false
+	if command := model.handleKey(tuiKeySystemProxy); command != nil {
+		t.Fatal("unmanaged TUI scheduled a system proxy mutation")
 	}
-	failedCommand := model.handleKey(tuiKeySystemProxy)
-	if failedCommand == nil {
-		t.Fatal("failed system proxy action did not start an operation")
-	}
-	_, _ = model.Update(failedCommand())
-	if model.coreRunning || canConnectTUITestPort(mixedPort) {
-		t.Fatalf("failed system proxy action left Service running: %s", model.snapshot.Status)
-	}
-	if !strings.Contains(model.snapshot.Status, "rolled back") {
-		t.Fatalf("rollback status = %q", model.snapshot.Status)
+	if !strings.Contains(model.snapshot.Status, "managed backend") {
+		t.Fatalf("system proxy boundary status = %q", model.snapshot.Status)
 	}
 }
 

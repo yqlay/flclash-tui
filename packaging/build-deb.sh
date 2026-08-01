@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.3.15}"
+VERSION="${VERSION:-0.4.1}"
 ARCH="${ARCH:-amd64}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist}"
 PACKAGE_NAME="flclash-tui_${VERSION}_${ARCH}"
@@ -44,7 +44,9 @@ chmod 0755 "${WORK_DIR}" "${WORK_DIR}/DEBIAN" "${WORK_DIR}/usr" \
 )
 
 chmod 0755 "${WORK_DIR}/usr/bin/flclash"
+ln -s flclash "${WORK_DIR}/usr/bin/flc"
 install -m 0644 "${ROOT_DIR}/README.md" "${WORK_DIR}/usr/share/doc/flclash-tui/README.md"
+install -m 0644 "${ROOT_DIR}/README_zh_CN.md" "${WORK_DIR}/usr/share/doc/flclash-tui/README_zh_CN.md"
 install -m 0644 "${ROOT_DIR}/CLI_LINUX.md" "${WORK_DIR}/usr/share/doc/flclash-tui/CLI_LINUX.md"
 install -m 0644 "${ROOT_DIR}/LICENSE" "${WORK_DIR}/usr/share/doc/flclash-tui/LICENSE"
 install -m 0644 "${ROOT_DIR}/NOTICE" "${WORK_DIR}/usr/share/doc/flclash-tui/NOTICE"
@@ -76,6 +78,7 @@ TARBALL_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/flclash-tui-tar.XXXXXX")"
 trap 'rm -rf "${TARBALL_STAGE}"; cleanup' EXIT
 mkdir -p "${TARBALL_STAGE}/${PACKAGE_NAME}"
 cp -a "${WORK_DIR}/usr/bin/flclash" "${TARBALL_STAGE}/${PACKAGE_NAME}/"
+cp -a "${WORK_DIR}/usr/bin/flc" "${TARBALL_STAGE}/${PACKAGE_NAME}/"
 cp -a "${WORK_DIR}/usr/share/doc/flclash-tui/." "${TARBALL_STAGE}/${PACKAGE_NAME}/"
 cp -a "${WORK_DIR}/usr/share/flclash-tui/data" "${TARBALL_STAGE}/${PACKAGE_NAME}/"
 tar -C "${TARBALL_STAGE}" -czf "${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}"
