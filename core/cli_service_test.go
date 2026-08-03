@@ -422,6 +422,26 @@ func TestValidateCurrentTUIServiceRequiresVersionedProtocol(t *testing.T) {
 	}
 }
 
+func TestTUIServiceReloadTimeoutCoversModeChanges(t *testing.T) {
+	for _, action := range []string{
+		"reload",
+		"apply_settings",
+		"set_mode",
+		"set_flc_outbound",
+		"put_profile",
+		"restore_profile",
+	} {
+		if !tuiServiceActionUsesReloadTimeout(action) {
+			t.Fatalf("%s does not use the Core reload timeout", action)
+		}
+	}
+	for _, action := range []string{"status", "watch", "select_proxy"} {
+		if tuiServiceActionUsesReloadTimeout(action) {
+			t.Fatalf("%s unexpectedly uses the Core reload timeout", action)
+		}
+	}
+}
+
 func TestValidateTUIServiceUpgradeCandidateRejectsDowngrade(t *testing.T) {
 	for _, status := range []tuiServiceStatus{
 		{

@@ -231,6 +231,10 @@ type tuiSnapshot struct {
 	InputTitle          string
 	InputValue          string
 	InputHint           string
+	SelectionTitle      string
+	SelectionOptions    []string
+	SelectedOption      int
+	SelectionHint       string
 	StartupNotice       string
 }
 
@@ -1703,14 +1707,6 @@ func updateTUISettings(snapshot *tuiSnapshot, client controllerClient, key tuiKe
 		patch["tcp-concurrent"] = !snapshot.Settings.TCPConcurrent
 	case tuiKeyTun:
 		patch["tun"] = map[string]bool{"enable": !snapshot.Settings.TunEnabled}
-	case tuiKeyMode:
-		mode := "rule"
-		if strings.EqualFold(snapshot.Settings.Mode, "rule") {
-			mode = "global"
-		} else if strings.EqualFold(snapshot.Settings.Mode, "global") {
-			mode = "direct"
-		}
-		patch["mode"] = mode
 	case tuiKeyLogLevel:
 		levels := []string{"silent", "error", "warning", "info", "debug"}
 		current := findTUIString(levels, strings.ToLower(snapshot.Settings.LogLevel))
@@ -2450,6 +2446,13 @@ func renderTUICompact(
 			contentWidth,
 			bodyHeight,
 		)
+	case snapshot.SelectionTitle != "" || snapshot.InputTitle != "":
+		page = tuiRenderPage(
+			snapshot,
+			paths,
+			contentWidth,
+			bodyHeight,
+		)
 	case snapshot.FocusSidebar:
 		page = renderTUICompactNavigation(
 			snapshot,
@@ -2732,6 +2735,8 @@ func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) stri
 			width,
 			height,
 		)
+	} else if snapshot.SelectionTitle != "" {
+		drawTUISelection(&b, snapshot, width)
 	} else if snapshot.InputTitle != "" {
 		drawTUIInput(&b, snapshot, width)
 	} else if snapshot.ShowHelp {
@@ -2772,6 +2777,21 @@ func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) stri
 		drawTUIProxies(&b, snapshot, width, height)
 	}
 	return b.String()
+}
+
+func drawTUISelection(b *strings.Builder, snapshot tuiSnapshot, width int) {
+	tuiTitle(b, snapshot.SelectionTitle, "Enter confirm · Esc cancel", width)
+	for index, option := range snapshot.SelectionOptions {
+		label := option
+		if strings.EqualFold(option, snapshot.Settings.Mode) {
+			label += "  (current)"
+		}
+		tuiRow(b, label, width, index == snapshot.SelectedOption, "")
+	}
+	tuiEndPanel(b, width)
+	if snapshot.SelectionHint != "" {
+		tuiEmptyPanel(b, "Selection help", snapshot.SelectionHint, width)
+	}
 }
 
 func drawTUIInput(b *strings.Builder, snapshot tuiSnapshot, width int) {

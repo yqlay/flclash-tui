@@ -155,12 +155,14 @@ Enter           open/apply selected row        Esc           back
 r / R           refresh / reload config         ?             help
 [/]             Groups/Providers                PgUp/PgDn     Dashboard scroll
 d / v           page-scoped delay / speed       n             network/import
-S / c / t / m   System proxy/Core/TUN/mode      p, +, -       Proxy port
+S / c / t / m   System proxy/Core/TUN/mode list p, +, -       Proxy port
 U, F2/u, e      update/rename/edit Profile      x             clear/close all
 q               detach this TUI                 Ctrl+C        shutdown Backend + Core
 ```
 
 The layout remains operable down to `40x10`. Long-running tests run outside the input loop; group speed tests are serial and each node downloads at most 100 MB for at most five seconds.
+
+Selecting Mode, or pressing `m` on Dashboard/Settings, opens the `rule`, `silent`, `global`, and `direct` list before making any change. Use ↑/↓ or `w`/`s` and press Enter to confirm.
 
 ## Data and advanced external mode
 

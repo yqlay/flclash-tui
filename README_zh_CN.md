@@ -49,20 +49,20 @@ Backend 与托管 Core 默认使用私有 Unix socket，不需要开放 TCP Cont
 
 ### Debian / Ubuntu 安装包
 
-在 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) 中选择与 `dpkg --print-architecture` 一致的包。0.4.2 的包名为：
+在 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) 中选择与 `dpkg --print-architecture` 一致的包。0.4.3 的包名为：
 
 ```text
-flclash-tui_0.4.2_amd64.deb
-flclash-tui_0.4.2_arm64.deb
+flclash-tui_0.4.3_amd64.deb
+flclash-tui_0.4.3_arm64.deb
 ```
 
 AMD64 示例：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.2/flclash-tui_0.4.2_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.2/flclash-tui_0.4.2_amd64.deb.sha256
-sha256sum -c flclash-tui_0.4.2_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.4.2_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.3/flclash-tui_0.4.3_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.3/flclash-tui_0.4.3_amd64.deb.sha256
+sha256sum -c flclash-tui_0.4.3_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.4.3_amd64.deb
 ```
 
 安装包提供 `/usr/bin/flclash`、`/usr/bin/flc`、文档以及内置 GeoIP/GeoSite/ASN 数据。Core 初始化前可以从本地安装资源恢复缺失或不可用的 Geo 文件，首次启动不依赖从 GitHub 下载这些基础文件。
@@ -273,6 +273,7 @@ flclash completion fish > ~/.config/fish/completions/flclash.fish
 | `8` | **Maintenance** | 编辑当前 YAML、备份/恢复、更新 Geo、重置流量统计和检查版本 |
 
 每一行先显示当前状态，再显示可执行动作。例如 `Core STOPPED · Enter to start` 表示 Core 现在处于停止状态，并不是按 Enter 后会变成 STOPPED。
+在 Dashboard 或 Settings 选中 **Mode** 后，会先打开包含 `rule`、`silent`、`global`、`direct` 的列表；使用 ↑/↓ 或 `w`/`s` 移动，再按 Enter 应用高亮模式。
 
 ### 导航与快捷键
 
@@ -289,7 +290,7 @@ Profiles:     Enter 激活/导入 · n 导入 · U 更新已绑定订阅 · F2/u
 History:      x 清空共享 History
 Connections: d 关闭选中连接 · x 关闭全部
 Logs:        e 导出 · x 清空显示
-Settings:    S 系统代理 · c Core · t TUN · m mode · p 设置端口 · +/- 调整
+Settings:    S 系统代理 · c Core · t TUN · m 模式列表 · p 设置端口 · +/- 调整
 Maintenance: b 备份 · B 恢复 · g 更新 Geo · z 重置流量
 
 q             只分离当前 TUI；Backend/Core 和其他前端继续运行

@@ -275,6 +275,125 @@ func TestTUIServiceRuntimeSelectProxyValidatesAndRollsBack(t *testing.T) {
 	}
 }
 
+func TestTUIServiceRuntimePatchesNativeModeWithoutReload(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(defaultTUIConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	coreSocket := filepath.Join(directory, "core.sock")
+	listener, err := net.Listen("unix", coreSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var patchCount atomic.Int32
+	var patchedMode string
+	var patchedModeMu sync.Mutex
+	server := &http.Server{Handler: http.HandlerFunc(func(
+		w http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.Method != http.MethodPatch || request.URL.Path != "/configs" {
+			http.NotFound(w, request)
+			return
+		}
+		var body struct {
+			Mode string `json:"mode"`
+		}
+		if decodeErr := json.NewDecoder(request.Body).Decode(&body); decodeErr != nil {
+			http.Error(w, decodeErr.Error(), http.StatusBadRequest)
+			return
+		}
+		patchedModeMu.Lock()
+		patchedMode = body.Mode
+		patchedModeMu.Unlock()
+		patchCount.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	runtime := newTUIServiceRuntime(
+		cliPaths{homeDir: directory, configPath: configPath},
+		defaultCLITestURL,
+		coreSocket,
+		nil,
+		nil,
+	)
+	runtime.configureRuntimePolicy(
+		"rule",
+		7890,
+		configPath,
+		tuiFLCListenerState{},
+	)
+	changed, err := runtime.applyTrafficMode("global")
+	if err != nil || !changed {
+		t.Fatalf("native mode change = %t, %v", changed, err)
+	}
+	patchedModeMu.Lock()
+	mode := patchedMode
+	patchedModeMu.Unlock()
+	if patchCount.Load() != 1 || mode != "global" {
+		t.Fatalf("Core mode patches = %d, last mode %q", patchCount.Load(), mode)
+	}
+	settings := loadTUIConfiguredSettings(configPath, true)
+	if settings == nil || settings.Mode != "global" {
+		t.Fatalf("persisted settings = %+v", settings)
+	}
+	status := runtime.snapshot("")
+	if status.Mode != "global" {
+		t.Fatalf("runtime mode = %q, want global", status.Mode)
+	}
+	if saved := loadTUITrafficMode(directory, configPath); saved != "global" {
+		t.Fatalf("saved mode = %q, want global", saved)
+	}
+}
+
+func TestTUIServiceRuntimeRestoresProfileWhenNativeModePatchFails(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(defaultTUIConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	coreSocket := filepath.Join(directory, "core.sock")
+	listener, err := net.Listen("unix", coreSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(
+		w http.ResponseWriter,
+		_ *http.Request,
+	) {
+		http.Error(w, "patch rejected", http.StatusInternalServerError)
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	runtime := newTUIServiceRuntime(
+		cliPaths{homeDir: directory, configPath: configPath},
+		defaultCLITestURL,
+		coreSocket,
+		nil,
+		nil,
+	)
+	runtime.configureRuntimePolicy(
+		"rule",
+		7890,
+		configPath,
+		tuiFLCListenerState{},
+	)
+	if changed, err := runtime.applyTrafficMode("global"); err == nil || changed {
+		t.Fatalf("failed native mode patch = %t, %v", changed, err)
+	}
+	settings := loadTUIConfiguredSettings(configPath, true)
+	if settings == nil || settings.Mode != "rule" {
+		t.Fatalf("failed patch did not restore profile: %+v", settings)
+	}
+	if status := runtime.snapshot(""); status.Mode != "rule" {
+		t.Fatalf("failed patch changed runtime mode to %q", status.Mode)
+	}
+}
+
 func TestTUIServiceRuntimeBacksUpNestedProfileThroughBackend(t *testing.T) {
 	runtime := newTestTUIServiceRuntime(t)
 	nested := filepath.Join(runtime.paths.homeDir, "profiles")

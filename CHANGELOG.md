@@ -1,3 +1,12 @@
+## FlClash TUI v0.4.3
+
+- Open a four-item `rule` / `silent` / `global` / `direct` selector before the
+  Dashboard or Settings changes outbound mode.
+- Switch between Mihomo-native modes through its live configuration API instead
+  of a full Core reload, while keeping profile persistence and rollback.
+- Give mode and FLC-outbound operations the Core-reload timeout when a silent
+  mode transition still requires a reload.
+
 ## FlClash TUI v0.4.2
 
 - Fixed automatic Backend migration across service protocol versions.

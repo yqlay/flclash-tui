@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -758,6 +759,166 @@ func TestTUIInputViewportKeepsCursorVisible(t *testing.T) {
 	}
 	if !strings.HasPrefix(output, "…") {
 		t.Fatalf("long input viewport has no leading ellipsis: %q", output)
+	}
+}
+
+func TestTUIModeSelectionShowsAllModesBeforeChanging(t *testing.T) {
+	if got := strings.Join(tuiTrafficModes, ","); got != "rule,silent,global,direct" {
+		t.Fatalf("mode list order = %q", got)
+	}
+	model := newTUIModel(
+		controllerClient{},
+		cliPaths{configPath: filepath.Join(t.TempDir(), "missing.yaml")},
+		nil,
+		true,
+	)
+	model.width = 100
+	model.height = 24
+	model.snapshot.Page = tuiPageDashboard
+	model.snapshot.FocusSidebar = false
+	model.snapshot.SelectedDashboard = tuiDashboardModeRow
+	model.snapshot.Settings = tuiSettings{Mode: "rule", MixedPort: 7891}
+
+	if command := model.selectCurrent(); command != nil {
+		t.Fatal("opening the mode list unexpectedly started an operation")
+	}
+	if !model.modeSelectionOpen || model.busy {
+		t.Fatalf(
+			"mode selection state = open:%t busy:%t",
+			model.modeSelectionOpen,
+			model.busy,
+		)
+	}
+	if model.snapshot.Settings.Mode != "rule" {
+		t.Fatalf("opening the list changed mode to %q", model.snapshot.Settings.Mode)
+	}
+	plain := stripTUIANSI(model.View())
+	for _, expected := range []string{
+		"Select outbound mode",
+		"rule  (current)",
+		"silent",
+		"global",
+		"direct",
+		"Enter confirm",
+		"Esc cancel",
+	} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("mode list does not contain %q:\n%s", expected, plain)
+		}
+	}
+
+	_, command := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if command != nil || model.selectedMode != 1 {
+		t.Fatalf(
+			"mode list down = selection:%d command:%v",
+			model.selectedMode,
+			command,
+		)
+	}
+	if model.snapshot.Settings.Mode != "rule" {
+		t.Fatalf("moving in the list changed mode to %q", model.snapshot.Settings.Mode)
+	}
+}
+
+func TestTUIModeSelectionStagesExactChoice(t *testing.T) {
+	model := newTUIModel(
+		controllerClient{},
+		cliPaths{configPath: filepath.Join(t.TempDir(), "missing.yaml")},
+		nil,
+		true,
+	)
+	model.snapshot.Page = tuiPageTools
+	model.snapshot.FocusSidebar = false
+	model.snapshot.Settings = tuiSettings{Mode: "rule", MixedPort: 7891}
+
+	model.beginModeSelection()
+	model.selectedMode = findTUIString(tuiTrafficModes, "global")
+	_, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command != nil {
+		t.Fatal("staging the selected mode unexpectedly started an operation")
+	}
+	if model.modeSelectionOpen {
+		t.Fatal("mode list remained open after confirmation")
+	}
+	if model.snapshot.Settings.Mode != "global" || model.stagedSettings == nil ||
+		model.stagedSettings.Mode != "global" {
+		t.Fatalf(
+			"selected mode was not staged exactly: snapshot=%+v staged=%+v",
+			model.snapshot.Settings,
+			model.stagedSettings,
+		)
+	}
+}
+
+func TestTUIModeSelectionSubmitsExactChoiceAsynchronously(t *testing.T) {
+	directory := t.TempDir()
+	socketPath := filepath.Join(directory, tuiServiceSocketFilename)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requests := make(chan tuiServiceRequest, 1)
+	serverDone := make(chan error, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			serverDone <- acceptErr
+			return
+		}
+		defer connection.Close()
+		var request tuiServiceRequest
+		if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr != nil {
+			serverDone <- decodeErr
+			return
+		}
+		requests <- request
+		serverDone <- json.NewEncoder(connection).Encode(tuiServiceStatus{
+			ProtocolVersion: tuiServiceProtocolVersion,
+			RequestID:       request.RequestID,
+			Revision:        8,
+			OK:              true,
+			Running:         true,
+			Mode:            request.Mode,
+			ProxyPort:       7891,
+		})
+	}()
+
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.service = newTUIServiceClientAt(directory)
+	model.backendRevision = 7
+	model.coreRunning = true
+	model.snapshot.Page = tuiPageDashboard
+	model.snapshot.FocusSidebar = false
+	model.snapshot.Settings = tuiSettings{Mode: "rule", MixedPort: 7891}
+	model.beginModeSelection()
+	model.selectedMode = findTUIString(tuiTrafficModes, "direct")
+	_, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command == nil || !model.busy {
+		t.Fatalf("confirmed mode change = command:%v busy:%t", command, model.busy)
+	}
+	if model.snapshot.Settings.Mode != "rule" ||
+		!strings.Contains(model.snapshot.Status, "Changing mode to direct") {
+		t.Fatalf("mode changed before Backend result: %+v", model.snapshot)
+	}
+
+	_, _ = model.Update(command())
+	if model.busy || model.snapshot.Settings.Mode != "direct" ||
+		model.backendRevision != 8 {
+		t.Fatalf(
+			"confirmed mode result = busy:%t mode:%q revision:%d",
+			model.busy,
+			model.snapshot.Settings.Mode,
+			model.backendRevision,
+		)
+	}
+	request := <-requests
+	if request.Action != "set_mode" || request.Mode != "direct" ||
+		request.ExpectedRevision == nil || *request.ExpectedRevision != 7 {
+		t.Fatalf("mode request = %+v", request)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1811,12 +1972,14 @@ func TestTUIStagesPreStartSettings(t *testing.T) {
 		tuiKeyTun,
 		tuiKeyAllowLAN,
 		tuiKeyIPv6,
-		tuiKeyMode,
 		tuiKeyLogLevel,
 	} {
 		if command := model.handleKey(key); command != nil {
 			t.Fatalf("staging key %v unexpectedly returned an operation", key)
 		}
+	}
+	if command := model.changeMode("global"); command != nil {
+		t.Fatal("staging a selected mode unexpectedly returned an operation")
 	}
 	if model.coreRunning {
 		t.Fatal("staging settings started the core")
@@ -2789,7 +2952,11 @@ func TestTUIStoppedSettingsStayStagedWithoutBackend(t *testing.T) {
 	model.snapshot.FocusSidebar = false
 
 	if command := model.handleKey(tuiKeyMode); command != nil {
-		t.Fatal("stopped setting unexpectedly started an asynchronous operation")
+		t.Fatal("opening the mode list unexpectedly started an asynchronous operation")
+	}
+	model.selectedMode = findTUIString(tuiTrafficModes, "global")
+	if command := model.handleModeSelection(tea.KeyMsg{Type: tea.KeyEnter}); command != nil {
+		t.Fatal("stopped mode selection unexpectedly started an asynchronous operation")
 	}
 	if !model.settingsDirty {
 		t.Fatal("uncommitted stopped setting was marked clean")
@@ -2897,7 +3064,7 @@ rules:
 	_ = model.handleKey(tuiKeyTun)
 	_ = model.handleKey(tuiKeyAllowLAN)
 	_ = model.handleKey(tuiKeyIPv6)
-	_ = model.handleKey(tuiKeyMode)
+	_ = model.changeMode("global")
 	startCommand := model.handleKey(tuiKeyCoreToggle)
 	if startCommand == nil {
 		t.Fatal("Core start did not return an operation")
