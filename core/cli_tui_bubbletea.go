@@ -108,6 +108,13 @@ const (
 	tuiInputProfileName
 )
 
+var tuiTrafficModes = []string{
+	"rule",
+	tuiSilentMode,
+	"global",
+	"direct",
+}
+
 type tuiModel struct {
 	snapshot            tuiSnapshot
 	client              controllerClient
@@ -126,6 +133,8 @@ type tuiModel struct {
 	inputValue          []rune
 	inputCursor         int
 	inputSelectAll      bool
+	modeSelectionOpen   bool
+	selectedMode        int
 	renameProfilePath   string
 	editorPath          string
 	editorTempPath      string
@@ -535,6 +544,9 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.inputMode != tuiInputNone {
 			return m, m.handleInput(message)
 		}
+		if m.modeSelectionOpen {
+			return m, m.handleModeSelection(message)
+		}
 		if message.Type == tea.KeyRunes && len(message.Runes) > 1 && !message.Paste {
 			commands := make([]tea.Cmd, 0, len(message.Runes))
 			for _, value := range message.Runes {
@@ -610,7 +622,16 @@ func tuiKeyAllowedWhileBusy(key tuiKey) bool {
 
 func (m *tuiModel) View() string {
 	snapshot := m.snapshot
-	if m.inputMode != tuiInputNone {
+	if m.modeSelectionOpen {
+		snapshot.SelectionTitle = "Select outbound mode"
+		snapshot.SelectionOptions = append(
+			[]string(nil),
+			tuiTrafficModes...,
+		)
+		snapshot.SelectedOption = m.selectedMode
+		snapshot.SelectionHint = "rule uses routing rules · silent proxies only flc commands · global proxies all traffic · direct bypasses proxies"
+		snapshot.Status = "Selecting mode · ↑↓/ws choose · Enter confirm · Esc cancel"
+	} else if m.inputMode != tuiInputNone {
 		cursor := m.inputCursor
 		if cursor < 0 {
 			cursor = 0
@@ -1261,11 +1282,14 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				applyTUIOperationSetting(state, m.service, m.client, key)
 			})
 		}
+	case tuiKeyMode:
+		if m.snapshot.Page == tuiPageDashboard || m.snapshot.Page == tuiPageTools {
+			m.beginModeSelection()
+		}
 	case tuiKeyAllowLAN, tuiKeyIPv6, tuiKeyUnifiedDelay, tuiKeyTCPConcurrent,
-		tuiKeyTun, tuiKeyMode, tuiKeyLogLevel:
+		tuiKeyTun, tuiKeyLogLevel:
 		if m.snapshot.Page == tuiPageTools ||
-			(m.snapshot.Page == tuiPageDashboard &&
-				(key == tuiKeyTun || key == tuiKeyMode)) {
+			(m.snapshot.Page == tuiPageDashboard && key == tuiKeyTun) {
 			if m.service == nil && m.ownsCore && !m.coreRunning {
 				m.stageTUISetting(key)
 				return nil
@@ -1434,15 +1458,6 @@ func (m *tuiModel) stageTUISetting(key tuiKey) {
 		m.snapshot.Settings.TCPConcurrent = !m.snapshot.Settings.TCPConcurrent
 	case tuiKeyTun:
 		m.snapshot.Settings.TunEnabled = !m.snapshot.Settings.TunEnabled
-	case tuiKeyMode:
-		switch strings.ToLower(m.snapshot.Settings.Mode) {
-		case "rule":
-			m.snapshot.Settings.Mode = "global"
-		case "global":
-			m.snapshot.Settings.Mode = "direct"
-		default:
-			m.snapshot.Settings.Mode = "rule"
-		}
 	case tuiKeyLogLevel:
 		levels := []string{"silent", "error", "warning", "info", "debug"}
 		current := findTUIString(levels, strings.ToLower(m.snapshot.Settings.LogLevel))
@@ -1484,28 +1499,6 @@ func applyTUIOperationSetting(
 	settings := state.snapshot.Settings
 	if !changeTUISettingsValue(&settings, key) {
 		state.snapshot.Status = "Setting is already at its limit"
-		return
-	}
-	if key == tuiKeyMode {
-		if !prepareTUIBackendRevision(state, service) {
-			return
-		}
-		status, err := service.setMode(settings.Mode, state.backendRevision)
-		if err != nil {
-			state.snapshot.Status = "Mode change failed: " + err.Error()
-			return
-		}
-		state.backendRevision = status.Revision
-		state.coreRunning = status.Running
-		state.snapshot.Settings.Mode = status.Mode
-		state.snapshot.Settings.MixedPort = status.ProxyPort
-		state.snapshot.Settings.SystemProxy = status.SystemProxy
-		if status.Mode == tuiSilentMode {
-			state.snapshot.Settings.TunEnabled = false
-		}
-		state.snapshot.FLCEnabled = status.FLCEnabled
-		state.snapshot.FLCOutbound = status.FLCOutbound
-		state.snapshot.Status = "Mode changed to " + status.Mode
 		return
 	}
 	commitTUIOperationSettings(state, service, client, settings)
@@ -1569,17 +1562,6 @@ func changeTUISettingsValue(settings *tuiSettings, key tuiKey) bool {
 		settings.TCPConcurrent = !settings.TCPConcurrent
 	case tuiKeyTun:
 		settings.TunEnabled = !settings.TunEnabled
-	case tuiKeyMode:
-		switch strings.ToLower(settings.Mode) {
-		case "rule":
-			settings.Mode = "global"
-		case "global":
-			settings.Mode = "direct"
-		case "direct":
-			settings.Mode = tuiSilentMode
-		default:
-			settings.Mode = "rule"
-		}
 	case tuiKeyLogLevel:
 		levels := []string{"silent", "error", "warning", "info", "debug"}
 		current := findTUIString(levels, strings.ToLower(settings.LogLevel))
@@ -2680,6 +2662,107 @@ func (m *tuiModel) beginInput(mode tuiInputMode) {
 		m.inputCursor = len(m.inputValue)
 		m.inputSelectAll = true
 	}
+}
+
+func (m *tuiModel) beginModeSelection() {
+	m.modeSelectionOpen = true
+	m.selectedMode = findTUIString(
+		tuiTrafficModes,
+		strings.ToLower(m.snapshot.Settings.Mode),
+	)
+	if m.selectedMode < 0 {
+		m.selectedMode = 0
+	}
+	m.snapshot.Status = "Select an outbound mode"
+}
+
+func (m *tuiModel) handleModeSelection(message tea.KeyMsg) tea.Cmd {
+	key, ok := tuiKeyFromTea(message)
+	if !ok {
+		return nil
+	}
+	switch key {
+	case tuiKeyUp:
+		m.selectedMode = wrapTUIIndex(
+			m.selectedMode,
+			-1,
+			len(tuiTrafficModes),
+		)
+	case tuiKeyDown:
+		m.selectedMode = wrapTUIIndex(
+			m.selectedMode,
+			1,
+			len(tuiTrafficModes),
+		)
+	case tuiKeySelect:
+		mode := tuiTrafficModes[m.selectedMode]
+		m.modeSelectionOpen = false
+		return m.changeMode(mode)
+	case tuiKeyBack:
+		m.modeSelectionOpen = false
+		m.snapshot.Status = "Mode selection cancelled"
+	case tuiKeyQuit, tuiKeyInterrupt:
+		m.modeSelectionOpen = false
+		return m.handleKey(key)
+	}
+	return nil
+}
+
+func (m *tuiModel) changeMode(mode string) tea.Cmd {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if strings.EqualFold(mode, m.snapshot.Settings.Mode) {
+		m.snapshot.Status = "Mode unchanged: " + mode
+		return nil
+	}
+	if m.service == nil {
+		if !m.ownsCore || m.coreRunning {
+			m.snapshot.Status = "Mode changes require the managed backend"
+			return nil
+		}
+		if mode == tuiSilentMode {
+			m.snapshot.Status = "Silent mode requires the managed backend"
+			return nil
+		}
+		m.stageTUIMode(mode)
+		return nil
+	}
+	service := m.service
+	command := m.startOperation(func(state *tuiOperationState) {
+		if !prepareTUIBackendRevision(state, service) {
+			return
+		}
+		status, err := service.setMode(mode, state.backendRevision)
+		if err != nil {
+			state.snapshot.Status = "Mode change failed: " + err.Error()
+			return
+		}
+		state.backendRevision = status.Revision
+		state.coreRunning = status.Running
+		state.snapshot.Settings.Mode = status.Mode
+		state.snapshot.Settings.MixedPort = status.ProxyPort
+		state.snapshot.Settings.SystemProxy = status.SystemProxy
+		if status.Mode == tuiSilentMode {
+			state.snapshot.Settings.TunEnabled = false
+		}
+		state.snapshot.FLCEnabled = status.FLCEnabled
+		state.snapshot.FLCOutbound = status.FLCOutbound
+		state.snapshot.Status = "Mode changed to " + status.Mode
+	})
+	if command != nil {
+		m.snapshot.Status = "Changing mode to " + mode + "..."
+	}
+	return command
+}
+
+func (m *tuiModel) stageTUIMode(mode string) {
+	m.snapshot.Settings.Mode = mode
+	port := m.snapshot.Settings.MixedPort
+	m.pendingMixedPort = &port
+	m.stagedSettings = cloneTUISettings(&m.snapshot.Settings)
+	m.settingsDirty = true
+	m.snapshot.Status = "Mode " + mode +
+		" staged; enable System proxy or start Core to apply"
+	m.persistStagedTUISettings()
 }
 
 func (m *tuiModel) beginProfileRename() {

@@ -622,6 +622,7 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	paths := r.paths
 	oldFLC := r.flc
 	systemProxy := r.systemProxy
+	coreSocket := r.coreSocket
 	r.mu.RUnlock()
 	if mode == currentMode {
 		return false, nil
@@ -675,6 +676,16 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 			return false, fmt.Errorf("save silent mode: %w", err)
 		}
 		return true, nil
+	}
+	if currentMode != tuiSilentMode {
+		return r.applyNativeTrafficMode(
+			mode,
+			currentMode,
+			paths,
+			coreSocket,
+			oldFLC,
+			*oldSettings,
+		)
 	}
 
 	updated := *oldSettings
@@ -732,6 +743,84 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 		}
 		return false, fmt.Errorf("save mode: %w", err)
 	}
+	return true, nil
+}
+
+func (r *tuiServiceRuntime) applyNativeTrafficMode(
+	mode,
+	currentMode string,
+	paths cliPaths,
+	coreSocket string,
+	oldFLC tuiFLCListenerState,
+	oldSettings tuiSettings,
+) (bool, error) {
+	lease, err := acquireTUIProfileLocks(paths.homeDir, paths.configPath)
+	if err != nil {
+		return false, err
+	}
+	defer lease.release()
+
+	writePath, profileInfo, originalProfile, err := readTUIWritableConfig(
+		paths.configPath,
+	)
+	if err != nil {
+		return false, err
+	}
+	profileChanged := !strings.EqualFold(oldSettings.Mode, mode)
+	if profileChanged {
+		updated := oldSettings
+		updated.Mode = mode
+		if err := persistTUISettings(paths.configPath, updated); err != nil {
+			return false, err
+		}
+	}
+
+	controller := managedController(tuiServiceStatus{CoreSocket: coreSocket})
+	if err := controller.patchConfig(map[string]interface{}{"mode": mode}); err != nil {
+		if !profileChanged {
+			return false, fmt.Errorf("switch Core mode: %w", err)
+		}
+		if rollbackErr := writeTUIProfileAtomically(
+			writePath,
+			originalProfile,
+			profileInfo.Mode(),
+		); rollbackErr != nil {
+			return false, fmt.Errorf(
+				"switch Core mode: %v; profile rollback failed: %w",
+				err,
+				rollbackErr,
+			)
+		}
+		return false, fmt.Errorf("switch Core mode: %w; profile restored", err)
+	}
+
+	if err := rememberTUITrafficMode(paths.homeDir, mode); err != nil {
+		var profileRollbackErr error
+		if profileChanged {
+			profileRollbackErr = writeTUIProfileAtomically(
+				writePath,
+				originalProfile,
+				profileInfo.Mode(),
+			)
+		}
+		coreRollbackErr := controller.patchConfig(
+			map[string]interface{}{"mode": currentMode},
+		)
+		if profileRollbackErr != nil || coreRollbackErr != nil {
+			return false, fmt.Errorf(
+				"save mode: %v; profile rollback: %v; Core rollback: %v",
+				err,
+				profileRollbackErr,
+				coreRollbackErr,
+			)
+		}
+		return false, fmt.Errorf("save mode: %w; previous mode restored", err)
+	}
+
+	r.mu.Lock()
+	r.trafficMode = mode
+	r.flc = tuiFLCListenerState{Outbound: oldFLC.Outbound}
+	r.mu.Unlock()
 	return true, nil
 }
 

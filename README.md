@@ -49,20 +49,20 @@ Backend and Core management use private Unix sockets rather than a public TCP co
 
 ### Debian or Ubuntu packages
 
-Choose the package matching `dpkg --print-architecture` from [GitHub Releases](https://github.com/yqlay/flclash-tui/releases). Version 0.4.2 packages are named:
+Choose the package matching `dpkg --print-architecture` from [GitHub Releases](https://github.com/yqlay/flclash-tui/releases). Version 0.4.3 packages are named:
 
 ```text
-flclash-tui_0.4.2_amd64.deb
-flclash-tui_0.4.2_arm64.deb
+flclash-tui_0.4.3_amd64.deb
+flclash-tui_0.4.3_arm64.deb
 ```
 
 Example for AMD64:
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.2/flclash-tui_0.4.2_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.2/flclash-tui_0.4.2_amd64.deb.sha256
-sha256sum -c flclash-tui_0.4.2_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.4.2_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.3/flclash-tui_0.4.3_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.3/flclash-tui_0.4.3_amd64.deb.sha256
+sha256sum -c flclash-tui_0.4.3_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.4.3_amd64.deb
 ```
 
 The package installs `/usr/bin/flclash`, the `/usr/bin/flc` entry point, documentation, and bundled GeoIP/GeoSite/ASN data. Missing or unusable Geo files can be restored locally before Core initialization, so first startup does not depend on downloading those files from GitHub.
@@ -273,6 +273,7 @@ Compatibility spellings remain available: `service` for `backend`, `system-proxy
 | `8` | **Maintenance** | Edit current YAML, backup/restore, update Geo resources, reset traffic counters, and check releases |
 
 Rows show the current state first and the available action second. For example, `Core STOPPED · Enter to start` describes the current state, not the result of pressing Enter.
+Selecting **Mode** on Dashboard or Settings opens a list containing `rule`, `silent`, `global`, and `direct`; move with ↑/↓ or `w`/`s`, then press Enter to apply the highlighted mode.
 
 ### Navigation and keys
 
@@ -289,7 +290,7 @@ Profiles:     Enter activate/import · n import · U refresh linked · F2/u rena
 History:      x clear shared History
 Connections: d close selected · x close all
 Logs:        e export · x clear view
-Settings:    S System proxy · c Core · t TUN · m mode · p set port · +/- adjust
+Settings:    S System proxy · c Core · t TUN · m mode list · p set port · +/- adjust
 Maintenance: b backup · B restore · g Geo update · z reset traffic
 
 q             detach only this TUI; Backend/Core and other frontends continue

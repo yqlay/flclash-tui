@@ -149,9 +149,10 @@ func (c *tuiServiceClient) sendRequest(
 		request.RequestID = newTUIServiceRequestID()
 	}
 	requestTimeout := c.timeout
-	switch request.Action {
-	case "reload", "put_profile", "restore_profile":
+	if tuiServiceActionUsesReloadTimeout(request.Action) {
 		requestTimeout = c.reloadTimeout
+	}
+	switch request.Action {
 	case "watch":
 		requestTimeout = time.Duration(request.WatchTimeoutMS)*time.Millisecond + 2*time.Second
 		if requestTimeout < c.timeout {
@@ -186,6 +187,16 @@ func (c *tuiServiceClient) sendRequest(
 		}
 	}
 	return status, nil
+}
+
+func tuiServiceActionUsesReloadTimeout(action string) bool {
+	switch action {
+	case "reload", "apply_settings", "set_mode", "set_flc_outbound",
+		"put_profile", "restore_profile":
+		return true
+	default:
+		return false
+	}
 }
 
 func newTUIServiceRequestID() string {
@@ -1076,10 +1087,7 @@ func serveTUIServiceConnection(
 		})
 		return
 	}
-	if request.Action == "reload" ||
-		request.Action == "apply_settings" ||
-		request.Action == "put_profile" ||
-		request.Action == "restore_profile" {
+	if tuiServiceActionUsesReloadTimeout(request.Action) {
 		_ = connection.SetDeadline(
 			time.Now().Add(tuiServiceReloadTimeout + 5*time.Second),
 		)
