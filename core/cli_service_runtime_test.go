@@ -30,6 +30,19 @@ func newTestTUIServiceRuntime(t *testing.T) *tuiServiceRuntime {
 	)
 }
 
+type countingTUIListener struct {
+	net.Listener
+	accepted atomic.Int32
+}
+
+func (l *countingTUIListener) Accept() (net.Conn, error) {
+	connection, err := l.Listener.Accept()
+	if err == nil {
+		l.accepted.Add(1)
+	}
+	return connection, err
+}
+
 func TestTUIServiceRuntimeRejectsStaleRevision(t *testing.T) {
 	runtime := newTestTUIServiceRuntime(t)
 	stale := uint64(0)
@@ -178,6 +191,57 @@ func TestTUIServiceRuntimeRejectsUnsupportedProtocol(t *testing.T) {
 	})
 	if status.OK || status.ErrorCode != tuiServiceErrorUnsupported {
 		t.Fatalf("unsupported protocol response = %+v", status)
+	}
+}
+
+func TestTUIServiceRuntimeReusesCoreControllerConnection(t *testing.T) {
+	directory := t.TempDir()
+	socketPath := filepath.Join(directory, "core.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	countingListener := &countingTUIListener{Listener: listener}
+	var requestCount atomic.Int32
+	server := &http.Server{Handler: http.HandlerFunc(func(
+		w http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.URL.Path != "/connections" {
+			http.NotFound(w, request)
+			return
+		}
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"connections":[]}`))
+	})}
+	go func() { _ = server.Serve(countingListener) }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	runtime := newTUIServiceRuntime(
+		cliPaths{
+			homeDir:    directory,
+			configPath: filepath.Join(directory, "config.yaml"),
+		},
+		defaultCLITestURL,
+		socketPath,
+		nil,
+		nil,
+	)
+	t.Cleanup(runtime.closeCoreController)
+	runtime.setRunning(true)
+	for index := 0; index < 25; index++ {
+		status := runtime.historyStatus("")
+		if !status.OK {
+			t.Fatalf("history status failed: %+v", status)
+		}
+	}
+
+	if got := requestCount.Load(); got != 25 {
+		t.Fatalf("Core request count = %d, want 25", got)
+	}
+	if got := countingListener.accepted.Load(); got != 1 {
+		t.Fatalf("Core Unix connections = %d, want one reused connection", got)
 	}
 }
 

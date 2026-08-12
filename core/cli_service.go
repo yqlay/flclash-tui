@@ -1008,6 +1008,7 @@ func runTUIService(
 			shutdownOnce.Do(func() { close(shutdown) })
 		},
 	)
+	defer runtime.closeCoreController()
 	runtime.configureRuntimePolicy(
 		trafficMode,
 		configuredPort,

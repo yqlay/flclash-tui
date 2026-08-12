@@ -49,20 +49,20 @@ Backend 与托管 Core 默认使用私有 Unix socket，不需要开放 TCP Cont
 
 ### Debian / Ubuntu 安装包
 
-在 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) 中选择与 `dpkg --print-architecture` 一致的包。0.4.3 的包名为：
+在 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) 中选择与 `dpkg --print-architecture` 一致的包。0.4.4 的包名为：
 
 ```text
-flclash-tui_0.4.3_amd64.deb
-flclash-tui_0.4.3_arm64.deb
+flclash-tui_0.4.4_amd64.deb
+flclash-tui_0.4.4_arm64.deb
 ```
 
 AMD64 示例：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.3/flclash-tui_0.4.3_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.3/flclash-tui_0.4.3_amd64.deb.sha256
-sha256sum -c flclash-tui_0.4.3_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.4.3_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.4/flclash-tui_0.4.4_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.4/flclash-tui_0.4.4_amd64.deb.sha256
+sha256sum -c flclash-tui_0.4.4_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.4.4_amd64.deb
 ```
 
 安装包提供 `/usr/bin/flclash`、`/usr/bin/flc`、文档以及内置 GeoIP/GeoSite/ASN 数据。Core 初始化前可以从本地安装资源恢复缺失或不可用的 Geo 文件，首次启动不依赖从 GitHub 下载这些基础文件。
