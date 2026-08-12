@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.4.3"
+const cliVersion = "0.4.4"
 
 type cliPaths struct {
 	homeDir    string
@@ -644,6 +644,12 @@ func cliProfileTarget(paths cliPaths, positional []string) (string, error) {
 type controllerClient struct {
 	options controllerOptions
 	client  *http.Client
+}
+
+func (c controllerClient) closeIdleConnections() {
+	if c.client != nil {
+		c.client.CloseIdleConnections()
+	}
 }
 
 func (c controllerClient) httpClient() *http.Client {

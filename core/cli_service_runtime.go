@@ -31,6 +31,7 @@ type tuiServiceRuntime struct {
 	paths            cliPaths
 	testURL          string
 	coreSocket       string
+	coreController   controllerClient
 	setupParams      []byte
 	running          bool
 	shuttingDown     bool
@@ -55,10 +56,18 @@ func newTUIServiceRuntime(
 	setupParams []byte,
 	shutdown func(),
 ) *tuiServiceRuntime {
+	controllerOptions := controllerOptions{unixSocket: coreSocket}
 	return &tuiServiceRuntime{
-		paths:            paths,
-		testURL:          testURL,
-		coreSocket:       coreSocket,
+		paths:      paths,
+		testURL:    testURL,
+		coreSocket: coreSocket,
+		coreController: controllerClient{
+			options: controllerOptions,
+			client: controllerHTTPClientForOptions(
+				controllerOptions,
+				controllerRequestTimeout,
+			),
+		},
 		setupParams:      append([]byte(nil), setupParams...),
 		trafficMode:      "rule",
 		actualConfigPath: paths.configPath,
@@ -67,6 +76,10 @@ func newTUIServiceRuntime(
 		dedup:            map[string]tuiServiceStatus{},
 		shutdown:         shutdown,
 	}
+}
+
+func (r *tuiServiceRuntime) closeCoreController() {
+	r.coreController.closeIdleConnections()
 }
 
 func (r *tuiServiceRuntime) handle(
@@ -622,7 +635,6 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	paths := r.paths
 	oldFLC := r.flc
 	systemProxy := r.systemProxy
-	coreSocket := r.coreSocket
 	r.mu.RUnlock()
 	if mode == currentMode {
 		return false, nil
@@ -642,7 +654,7 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 				return false, fmt.Errorf("disable System proxy for silent mode: %w", err)
 			}
 		}
-		_ = managedController(r.snapshot("")).closeAllConnections()
+		_ = r.coreController.closeAllConnections()
 		r.mu.Lock()
 		r.trafficMode = mode
 		r.flc = flc
@@ -682,7 +694,6 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 			mode,
 			currentMode,
 			paths,
-			coreSocket,
 			oldFLC,
 			*oldSettings,
 		)
@@ -750,7 +761,6 @@ func (r *tuiServiceRuntime) applyNativeTrafficMode(
 	mode,
 	currentMode string,
 	paths cliPaths,
-	coreSocket string,
 	oldFLC tuiFLCListenerState,
 	oldSettings tuiSettings,
 ) (bool, error) {
@@ -775,7 +785,7 @@ func (r *tuiServiceRuntime) applyNativeTrafficMode(
 		}
 	}
 
-	controller := managedController(tuiServiceStatus{CoreSocket: coreSocket})
+	controller := r.coreController
 	if err := controller.patchConfig(map[string]interface{}{"mode": mode}); err != nil {
 		if !profileChanged {
 			return false, fmt.Errorf("switch Core mode: %w", err)
@@ -837,7 +847,7 @@ func (r *tuiServiceRuntime) applyFLCOutbound(outbound string) (bool, error) {
 	if outbound == previous.Outbound {
 		return false, nil
 	}
-	if err := validateTUIFLCOutbound(r.coreSocket, outbound); err != nil {
+	if err := validateTUIFLCOutbound(r.coreController, outbound); err != nil {
 		return false, err
 	}
 	next := tuiFLCListenerState{Outbound: outbound}
@@ -882,9 +892,8 @@ func (r *tuiServiceRuntime) selectProxy(group, proxy string) (bool, error) {
 	}
 	r.mu.RLock()
 	homeDir := r.paths.homeDir
-	coreSocket := r.coreSocket
 	r.mu.RUnlock()
-	controller := managedController(tuiServiceStatus{CoreSocket: coreSocket})
+	controller := r.coreController
 	data, err := controller.request(http.MethodGet, "/proxies", nil)
 	if err != nil {
 		return false, fmt.Errorf("read current proxy selection: %w", err)
@@ -926,9 +935,8 @@ func (r *tuiServiceRuntime) selectProxy(group, proxy string) (bool, error) {
 	return proxy != current.Now, nil
 }
 
-func validateTUIFLCOutbound(coreSocket, outbound string) error {
-	status := tuiServiceStatus{CoreSocket: coreSocket}
-	data, err := managedController(status).request(http.MethodGet, "/proxies", nil)
+func validateTUIFLCOutbound(controller controllerClient, outbound string) error {
+	data, err := controller.request(http.MethodGet, "/proxies", nil)
 	if err != nil {
 		return fmt.Errorf("read proxy list: %w", err)
 	}
@@ -945,7 +953,7 @@ func validateTUIFLCOutbound(coreSocket, outbound string) error {
 func (r *tuiServiceRuntime) historyStatus(requestID string) tuiServiceStatus {
 	status := r.snapshot(requestID)
 	if status.Running {
-		connections, err := loadTUIActiveConnections(r.coreSocket)
+		connections, err := loadTUIActiveConnections(r.coreController)
 		if err != nil {
 			return failTUIServiceStatus(
 				status,
@@ -965,8 +973,8 @@ func (r *tuiServiceRuntime) historyStatus(requestID string) tuiServiceStatus {
 	return status
 }
 
-func loadTUIActiveConnections(coreSocket string) ([]tuiConnection, error) {
-	data, err := managedController(tuiServiceStatus{CoreSocket: coreSocket}).request(
+func loadTUIActiveConnections(controller controllerClient) ([]tuiConnection, error) {
+	data, err := controller.request(
 		http.MethodGet,
 		"/connections",
 		nil,
