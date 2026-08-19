@@ -1971,16 +1971,23 @@ func (r *tuiServiceRuntime) testRoute(
 			)
 		}
 	}
-	client, closeClient, err := newTUIRouteHTTPClient(request.MixedPort)
+	activeStatus := r.snapshot(request.RequestID)
+	activePort := activeStatus.ActiveProxyPort
+	if activePort <= 0 {
+		activePort = activeStatus.ProxyPort
+	}
+	var speed *tuiSpeedResult
+	var delay tuiDelayResult
+	client, closeClient, err := newTUIRouteHTTPClient(activePort)
 	if err == nil {
 		if request.Action == "speed_route" {
 			var result tuiSpeedResult
 			result, err = runTUIDownloadSpeedTest(context.Background(), client)
 			if err == nil {
-				status.Speed = &result
+				speed = &result
 			}
 		} else {
-			status.Delay, err = runTUIRouteDelayTest(
+			delay, err = runTUIRouteDelayTest(
 				context.Background(),
 				client,
 				request.TestURL,
@@ -1997,6 +2004,14 @@ func (r *tuiServiceRuntime) testRoute(
 	status = r.snapshot(request.RequestID)
 	if err != nil {
 		return failTUIServiceStatus(status, tuiServiceErrorOperation, err.Error())
+	}
+	status.Speed = speed
+	if delay.MedianMillis > 0 {
+		status.Delay = delay.MedianMillis
+		status.DelayJitter = delay.JitterMillis
+		status.DelayMin = delay.MinMillis
+		status.DelayMax = delay.MaxMillis
+		status.DelaySamples = delay.Samples
 	}
 	return status
 }

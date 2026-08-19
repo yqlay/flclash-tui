@@ -309,11 +309,11 @@ func proxyCommand(args []string) error {
 		if len(positional) != 1 {
 			return errors.New("usage: flclash proxy delay NODE")
 		}
-		delay, err := client.testProxyDelay(positional[0], *testURL)
+		delay, err := testTUIProxyDelaySamples(client, positional[0], *testURL)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s: %d ms\n", positional[0], delay)
+		fmt.Printf("%s: %s\n", positional[0], formatTUIDelay(delay))
 		return nil
 	case "speed":
 		positional := fs.Args()

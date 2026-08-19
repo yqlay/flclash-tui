@@ -89,6 +89,10 @@ type tuiServiceStatus struct {
 	Connections         []tuiConnection `json:"connections,omitempty"`
 	FrontendCount       int             `json:"frontend_count"`
 	Delay               int             `json:"delay,omitempty"`
+	DelayJitter         int             `json:"delay_jitter,omitempty"`
+	DelayMin            int             `json:"delay_min,omitempty"`
+	DelayMax            int             `json:"delay_max,omitempty"`
+	DelaySamples        int             `json:"delay_samples,omitempty"`
 	Speed               *tuiSpeedResult `json:"speed,omitempty"`
 }
 
@@ -539,19 +543,25 @@ func (c *tuiServiceClient) testRouteSpeed(
 func (c *tuiServiceClient) testRouteDelay(
 	mixedPort int,
 	testURL string,
-) (int, error) {
+) (tuiDelayResult, error) {
 	status, err := c.requestPayload(tuiServiceRequest{
 		Action:    "delay_route",
 		MixedPort: mixedPort,
 		TestURL:   testURL,
 	})
 	if err != nil {
-		return 0, err
+		return tuiDelayResult{}, err
 	}
 	if status.Delay <= 0 {
-		return 0, errors.New("Backend returned no delay result")
+		return tuiDelayResult{}, errors.New("Backend returned no delay result")
 	}
-	return status.Delay, nil
+	return tuiDelayResult{
+		MedianMillis: status.Delay,
+		JitterMillis: status.DelayJitter,
+		MinMillis:    status.DelayMin,
+		MaxMillis:    status.DelayMax,
+		Samples:      status.DelaySamples,
+	}, nil
 }
 
 func ensureTUIService(

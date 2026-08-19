@@ -1,3 +1,12 @@
+## Unreleased
+
+- Measure route and node latency from five samples, reporting the median and
+  successive-sample jitter instead of a single inconsistent request.
+- Measure aggregate Cloudflare download throughput over four concurrent streams
+  with one shared five-second/100 MB budget.
+- Run route tests through the Backend's actual runtime Proxy port and preserve
+  their result after temporary Core lifecycle restoration.
+
 ## FlClash TUI v0.5.1
 
 - Repair a missing silent-mode private listener on the first `flc COMMAND` invocation by automatically selecting the first usable configured proxy group, reloading Core transactionally, and persisting that FLC outbound.

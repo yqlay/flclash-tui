@@ -5,15 +5,252 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+func TestSummarizeTUIDelaysUsesMedianAndMeanSuccessiveJitter(t *testing.T) {
+	result, err := summarizeTUIDelays([]int{10, 14, 12, 80, 11})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MedianMillis != 12 || result.JitterMillis != 36 ||
+		result.MinMillis != 10 || result.MaxMillis != 80 || result.Samples != 5 {
+		t.Fatalf("delay summary = %+v", result)
+	}
+}
+
+func TestTUIParallelDownloadSpeedUsesConcurrentStreamsAndExactBudget(t *testing.T) {
+	const (
+		byteLimit int64 = 400 << 10
+		streams         = 4
+	)
+	var active atomic.Int32
+	var maximum atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		requestBytes, err := strconv.ParseInt(request.URL.Query().Get("bytes"), 10, 64)
+		if err != nil {
+			http.Error(writer, "invalid byte count", http.StatusBadRequest)
+			return
+		}
+		if requestBytes > 1 {
+			current := active.Add(1)
+			defer active.Add(-1)
+			for {
+				observed := maximum.Load()
+				if current <= observed || maximum.CompareAndSwap(observed, current) {
+					break
+				}
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		writer.Header().Set("Content-Length", strconv.FormatInt(requestBytes, 10))
+		_, _ = writer.Write(make([]byte, requestBytes))
+	}))
+	defer server.Close()
+
+	result, err := runTUIParallelDownloadSpeedTestWithOptions(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		byteLimit,
+		time.Second,
+		streams,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Complete || result.Bytes != byteLimit {
+		t.Fatalf("parallel speed result = %+v", result)
+	}
+	if maximum.Load() < streams {
+		t.Fatalf("maximum concurrent streams = %d, want %d", maximum.Load(), streams)
+	}
+}
+
+func TestTUIParallelDownloadSpeedUsesSharedFixedWindow(t *testing.T) {
+	const (
+		byteLimit    int64 = 10 << 20
+		testDuration       = 80 * time.Millisecond
+		streams            = 4
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		requestBytes, err := strconv.ParseInt(request.URL.Query().Get("bytes"), 10, 64)
+		if err != nil {
+			http.Error(writer, "invalid byte count", http.StatusBadRequest)
+			return
+		}
+		if requestBytes == 1 {
+			writer.Header().Set("Content-Length", "1")
+			_, _ = writer.Write([]byte{0})
+			return
+		}
+		flusher := writer.(http.Flusher)
+		chunk := make([]byte, 8<<10)
+		for {
+			if _, err := writer.Write(chunk); err != nil {
+				return
+			}
+			flusher.Flush()
+			select {
+			case <-request.Context().Done():
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}))
+	defer server.Close()
+
+	result, err := runTUIParallelDownloadSpeedTestWithOptions(
+		context.Background(),
+		server.Client(),
+		server.URL,
+		byteLimit,
+		testDuration,
+		streams,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Complete || result.Bytes <= 0 || result.Bytes >= byteLimit {
+		t.Fatalf("parallel incomplete result = %+v", result)
+	}
+	if result.DurationMillis != testDuration.Milliseconds() {
+		t.Fatalf(
+			"parallel incomplete duration = %dms, want %dms",
+			result.DurationMillis,
+			testDuration.Milliseconds(),
+		)
+	}
+	expected := float64(result.Bytes) / testDuration.Seconds()
+	if result.BytesPerSecond != expected {
+		t.Fatalf("bytes/second = %f, want %f", result.BytesPerSecond, expected)
+	}
+}
+
+func TestTUIRouteDelayUsesActiveFallbackPortAndReturnsSamples(t *testing.T) {
+	directory, err := os.MkdirTemp("/tmp", "flclash-route-delay-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	previousRuntimeDirectory := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = directory
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntimeDirectory })
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	configuredPort := occupied.Addr().(*net.TCPAddr).Port
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	configPath := filepath.Join(directory, "config.yaml")
+	source := fmt.Appendf(nil, `mixed-port: %d
+mode: rule
+log-level: silent
+ipv6: false
+rules:
+  - MATCH,DIRECT
+`, configuredPort)
+	if err := os.WriteFile(configPath, source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rememberTUITrafficMode(directory, "rule"); err != nil {
+		t.Fatal(err)
+	}
+	serviceDone := make(chan error, 1)
+	go func() {
+		serviceDone <- runTUIService(
+			cliPaths{homeDir: directory, configPath: configPath},
+			target.URL,
+			nil,
+			false,
+		)
+	}()
+	service := newTUIServiceClient(directory)
+	shutdown := true
+	t.Cleanup(func() {
+		if shutdown {
+			_ = service.shutdown()
+		}
+	})
+	status := waitForTUIServiceStatus(t, service)
+	status, err = service.startAtRevision(status.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ActiveProxyPort <= 0 || status.ActiveProxyPort == configuredPort {
+		t.Fatalf("active fallback status = %+v", status)
+	}
+	delay, err := service.testRouteDelay(configuredPort, target.URL)
+	if err != nil {
+		t.Fatalf("route delay through active fallback port: %v", err)
+	}
+	if delay.MedianMillis <= 0 || delay.Samples != tuiDelayTestSamples {
+		t.Fatalf("route delay result = %+v", delay)
+	}
+	if err := service.shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	shutdown = false
+	select {
+	case err := <-serviceDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Backend did not exit after route delay test")
+	}
+}
+
+func TestConfigureTUIHTTP1TransportNegotiatesHTTP1OverTLS(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(
+		writer http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.ProtoMajor != 1 {
+			t.Errorf("request protocol = %s, want HTTP/1.x", request.Proto)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	transport := server.Client().Transport.(*http.Transport).Clone()
+	configureTUIHTTP1Transport(transport)
+	client := &http.Client{Transport: transport}
+	request, err := http.NewRequest(http.MethodHead, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.ProtoMajor != 1 {
+		t.Fatalf("response protocol = %s, want HTTP/1.x", response.Proto)
+	}
+}
 
 func TestTUIDownloadSpeedUsesCompletionTime(t *testing.T) {
 	const byteLimit int64 = 256 << 10
@@ -213,7 +450,13 @@ func TestTUIVKeyIsScopedToDashboardAndProxies(t *testing.T) {
 
 func TestTUIDashboardAndProxySpeedResultsRender(t *testing.T) {
 	snapshot := populatedTUISnapshot(tuiPageDashboard)
-	snapshot.DashboardDelay = 42
+	snapshot.DashboardDelay = tuiDelayResult{
+		MedianMillis: 42,
+		JitterMillis: 3,
+		MinMillis:    39,
+		MaxMillis:    46,
+		Samples:      5,
+	}
 	snapshot.DashboardSpeed = tuiSpeedResult{
 		Bytes:          100_000_000,
 		DurationMillis: 4000,
@@ -230,8 +473,8 @@ func TestTUIDashboardAndProxySpeedResultsRender(t *testing.T) {
 	)
 	dashboardText := stripTUIANSI(dashboard.String())
 	for _, expected := range []string{
-		"Route latency  42 ms",
-		"Download test  25.00 MB/s · 200.0 Mbps",
+		"Rule route     42 ms · jitter 3 ms · 5 samples",
+		"Cloudflare DL  25.00 MB/s · 200.0 Mbps",
 		"100.0 MB in 4.00s",
 	} {
 		if !strings.Contains(dashboardText, expected) {
@@ -241,11 +484,13 @@ func TestTUIDashboardAndProxySpeedResultsRender(t *testing.T) {
 
 	snapshot.Page = tuiPageProxies
 	snapshot.Groups = []tuiGroup{{
-		Name:   "Proxy",
-		Type:   "Selector",
-		Now:    "Node",
-		Nodes:  []string{"Node"},
-		Delays: map[string]int{"Node": 42},
+		Name:  "Proxy",
+		Type:  "Selector",
+		Now:   "Node",
+		Nodes: []string{"Node"},
+		Delays: map[string]tuiDelayResult{
+			"Node": {MedianMillis: 42, JitterMillis: 2, Samples: 5},
+		},
 		Speeds: map[string]tuiSpeedResult{
 			"Node": {
 				Bytes:          50_000_000,

@@ -678,7 +678,11 @@ func flcManagementCommand(args []string) error {
 		if err != nil {
 			return fmt.Errorf("FLC route test failed: %w", err)
 		}
-		fmt.Printf("FLC route ready · %d ms · %s\n", delay, cliDisplayValue(status.FLCOutbound))
+		fmt.Printf(
+			"FLC route ready · %s · %s\n",
+			formatTUIDelay(delay),
+			cliDisplayValue(status.FLCOutbound),
+		)
 		return nil
 	case "env":
 		return envCommand(args[1:])
@@ -822,7 +826,7 @@ func networkCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Route latency: %d ms\n", delay)
+		fmt.Printf("Route latency: %s\n", formatTUIDelay(delay))
 		return nil
 	case "speed":
 		if proxyPort <= 0 {

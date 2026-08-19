@@ -206,7 +206,7 @@ func TestTUICompactDashboardCanScrollEverySection(t *testing.T) {
 	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	network := stripTUIANSI(model.View())
 	if !strings.Contains(network, "Public IP") ||
-		!strings.Contains(network, "Route latency") ||
+		!strings.Contains(network, "Rule route") ||
 		(!strings.Contains(network, "Overview") &&
 			!strings.Contains(network, "System memory")) {
 		t.Fatalf("PageDown did not reveal network section:\n%s", network)
@@ -1375,7 +1375,8 @@ func TestTUIWholeGroupDelayTestCollectsReachableAndTimeoutNodes(t *testing.T) {
 		[]string{"fast", "slow", "dead"},
 		"https://example.test/204",
 	)
-	if delays["fast"] != 18 || delays["slow"] != 240 || delays["dead"] != -1 {
+	if delays["fast"].MedianMillis != 18 || delays["fast"].Samples != 5 ||
+		delays["slow"].MedianMillis != 240 || delays["dead"].Error == "" {
 		t.Fatalf("whole-group delays = %#v", delays)
 	}
 }
@@ -1407,7 +1408,7 @@ func TestTUIWholeGroupDelayKeyUpdatesVisibleNodeStates(t *testing.T) {
 	model.snapshot.Groups = []tuiGroup{{
 		Name:   "Proxy",
 		Nodes:  []string{"fast", "dead"},
-		Delays: map[string]int{},
+		Delays: map[string]tuiDelayResult{},
 	}}
 
 	command := model.handleTeaKey(tea.KeyMsg{
@@ -1418,13 +1419,14 @@ func TestTUIWholeGroupDelayKeyUpdatesVisibleNodeStates(t *testing.T) {
 		t.Fatal("d did not test all nodes from proxy-group mode")
 	}
 	for _, node := range model.snapshot.Groups[0].Nodes {
-		if model.snapshot.Groups[0].Delays[node] != -2 {
+		if !model.snapshot.Groups[0].Delays[node].Testing {
 			t.Fatalf("%s was not marked Testing", node)
 		}
 	}
 	_, _ = model.Update(command())
-	if model.snapshot.Groups[0].Delays["fast"] != 27 ||
-		model.snapshot.Groups[0].Delays["dead"] != -1 {
+	if model.snapshot.Groups[0].Delays["fast"].MedianMillis != 27 ||
+		model.snapshot.Groups[0].Delays["fast"].Samples != 5 ||
+		model.snapshot.Groups[0].Delays["dead"].Error == "" {
 		t.Fatalf("visible node delays = %#v", model.snapshot.Groups[0].Delays)
 	}
 	if !strings.Contains(model.snapshot.Status, "1/2 reachable") {
@@ -1878,10 +1880,10 @@ func TestTUIProxiesExposeSelectedAndWholeGroupDelayTests(t *testing.T) {
 		Type:  "Selector",
 		Now:   "fast",
 		Nodes: []string{"fast", "slow", "dead", "new"},
-		Delays: map[string]int{
-			"fast": 18,
-			"slow": -2,
-			"dead": -1,
+		Delays: map[string]tuiDelayResult{
+			"fast": {MedianMillis: 18, Samples: 5},
+			"slow": {Testing: true},
+			"dead": {Error: "timeout"},
 		},
 	}}
 	var output strings.Builder
