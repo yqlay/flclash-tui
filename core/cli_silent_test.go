@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -474,7 +475,7 @@ rules:
 	}
 }
 
-func TestEnteringSilentWithoutOutboundClosesNormalListener(t *testing.T) {
+func TestFirstFLCCommandAutoSelectsOutboundInSilentMode(t *testing.T) {
 	directory, err := os.MkdirTemp("/tmp", "flclash-enter-silent-")
 	if err != nil {
 		t.Fatal(err)
@@ -541,8 +542,29 @@ rules:
 	if !waitForTUIProxyPortState(proxyPort, false, tuiListenerValidationTimeout) {
 		t.Fatal("entering silent without outbound left the normal proxy listener open")
 	}
-	if _, err := service.flcProxy(); err == nil {
-		t.Fatal("silent without outbound exposed FLC credentials")
+	privateProxyURL, err := activeCLIProxyURLForPaths(
+		cliPaths{homeDir: directory, configPath: configPath},
+	)
+	if err != nil {
+		t.Fatalf("first flc command did not repair the private listener: %v", err)
+	}
+	privateURL, err := url.Parse(privateProxyURL)
+	if err != nil || privateURL.User == nil || privateURL.Hostname() != "127.0.0.1" {
+		t.Fatalf("auto-selected private FLC URL = %q, %v", privateProxyURL, err)
+	}
+	privateStatus, err := service.status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !privateStatus.FLCEnabled || privateStatus.FLCOutbound != "PROXY" {
+		t.Fatalf("auto-selected FLC status = %+v", privateStatus)
+	}
+	privatePort, err := strconv.Atoi(privateURL.Port())
+	if err != nil || !waitForTUIProxyPortState(privatePort, true, tuiListenerValidationTimeout) {
+		t.Fatal("auto-selected private FLC listener did not open")
+	}
+	if saved := loadTUIFLCOutbound(directory); saved != "PROXY" {
+		t.Fatalf("saved auto-selected FLC outbound = %q, want PROXY", saved)
 	}
 	after, err := os.ReadFile(configPath)
 	if err != nil {

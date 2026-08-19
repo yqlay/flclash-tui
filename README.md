@@ -53,20 +53,20 @@ TUN has two scopes. `tun user on` captures only the current UID and may coexist 
 
 ### Debian or Ubuntu packages
 
-Choose the package matching `dpkg --print-architecture` from [GitHub Releases](https://github.com/yqlay/flclash-tui/releases). Version 0.5.0 packages are named:
+Choose the package matching `dpkg --print-architecture` from [GitHub Releases](https://github.com/yqlay/flclash-tui/releases). Version 0.5.1 packages are named:
 
 ```text
-flclash-tui_0.5.0_amd64.deb
-flclash-tui_0.5.0_arm64.deb
+flclash-tui_0.5.1_amd64.deb
+flclash-tui_0.5.1_arm64.deb
 ```
 
 Example for AMD64:
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.0/flclash-tui_0.5.0_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.0/flclash-tui_0.5.0_amd64.deb.sha256
-sha256sum -c flclash-tui_0.5.0_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.5.0_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.1/flclash-tui_0.5.1_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.1/flclash-tui_0.5.1_amd64.deb.sha256
+sha256sum -c flclash-tui_0.5.1_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.5.1_amd64.deb
 ```
 
 The package installs `/usr/bin/flclash`, the `/usr/bin/flc` entry point, documentation, and bundled GeoIP/GeoSite/ASN data. Missing or unusable Geo files can be restored locally before Core initialization, so first startup does not depend on downloading those files from GitHub.

@@ -88,8 +88,30 @@ func activeCLIProxyURL() (string, error) {
 			err,
 		)
 	}
+	return activeCLIProxyURLForPaths(paths)
+}
+
+func activeCLIProxyURLForPaths(paths cliPaths) (string, error) {
 	client := newTUIServiceClient(paths.homeDir)
 	status, statusErr := client.status()
+	if statusErr == nil && status.Version != "" && status.ProtocolVersion != 0 &&
+		(status.Version != cliVersion ||
+			status.ProtocolVersion != tuiServiceProtocolVersion) {
+		client, status, statusErr = ensureTUIService(
+			paths,
+			defaultCLITestURL,
+			false,
+			false,
+		)
+		if statusErr != nil {
+			return "", fmt.Errorf(
+				"upgrade the FlClash Backend before running flc: %w\n"+
+					"运行 flc 前升级 FlClash 后端失败：%w",
+				statusErr,
+				statusErr,
+			)
+		}
+	}
 	if statusErr != nil {
 		if _, legacyStatus, found := findLegacyTUIService(paths); found {
 			status = legacyStatus
