@@ -54,6 +54,9 @@ type tuiServiceRuntime struct {
 	dedup            map[string]tuiServiceStatus
 	dedupOrder       []string
 	shutdown         func()
+	routeClient      func(int) (*http.Client, func(), error)
+	routeSpeedTest   func(context.Context, *http.Client) (tuiSpeedResult, error)
+	routeDelayTest   func(context.Context, *http.Client, string) (tuiDelayResult, error)
 }
 
 func newTUIServiceRuntime(
@@ -83,6 +86,9 @@ func newTUIServiceRuntime(
 		changed:          make(chan struct{}),
 		dedup:            map[string]tuiServiceStatus{},
 		shutdown:         shutdown,
+		routeClient:      newTUIRouteHTTPClient,
+		routeSpeedTest:   runTUIDownloadSpeedTest,
+		routeDelayTest:   runTUIRouteDelayTest,
 	}
 }
 
@@ -506,9 +512,6 @@ func (r *tuiServiceRuntime) flcProxy(requestID string) tuiServiceStatus {
 
 func (r *tuiServiceRuntime) ensureFLCProxy() (bool, error) {
 	status := r.snapshot("")
-	if !status.Running {
-		return false, errors.New("FlClash Core is stopped; run `flclash core start` first")
-	}
 	if status.Mode != tuiSilentMode {
 		return false, errors.New("private FLC listener is only active in silent mode")
 	}
@@ -516,14 +519,26 @@ func (r *tuiServiceRuntime) ensureFLCProxy() (bool, error) {
 	proxyURL := r.flc.proxyURL()
 	configPath := r.paths.configPath
 	r.mu.RUnlock()
-	if proxyURL != "" {
-		return false, nil
+	changed := false
+	if proxyURL == "" {
+		outbound, err := chooseDefaultTUIFLCOutbound(r.coreController, configPath)
+		if err != nil {
+			return false, err
+		}
+		selected, err := r.applyFLCOutbound(outbound)
+		if err != nil {
+			return false, err
+		}
+		changed = selected
 	}
-	outbound, err := chooseDefaultTUIFLCOutbound(r.coreController, configPath)
-	if err != nil {
-		return false, err
+	if !status.Running {
+		started, err := r.startCoreListeners()
+		if err != nil {
+			return changed, err
+		}
+		changed = changed || started
 	}
-	return r.applyFLCOutbound(outbound)
+	return changed, nil
 }
 
 func chooseDefaultTUIFLCOutbound(controller controllerClient, configPath string) (string, error) {
@@ -1978,16 +1993,16 @@ func (r *tuiServiceRuntime) testRoute(
 	}
 	var speed *tuiSpeedResult
 	var delay tuiDelayResult
-	client, closeClient, err := newTUIRouteHTTPClient(activePort)
+	client, closeClient, err := r.routeClient(activePort)
 	if err == nil {
 		if request.Action == "speed_route" {
 			var result tuiSpeedResult
-			result, err = runTUIDownloadSpeedTest(context.Background(), client)
+			result, err = r.routeSpeedTest(context.Background(), client)
 			if err == nil {
 				speed = &result
 			}
 		} else {
-			delay, err = runTUIRouteDelayTest(
+			delay, err = r.routeDelayTest(
 				context.Background(),
 				client,
 				request.TestURL,
