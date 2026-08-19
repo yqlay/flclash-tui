@@ -1,4 +1,4 @@
-## Unreleased
+## FlClash TUI v0.5.2
 
 - Start a fresh silent-mode Core on the first `flc COMMAND`, automatically
   selecting and persisting a usable FLC outbound instead of leaving the CLI in
@@ -12,9 +12,11 @@
   versions with no reachable known vulnerabilities.
 - Validate Flutter, plugin, Linux CLI, and Windows helper tests on every pull
   request, while keeping multi-platform packaging restricted to release tags.
-- Make Android signing optional but all-or-nothing, repair changelog/release-note
-  generation, and decouple GitHub releases from optional Telegram and external
-  repository credentials.
+- Package tagged releases as Linux TUI amd64/arm64 Debian and portable archives
+  with checksums, replacing the unrelated Flutter GUI matrix and legacy
+  third-party publishing steps.
+- Repair changelog and release-note generation, and update official GitHub
+  Actions to their Node 24-compatible major versions.
 - Fix the CargoKit Apple build script's shell declaration and stop printing the
   complete build environment into logs.
 - Make route-port tests deterministic and remove deprecated Flutter color APIs.
