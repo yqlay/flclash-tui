@@ -53,20 +53,20 @@ TUN has two scopes. `tun user on` captures only the current UID and may coexist 
 
 ### Debian or Ubuntu packages
 
-Choose the package matching `dpkg --print-architecture` from [GitHub Releases](https://github.com/yqlay/flclash-tui/releases). Version 0.5.1 packages are named:
+Choose the package matching `dpkg --print-architecture` from [GitHub Releases](https://github.com/yqlay/flclash-tui/releases). Version 0.5.2 packages are named:
 
 ```text
-flclash-tui_0.5.1_amd64.deb
-flclash-tui_0.5.1_arm64.deb
+flclash-tui_0.5.2_amd64.deb
+flclash-tui_0.5.2_arm64.deb
 ```
 
 Example for AMD64:
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.1/flclash-tui_0.5.1_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.1/flclash-tui_0.5.1_amd64.deb.sha256
-sha256sum -c flclash-tui_0.5.1_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.5.1_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.deb.sha256
+sha256sum -c flclash-tui_0.5.2_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.5.2_amd64.deb
 ```
 
 The package installs `/usr/bin/flclash`, the `/usr/bin/flc` entry point, documentation, and bundled GeoIP/GeoSite/ASN data. Missing or unusable Geo files can be restored locally before Core initialization, so first startup does not depend on downloading those files from GitHub.
@@ -94,7 +94,7 @@ With the implicit default data directory, Backend creates a minimal DIRECT-only 
 2. Select the downloaded profile and press Enter to activate it.
 3. Open **Proxies**, open a group, and select a node.
 4. The default is `silent`; choose `rule`, `global`, or `direct` only when a normal proxy entry is needed.
-5. In silent mode, select an FLC outbound before starting **Core**. To proxy desktop applications, leave silent mode before enabling **System proxy**.
+5. In silent mode, the first `flc COMMAND` automatically selects the first usable proxy group and starts **Core**. You can still choose a different FLC outbound explicitly. To proxy desktop applications, leave silent mode before enabling **System proxy**.
 
 On a headless server, use `flc`, an application's explicit proxy setting, or TUN instead of expecting desktop `gsettings` to affect remote shells.
 
@@ -121,11 +121,10 @@ In silent mode Backend builds a temporary runtime overlay that:
 - routes it directly through the selected FLC outbound (a node or proxy group);
 - leaves the shared profile YAML byte-for-byte unchanged and removes runtime overlays during shutdown.
 
-On first use, select an outbound before starting Core. Until then Backend remains available, Core stays stopped, and no normal Proxy port is opened:
+On first use, `flc COMMAND` selects the first usable proxy group, creates the private listener, and starts Core automatically. Select an outbound explicitly only when you want to override that choice:
 
 ```bash
-flclash flc select PROXY
-flclash core start
+flclash flc select PROXY  # optional override
 flc curl https://example.com
 ```
 

@@ -53,20 +53,20 @@ TUN 分为两种作用域：`tun user on` 只捕获当前 UID，可与其他用�
 
 ### Debian / Ubuntu 安装包
 
-在 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) 中选择与 `dpkg --print-architecture` 一致的包。0.5.1 的包名为：
+在 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) 中选择与 `dpkg --print-architecture` 一致的包。0.5.2 的包名为：
 
 ```text
-flclash-tui_0.5.1_amd64.deb
-flclash-tui_0.5.1_arm64.deb
+flclash-tui_0.5.2_amd64.deb
+flclash-tui_0.5.2_arm64.deb
 ```
 
 AMD64 示例：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.1/flclash-tui_0.5.1_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.1/flclash-tui_0.5.1_amd64.deb.sha256
-sha256sum -c flclash-tui_0.5.1_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.5.1_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.deb.sha256
+sha256sum -c flclash-tui_0.5.2_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.5.2_amd64.deb
 ```
 
 安装包提供 `/usr/bin/flclash`、`/usr/bin/flc`、文档以及内置 GeoIP/GeoSite/ASN 数据。Core 初始化前可以从本地安装资源恢复缺失或不可用的 Geo 文件，首次启动不依赖从 GitHub 下载这些基础文件。
@@ -94,7 +94,7 @@ flclash
 2. 选中下载完成的 Profile，按 Enter 激活。
 3. 打开 **Proxies**，进入代理组并选择节点。
 4. 默认处于 `silent`；如需普通代理入口，再选择 `rule`、`global` 或 `direct`。
-5. silent 下先选择 FLC outbound，再启动 **Core**。需要桌面应用使用普通代理端口时，先退出 silent，再开启 **System proxy**。
+5. silent 下首次运行 `flc 命令` 时会自动选择第一个可用代理组并启动 **Core**；仍可手动改选 FLC outbound。需要桌面应用使用普通代理端口时，先退出 silent，再开启 **System proxy**。
 
 无头服务器上通常没有可用的桌面 `gsettings` 会话，应使用 `flc`、应用自身的代理设置或 TUN，而不是期待“系统代理”影响远程 Shell。
 
@@ -121,11 +121,10 @@ flclash
 - 让它直接使用选定的 FLC outbound（节点或代理组）；
 - 共享 Profile YAML 保持逐字节不变，退出时删除临时覆盖文件。
 
-首次使用先选择出口；在此之前 Backend 正常运行，但 Core 保持停止且不会开放普通 Proxy port：
+首次运行 `flc 命令` 时会自动选择第一个可用代理组、创建私有 listener 并启动 Core。只有需要覆盖自动选择时才手动指定出口：
 
 ```bash
-flclash flc select PROXY
-flclash core start
+flclash flc select PROXY  # 可选：覆盖自动选择
 flc curl https://example.com
 ```
 
