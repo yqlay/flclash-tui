@@ -196,8 +196,8 @@ Top-level `start`, `stop`, `restart`, and `reload` are compatibility shortcuts f
 | `flclash port off` | Set the normal Proxy port to `0` |
 | `flclash flc status\|select NAME\|test\|env` | Manage the command-only proxy entry |
 | `flclash net show` or `net refresh` | Detect public IP, country, intranet address, and route (`DIRECT` or Proxy port) |
-| `flclash net delay` | Test the current normal Proxy-port route latency |
-| `flclash net speed` | Download up to 100 MB for at most five seconds through the normal route |
+| `flclash net delay` | Measure five warm normal-route RTT samples and report median/jitter |
+| `flclash net speed` | Measure aggregate Cloudflare download throughput with four streams, up to 100 MB or five seconds |
 
 In silent mode use `flclash flc test`; normal-route `net delay` and `net speed` are intentionally unavailable.
 

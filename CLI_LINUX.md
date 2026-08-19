@@ -71,6 +71,12 @@ flclash flc env
 flclash net show|refresh|delay|speed
 ```
 
+`net delay` warms the active normal route, takes five RTT samples, and reports
+the median and mean successive-sample jitter. `net speed` measures aggregate
+Cloudflare download throughput across four concurrent streams, stopping after
+99,999,999 bytes or five seconds. Both commands use the Backend's active runtime
+Proxy port, including an automatically selected fallback port.
+
 Profiles and configuration:
 
 ```bash
@@ -174,7 +180,7 @@ U, F2/u, e      update/rename/edit Profile      x             clear/close all
 q               detach this TUI                 Ctrl+C        shutdown Backend + Core
 ```
 
-The layout remains operable down to `40x10`. Long-running tests run outside the input loop; group speed tests are serial and each node downloads at most 100 MB for at most five seconds.
+The layout remains operable down to `40x10`. Long-running tests run outside the input loop; group speed tests are serial and each node uses four download streams for at most 100 MB or five seconds. Delay tests use five samples and show median/jitter when space permits.
 
 Selecting Mode, or pressing `m` on Dashboard/Settings, opens the `rule`, `silent`, `global`, and `direct` list before making any change. Use ↑/↓ or `w`/`s` and press Enter to confirm.
 

@@ -34,7 +34,7 @@ type tuiGroup struct {
 	Type   string
 	Now    string
 	Nodes  []string
-	Delays map[string]int
+	Delays map[string]tuiDelayResult
 	Speeds map[string]tuiSpeedResult
 }
 
@@ -114,6 +114,16 @@ type tuiSpeedResult struct {
 	Complete       bool    `json:"complete"`
 	Testing        bool    `json:"-"`
 	Error          string  `json:"-"`
+}
+
+type tuiDelayResult struct {
+	MedianMillis int    `json:"median_millis"`
+	JitterMillis int    `json:"jitter_millis"`
+	MinMillis    int    `json:"min_millis"`
+	MaxMillis    int    `json:"max_millis"`
+	Samples      int    `json:"samples"`
+	Testing      bool   `json:"-"`
+	Error        string `json:"-"`
 }
 
 type tuiUpdateInfo struct {
@@ -205,7 +215,7 @@ type tuiSnapshot struct {
 	Settings            tuiSettings
 	Network             tuiNetworkInfo
 	Memory              tuiMemoryInfo
-	DashboardDelay      int
+	DashboardDelay      tuiDelayResult
 	DashboardSpeed      tuiSpeedResult
 	Update              tuiUpdateInfo
 	UpdatedAt           time.Time
@@ -1162,7 +1172,7 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 		if len(proxy.All) == 0 || !isTUIGroup(proxy.Type) {
 			continue
 		}
-		delays := make(map[string]int, len(proxy.All))
+		delays := make(map[string]tuiDelayResult, len(proxy.All))
 		for _, node := range proxy.All {
 			nodeProxy, exists := response.Proxies[node]
 			if !exists || len(nodeProxy.History) == 0 {
@@ -1170,7 +1180,12 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 			}
 			delay := nodeProxy.History[len(nodeProxy.History)-1].Delay
 			if delay > 0 {
-				delays[node] = delay
+				delays[node] = tuiDelayResult{
+					MedianMillis: delay,
+					MinMillis:    delay,
+					MaxMillis:    delay,
+					Samples:      1,
+				}
 			}
 		}
 		groups = append(groups, tuiGroup{
@@ -3108,12 +3123,12 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 		color := tuiGreen
 		delay, tested := group.Delays[node]
 		switch {
-		case delay > 0:
-			label += fmt.Sprintf("  %d ms", delay)
-		case delay == -1:
+		case delay.MedianMillis > 0:
+			label += "  " + formatTUIDelay(delay)
+		case delay.Error != "":
 			label += "  Timeout · d retry"
 			color = tuiDim
-		case delay == -2:
+		case delay.Testing:
 			label += "  Testing..."
 			color = tuiCyan
 		case !tested:
@@ -3276,8 +3291,8 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 	rows := []string{
 		"Navigation     ← sidebar · → content · ↑↓/ws move · Enter opens/applies · Esc back",
 		"Sections       1-8 open directly · Tab changes focus · [/] changes proxy view",
-		"Dashboard      d route delay · v 100 MB/5s speed · n refresh IP detection",
-		"Proxies        Enter nodes · d group/node delay · v group/node speed · Esc groups",
+		"Dashboard      d rule-route latency (5 samples) · v Cloudflare 4-stream speed · n refresh",
+		"Proxies        Enter nodes · d node RTT (5 samples) · v node speed · Esc groups",
 		"Profiles       Enter activate · U refresh subscription · F2/u rename · e edit · n import",
 		"History        x clears shared history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
@@ -3344,7 +3359,7 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 			intranetIP = "No active LAN address"
 		}
 	}
-	networkSubtitle := "d latency · v speed (100 MB/5s) · n refresh"
+	networkSubtitle := "d rule RTT×5 · v CF 4-stream 100 MB/5s · n refresh"
 	if snapshot.Network.Route != "" {
 		networkSubtitle += " · " + snapshot.Network.Route
 	}
@@ -3356,14 +3371,14 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 	tuiRow(b, "Intranet IP   "+intranetIP, width, false, tuiGreen)
 	tuiRow(
 		b,
-		"Route latency  "+tuiDashboardDelayLabel(snapshot.DashboardDelay),
+		"Rule route     "+tuiDashboardDelayLabel(snapshot.DashboardDelay),
 		width,
 		false,
 		tuiCyan,
 	)
 	tuiRow(
 		b,
-		"Download test  "+tuiSpeedResultLabel(snapshot.DashboardSpeed),
+		"Cloudflare DL  "+tuiSpeedResultLabel(snapshot.DashboardSpeed),
 		width,
 		false,
 		tuiGreen,
@@ -3491,7 +3506,7 @@ func tuiCompactDashboardRows(
 	rows = append(
 		rows,
 		tuiDashboardCompactRow{
-			value: "── Network · d latency · v speed · n refresh",
+			value: "── Network · d rule-route latency · v Cloudflare speed · n refresh",
 			color: tuiCyan,
 		},
 		tuiDashboardCompactRow{
@@ -3503,12 +3518,12 @@ func tuiCompactDashboardRows(
 			color: tuiGreen,
 		},
 		tuiDashboardCompactRow{
-			value: "Route latency  " +
+			value: "Rule route     " +
 				tuiDashboardDelayLabel(snapshot.DashboardDelay),
 			color: tuiCyan,
 		},
 		tuiDashboardCompactRow{
-			value: "Download test  " +
+			value: "Cloudflare DL  " +
 				tuiSpeedResultLabel(snapshot.DashboardSpeed),
 			color: tuiGreen,
 		},
@@ -3554,23 +3569,35 @@ func tuiCompactDashboardRows(
 	return rows
 }
 
-func tuiDashboardDelayLabel(delay int) string {
+func tuiDashboardDelayLabel(delay tuiDelayResult) string {
 	switch {
-	case delay > 0:
-		return fmt.Sprintf("%d ms · d retest", delay)
-	case delay == -1:
+	case delay.MedianMillis > 0:
+		return formatTUIDelay(delay) + " · d retest"
+	case delay.Error != "":
 		return "Timeout · d retry"
-	case delay == -2:
+	case delay.Testing:
 		return "Testing..."
 	default:
 		return "Not tested · press d"
 	}
 }
 
+func formatTUIDelay(result tuiDelayResult) string {
+	if result.Samples <= 1 {
+		return fmt.Sprintf("%d ms", result.MedianMillis)
+	}
+	return fmt.Sprintf(
+		"%d ms · jitter %d ms · %d samples",
+		result.MedianMillis,
+		result.JitterMillis,
+		result.Samples,
+	)
+}
+
 func tuiSpeedResultLabel(result tuiSpeedResult) string {
 	switch {
 	case result.Testing:
-		return "Testing 100 MB for up to 5s..."
+		return "Testing 4 streams · up to 100 MB/5s..."
 	case result.Error != "":
 		return "Failed · v retry"
 	case result.BytesPerSecond > 0:
