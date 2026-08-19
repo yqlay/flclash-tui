@@ -60,7 +60,7 @@ func loadTUIState(homeDir string) (tuiPersistentState, error) {
 	return state, nil
 }
 
-func loadTUITrafficMode(homeDir, configPath string) string {
+func loadTUITrafficMode(homeDir, _ string) string {
 	state, err := loadTUIState(homeDir)
 	if err == nil {
 		mode := strings.ToLower(strings.TrimSpace(state.TrafficMode))
@@ -68,11 +68,7 @@ func loadTUITrafficMode(homeDir, configPath string) string {
 			return mode
 		}
 	}
-	settings := loadTUIConfiguredSettings(configPath, true)
-	if settings == nil {
-		return "rule"
-	}
-	return strings.ToLower(settings.Mode)
+	return tuiSilentMode
 }
 
 func rememberTUITrafficMode(homeDir, mode string) error {

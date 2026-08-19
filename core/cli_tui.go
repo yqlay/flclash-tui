@@ -53,13 +53,15 @@ const (
 )
 
 type tuiConnection struct {
-	ID       string
-	Host     string
-	Process  string
-	Network  string
-	Chain    string
-	Upload   int64
-	Download int64
+	ID          string `json:"id"`
+	Host        string `json:"host"`
+	Process     string `json:"process,omitempty"`
+	ProcessPath string `json:"process_path,omitempty"`
+	UID         uint32 `json:"uid,omitempty"`
+	Network     string `json:"network,omitempty"`
+	Chain       string `json:"chain,omitempty"`
+	Upload      int64  `json:"upload"`
+	Download    int64  `json:"download"`
 }
 
 type tuiRequest struct {
@@ -78,6 +80,7 @@ type tuiSettings struct {
 	TCPConcurrent bool
 	LogLevel      string
 	TunEnabled    bool
+	TunScope      string
 	SystemProxy   bool
 }
 
@@ -131,6 +134,7 @@ const (
 	tuiSettingsUnifiedDelayRow
 	tuiSettingsTCPConcurrentRow
 	tuiSettingsLogLevelRow
+	tuiSettingsTunScopeRow
 	tuiSettingsTunRow
 	tuiSettingsServiceRow
 	tuiSettingsSystemProxyRow
@@ -227,6 +231,8 @@ type tuiSnapshot struct {
 	ManagedService      bool
 	FLCEnabled          bool
 	FLCOutbound         string
+	ConfiguredProxyPort int
+	ActiveProxyPort     int
 	Frontends           []cliProcessOwner
 	InputTitle          string
 	InputValue          string
@@ -862,6 +868,8 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 						updateTUISettings(&snapshot, client, tuiKeyTCPConcurrent)
 					case tuiSettingsLogLevelRow:
 						updateTUISettings(&snapshot, client, tuiKeyLogLevel)
+					case tuiSettingsTunScopeRow:
+						snapshot.Status = "TUN scope changes require the managed Backend"
 					case tuiSettingsTunRow:
 						updateTUISettings(&snapshot, client, tuiKeyTun)
 					case tuiSettingsServiceRow:
@@ -1197,6 +1205,8 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 					DestinationIP   string `json:"destinationIP"`
 					DestinationPort string `json:"destinationPort"`
 					Process         string `json:"process"`
+					ProcessPath     string `json:"processPath"`
+					UID             uint32 `json:"uid"`
 					Network         string `json:"network"`
 				} `json:"metadata"`
 				Upload   int64    `json:"upload"`
@@ -1206,7 +1216,11 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 		}
 		if json.Unmarshal(connections, &value) == nil {
 			activeConnections := make([]tuiConnection, 0, len(value.Connections))
+			systemTun := snapshot.Settings.TunEnabled && snapshot.Settings.TunScope == tuiTunScopeSystem
 			for _, item := range value.Connections {
+				if snapshot.ManagedService && !systemTun && item.Metadata.UID != uint32(os.Getuid()) {
+					continue
+				}
 				chain := "DIRECT"
 				if len(item.Chains) > 0 {
 					chain = item.Chains[len(item.Chains)-1]
@@ -1220,6 +1234,7 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 				}
 				activeConnections = append(activeConnections, tuiConnection{
 					ID: item.ID, Host: host, Process: item.Metadata.Process,
+					ProcessPath: item.Metadata.ProcessPath, UID: item.Metadata.UID,
 					Network: item.Metadata.Network, Chain: chain,
 					Upload: item.Upload, Download: item.Download,
 				})
@@ -1868,25 +1883,7 @@ func linuxGSettingsGet(schema, key string) (string, error) {
 
 func setLinuxSystemProxy(port int, enable bool) error {
 	schema := linuxProxySchema()
-	commands := make([][]string, 0, 7)
-	if enable {
-		commands = append(commands,
-			[]string{schema, "ignore-hosts", "[]"},
-			[]string{schema + ".http", "host", "127.0.0.1"},
-			[]string{schema + ".http", "port", fmt.Sprintf("%d", port)},
-			[]string{schema + ".https", "host", "127.0.0.1"},
-			[]string{schema + ".https", "port", fmt.Sprintf("%d", port)},
-			[]string{schema + ".socks", "host", "127.0.0.1"},
-			[]string{schema + ".socks", "port", fmt.Sprintf("%d", port)},
-		)
-	}
-	mode := "none"
-	if enable {
-		mode = "manual"
-	}
-	// Set mode last so a failed host/port update cannot leave a half-configured
-	// desktop proxy enabled.
-	commands = append(commands, []string{schema, "mode", mode})
+	commands := linuxSystemProxyCommands(schema, port, enable)
 	for _, args := range commands {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		output, err := exec.CommandContext(ctx, "gsettings", append([]string{"set"}, args...)...).CombinedOutput()
@@ -1900,6 +1897,30 @@ func setLinuxSystemProxy(port int, enable bool) error {
 		}
 	}
 	return nil
+}
+
+func linuxSystemProxyCommands(schema string, port int, enable bool) [][]string {
+	commands := make([][]string, 0, 7)
+	if enable {
+		commands = append(commands,
+			[]string{schema, "mode", "none"},
+			[]string{schema, "ignore-hosts", "[]"},
+			[]string{schema + ".http", "host", "127.0.0.1"},
+			[]string{schema + ".http", "port", fmt.Sprintf("%d", port)},
+			[]string{schema + ".https", "host", "127.0.0.1"},
+			[]string{schema + ".https", "port", fmt.Sprintf("%d", port)},
+			[]string{schema + ".socks", "host", "127.0.0.1"},
+			[]string{schema + ".socks", "port", fmt.Sprintf("%d", port)},
+		)
+	}
+	mode := "none"
+	if enable {
+		mode = "manual"
+	}
+	// Disable first and enable last so a failed host/port update cannot leave a
+	// half-configured desktop proxy active.
+	commands = append(commands, []string{schema, "mode", mode})
+	return commands
 }
 
 func linuxProxySchema() string {
@@ -2072,6 +2093,7 @@ const (
 	tuiKeyIPv6
 	tuiKeyUnifiedDelay
 	tuiKeyTCPConcurrent
+	tuiKeyTunScope
 	tuiKeyTun
 	tuiKeyMode
 	tuiKeyLogLevel
@@ -2342,7 +2364,8 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	}
 	snapshot.ServiceRunning = coreRunning
 	snapshot.ExternalCore = !ownsCore
-	if ownsCore && coreRunning && snapshot.Settings.MixedPort <= 0 &&
+	if ownsCore && coreRunning && snapshot.Settings.Mode != tuiSilentMode &&
+		snapshot.Settings.MixedPort <= 0 &&
 		(snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Core listeners started") {
 		snapshot.Status = "No proxy listener active; select Proxy port in Dashboard or Settings"
 	}
@@ -3670,10 +3693,18 @@ func drawTUIRequests(b *strings.Builder, snapshot tuiSnapshot, width, height int
 			color,
 		)
 		rows++
-		if request.Process != "" && rows < height-3 {
+		if (request.Process != "" || request.UID != 0) && rows < height-3 {
+			process := request.Process
+			if request.UID != 0 {
+				if process == "" {
+					process = fmt.Sprintf("UID %d", request.UID)
+				} else {
+					process = fmt.Sprintf("%s · UID %d", process, request.UID)
+				}
+			}
 			tuiRow(
 				b,
-				"process: "+request.Process,
+				"process: "+strings.TrimSpace(process),
 				width,
 				false,
 				tuiDim,
@@ -3706,8 +3737,16 @@ func drawTUIConnections(b *strings.Builder, snapshot tuiSnapshot, width, height 
 		row := fmt.Sprintf("%-32s %-7s %-18s ↑%-9s ↓%-9s", truncateTUI(label, 32), connection.Network, truncateTUI(connection.Chain, 18), formatBytes(connection.Upload), formatBytes(connection.Download))
 		tuiRow(b, row, width, index == snapshot.SelectedConnection && !snapshot.FocusSidebar, "")
 		rows++
-		if connection.Process != "" && rows < height-3 {
-			tuiRow(b, "process: "+connection.Process, width, false, tuiDim)
+		if (connection.Process != "" || connection.UID != 0) && rows < height-3 {
+			process := connection.Process
+			if connection.UID != 0 {
+				if process == "" {
+					process = fmt.Sprintf("UID %d", connection.UID)
+				} else {
+					process = fmt.Sprintf("%s · UID %d", process, connection.UID)
+				}
+			}
+			tuiRow(b, "process: "+strings.TrimSpace(process), width, false, tuiDim)
 			rows++
 		}
 	}
@@ -3790,6 +3829,7 @@ func tuiSettingsRows(snapshot tuiSnapshot) []string {
 			tuiOnOff(snapshot.Settings.TCPConcurrent),
 		),
 		fmt.Sprintf("Log level     %s", snapshot.Settings.LogLevel),
+		fmt.Sprintf("TUN scope     %s", strings.ToUpper(tuiEffectiveTunScope(snapshot.Settings.TunScope))),
 		fmt.Sprintf("TUN           %s", tuiTUNLabel(snapshot)),
 		fmt.Sprintf("Core          %s", tuiServiceLabel(snapshot)),
 		fmt.Sprintf("System proxy  %s", tuiSystemProxyLabel(snapshot)),
@@ -3823,7 +3863,21 @@ func tuiTUNLabel(snapshot tuiSnapshot) string {
 	if snapshot.Settings.Mode == tuiSilentMode {
 		return "OFF · locked by silent mode"
 	}
-	return tuiOnOff(snapshot.Settings.TunEnabled)
+	scope := snapshot.Settings.TunScope
+	if scope == "" {
+		scope = tuiTunScopeUser
+	}
+	if snapshot.Settings.TunEnabled {
+		return strings.ToUpper(scope) + " ON"
+	}
+	return "OFF · " + scope
+}
+
+func tuiEffectiveTunScope(scope string) string {
+	if scope == "" {
+		return tuiTunScopeUser
+	}
+	return scope
 }
 
 func tuiProxyPortLabel(snapshot tuiSnapshot) string {
@@ -3840,6 +3894,9 @@ func tuiProxyPortLabel(snapshot tuiSnapshot) string {
 	}
 	if snapshot.Settings.MixedPort <= 0 {
 		return "OFF"
+	}
+	if snapshot.ActiveProxyPort > 0 && snapshot.ActiveProxyPort != snapshot.Settings.MixedPort {
+		return fmt.Sprintf("%d active · configured %d", snapshot.ActiveProxyPort, snapshot.Settings.MixedPort)
 	}
 	return strconv.Itoa(snapshot.Settings.MixedPort)
 }

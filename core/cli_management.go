@@ -165,20 +165,26 @@ func printManagedStatus(status tuiServiceStatus, jsonOutput bool) error {
 	}
 	if jsonOutput {
 		return writeCLIJSON(os.Stdout, map[string]any{
-			"protocol_version": status.ProtocolVersion,
-			"backend_version":  status.Version,
-			"revision":         status.Revision,
-			"backend":          "running",
-			"backend_pid":      status.PID,
-			"core":             cliOnOff(status.Running),
-			"profile":          status.ConfigPath,
-			"proxy_port":       proxyPort,
-			"mixed_port":       proxyPort,
-			"mode":             mode,
-			"flc_enabled":      status.FLCEnabled,
-			"flc_outbound":     status.FLCOutbound,
-			"system_proxy":     status.SystemProxy,
-			"frontends":        status.FrontendCount,
+			"protocol_version":      status.ProtocolVersion,
+			"backend_version":       status.Version,
+			"revision":              status.Revision,
+			"backend":               "running",
+			"backend_pid":           status.PID,
+			"core":                  cliOnOff(status.Running),
+			"profile":               status.ConfigPath,
+			"proxy_port":            proxyPort,
+			"configured_proxy_port": status.ConfiguredProxyPort,
+			"active_proxy_port":     status.ActiveProxyPort,
+			"mixed_port":            status.ConfiguredProxyPort,
+			"mode":                  mode,
+			"flc_enabled":           status.FLCEnabled,
+			"flc_outbound":          status.FLCOutbound,
+			"system_proxy":          status.SystemProxy,
+			"tun_scope":             status.TunScope,
+			"tun_state":             status.TunState,
+			"tun_owner_uid":         status.TunOwnerUID,
+			"tun_owner_pid":         status.TunOwnerPID,
+			"frontends":             status.FrontendCount,
 		})
 	}
 	fmt.Printf("Backend:      running (PID %d, revision %d)\n", status.PID, status.Revision)
@@ -188,7 +194,11 @@ func printManagedStatus(status tuiServiceStatus, jsonOutput bool) error {
 	if mode == tuiSilentMode {
 		fmt.Printf("Proxy port:   off (configured %d)\n", proxyPort)
 	} else if proxyPort > 0 {
-		fmt.Printf("Proxy port:   %d (Mihomo mixed-port)\n", proxyPort)
+		if status.ActiveProxyPort > 0 && status.ActiveProxyPort != status.ConfiguredProxyPort {
+			fmt.Printf("Proxy port:   %d active (configured %d)\n", status.ActiveProxyPort, status.ConfiguredProxyPort)
+		} else {
+			fmt.Printf("Proxy port:   %d (Mihomo mixed-port)\n", proxyPort)
+		}
 	}
 	if mode != "" {
 		fmt.Printf("Mode:         %s\n", mode)
@@ -197,6 +207,7 @@ func printManagedStatus(status tuiServiceStatus, jsonOutput bool) error {
 		fmt.Printf("FLC outbound: %s\n", status.FLCOutbound)
 	}
 	fmt.Printf("System proxy: %s\n", cliOnOff(status.SystemProxy))
+	fmt.Printf("TUN:          %s · %s\n", strings.ToUpper(status.TunState), status.TunScope)
 	fmt.Printf("Frontends:    %d\n", status.FrontendCount)
 	return nil
 }
@@ -439,6 +450,9 @@ func systemProxyCommand(args []string) error {
 		return nil
 	}
 	enabled := action == "enable" || action == "on"
+	if enabled && status.Mode == tuiSilentMode {
+		return errors.New("System proxy cannot be enabled in silent mode; switch mode first")
+	}
 	autoStarted := false
 	if enabled && !status.Running {
 		status, err = client.startAtRevision(status.Revision)
@@ -472,42 +486,55 @@ func systemProxyCommand(args []string) error {
 
 func tunCommand(args []string) error {
 	if cliSubcommandHelp(args) {
-		fmt.Println("Usage: flclash tun [on|off|status]")
-		fmt.Println("This command matches the TUN row on Dashboard.")
+		fmt.Println("Usage: flclash tun [user|system] [on|off]")
+		fmt.Println("       flclash tun status")
+		fmt.Println("Without a scope, on/off uses the current-user TUN scope.")
 		return nil
 	}
 	if len(args) == 0 {
 		args = []string{"status"}
 	}
-	if len(args) != 1 {
-		return errors.New("usage: flclash tun [on|off|status]")
+	if len(args) > 2 {
+		return errors.New("usage: flclash tun [user|system] [on|off]")
 	}
-	action := strings.ToLower(args[0])
+	scope := tuiTunScopeUser
+	action := strings.ToLower(args[len(args)-1])
+	if len(args) == 2 {
+		scope = strings.ToLower(args[0])
+	}
 	if action != "enable" && action != "disable" &&
 		action != "on" && action != "off" && action != "status" {
 		return errors.New("tun requires on, off, or status")
 	}
-	client, status, settings, err := currentManagedSettings()
+	client, status, err := currentManagedService()
 	if err != nil {
 		return err
 	}
 	if action == "status" {
-		fmt.Println(cliUpperOnOff(settings.TunEnabled))
+		if status.TunState == "on" {
+			fmt.Printf("%s ON", strings.ToUpper(status.TunScope))
+			if status.TunScope == tuiTunScopeSystem {
+				fmt.Printf(" (UID %d, PID %d)", status.TunOwnerUID, status.TunOwnerPID)
+			}
+			fmt.Println()
+		} else {
+			fmt.Printf("OFF · %s\n", status.TunScope)
+		}
 		return nil
 	}
-	settings.TunEnabled = action == "enable" || action == "on"
-	status, err = client.applySettings(*settings, status.Revision)
+	enabled := action == "enable" || action == "on"
+	status, err = client.setTun(enabled, scope, status.Revision)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("TUN %s (revision %d)\n", cliUpperOnOff(settings.TunEnabled), status.Revision)
+	fmt.Printf("TUN %s %s (revision %d)\n", strings.ToUpper(status.TunScope), cliUpperOnOff(enabled), status.Revision)
 	return nil
 }
 
 func modeCommand(args []string) error {
 	if cliSubcommandHelp(args) {
 		fmt.Println("Usage: flclash mode [rule|global|direct|silent]")
-		fmt.Println("No value shows the current mode; silent allows only flc commands.")
+		fmt.Println("No value shows the current mode; silent is the default and allows only flc commands.")
 		fmt.Println("Compatibility syntax: flclash mode get|set MODE")
 		return nil
 	}
@@ -555,11 +582,11 @@ func portCommand(args []string) error {
 			return err
 		}
 		if status.Mode == tuiSilentMode {
-			fmt.Printf("OFF (configured %d)\n", status.ProxyPort)
-		} else if status.ProxyPort <= 0 {
+			fmt.Printf("OFF (configured %d)\n", status.ConfiguredProxyPort)
+		} else if status.ConfiguredProxyPort <= 0 {
 			fmt.Println("OFF")
 		} else {
-			fmt.Println(status.ProxyPort)
+			fmt.Println(status.ConfiguredProxyPort)
 		}
 		return nil
 	}
@@ -858,35 +885,43 @@ func connectionsCommand(args []string) error {
 	if len(args) == 0 {
 		args = []string{"show"}
 	}
-	_, status, err := currentManagedService()
+	service, status, err := currentManagedService()
 	if err != nil {
 		return err
 	}
-	client := managedController(status)
 	switch args[0] {
 	case "list", "show":
-		data, err := client.request(http.MethodGet, "/connections", nil)
+		connectionStatus, err := service.connections()
 		if err != nil {
 			return err
 		}
 		if len(args) > 1 && args[1] == "--json" {
-			_, err = os.Stdout.Write(append(data, '\n'))
-			return err
+			return writeCLIJSON(os.Stdout, connectionStatus.Connections)
 		}
-		return printCLIConnections(data)
+		return printCLIManagedConnections(connectionStatus.Connections)
 	case "close":
 		if len(args) != 2 {
 			return errors.New("usage: flclash connections close ID|all")
 		}
 		if args[1] == "all" {
-			return client.closeAllConnections()
+			_, err = service.closeAllConnectionsManaged(status.Revision)
+			return err
 		}
-		return client.closeConnection(args[1])
+		_, err = service.closeConnectionManaged(args[1], status.Revision)
+		return err
 	case "close-all":
-		return client.closeAllConnections()
+		_, err = service.closeAllConnectionsManaged(status.Revision)
+		return err
 	default:
 		return fmt.Errorf("unknown connections command %q", args[0])
 	}
+}
+
+func printCLIManagedConnections(connections []tuiConnection) error {
+	for _, connection := range connections {
+		fmt.Printf("%s\t%s\t%s\tUID %d\t%s\n", connection.ID, connection.Host, connection.Process, connection.UID, connection.Chain)
+	}
+	return nil
 }
 
 func geoCommand(args []string) error {
@@ -987,7 +1022,7 @@ func completionCommand(args []string) error {
 		{"tui", "--config --directory --controller --secret --test-url --no-start"},
 		{"core", "start stop restart reload status"},
 		{"sys", "on off status"},
-		{"tun", "on off status"},
+		{"tun", "user system on off status"},
 		{"mode", "rule global direct silent"},
 		{"port", "off"},
 		{"flc", "status select test env"},

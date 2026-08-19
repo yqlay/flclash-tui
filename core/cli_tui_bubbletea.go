@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	nethttp "net/http"
 	"os"
 	"os/exec"
@@ -240,7 +239,11 @@ func runTUI(
 			model.backendRevision = status.Revision
 			model.snapshot.Settings.SystemProxy = status.SystemProxy
 			model.snapshot.Settings.Mode = status.Mode
-			model.snapshot.Settings.MixedPort = status.ProxyPort
+			model.snapshot.Settings.MixedPort = status.ConfiguredProxyPort
+			model.snapshot.ConfiguredProxyPort = status.ConfiguredProxyPort
+			model.snapshot.ActiveProxyPort = status.ActiveProxyPort
+			model.snapshot.Settings.TunEnabled = status.TunState == "on"
+			model.snapshot.Settings.TunScope = status.TunScope
 			if status.Mode == tuiSilentMode {
 				model.snapshot.Settings.TunEnabled = false
 			}
@@ -349,7 +352,11 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.coreRunning = message.status.Running
 		m.snapshot.Settings.SystemProxy = message.status.SystemProxy
 		m.snapshot.Settings.Mode = message.status.Mode
-		m.snapshot.Settings.MixedPort = message.status.ProxyPort
+		m.snapshot.Settings.MixedPort = message.status.ConfiguredProxyPort
+		m.snapshot.ConfiguredProxyPort = message.status.ConfiguredProxyPort
+		m.snapshot.ActiveProxyPort = message.status.ActiveProxyPort
+		m.snapshot.Settings.TunEnabled = message.status.TunState == "on"
+		m.snapshot.Settings.TunScope = message.status.TunScope
 		if message.status.Mode == tuiSilentMode {
 			m.snapshot.Settings.TunEnabled = false
 		}
@@ -418,7 +425,11 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.coreRunning = message.serviceStatus.Running
 			m.snapshot.Settings.SystemProxy = message.serviceStatus.SystemProxy
 			m.snapshot.Settings.Mode = message.serviceStatus.Mode
-			m.snapshot.Settings.MixedPort = message.serviceStatus.ProxyPort
+			m.snapshot.Settings.MixedPort = message.serviceStatus.ConfiguredProxyPort
+			m.snapshot.ConfiguredProxyPort = message.serviceStatus.ConfiguredProxyPort
+			m.snapshot.ActiveProxyPort = message.serviceStatus.ActiveProxyPort
+			m.snapshot.Settings.TunEnabled = message.serviceStatus.TunState == "on"
+			m.snapshot.Settings.TunScope = message.serviceStatus.TunScope
 			if message.serviceStatus.Mode == tuiSilentMode {
 				m.snapshot.Settings.TunEnabled = false
 			}
@@ -1099,7 +1110,20 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			m.snapshot.Status = "Logs cleared"
 		} else if m.snapshot.Page == tuiPageConnections {
 			return m.startOperation(func(state *tuiOperationState) {
-				if err := m.client.closeAllConnections(); err != nil {
+				var err error
+				if m.service != nil {
+					if !prepareTUIBackendRevision(state, m.service) {
+						return
+					}
+					var status tuiServiceStatus
+					status, err = m.service.closeAllConnectionsManaged(state.backendRevision)
+					if err == nil {
+						state.backendRevision = status.Revision
+					}
+				} else {
+					err = m.client.closeAllConnections()
+				}
+				if err != nil {
 					state.snapshot.Status = "Close connections failed: " + err.Error()
 				} else {
 					state.snapshot.Status = "All connections closed"
@@ -1123,7 +1147,20 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			m.snapshot.SelectedConnection < len(m.snapshot.Connections) {
 			connectionID := m.snapshot.Connections[m.snapshot.SelectedConnection].ID
 			return m.startOperation(func(state *tuiOperationState) {
-				if err := m.client.closeConnection(connectionID); err != nil {
+				var err error
+				if m.service != nil {
+					if !prepareTUIBackendRevision(state, m.service) {
+						return
+					}
+					var status tuiServiceStatus
+					status, err = m.service.closeConnectionManaged(connectionID, state.backendRevision)
+					if err == nil {
+						state.backendRevision = status.Revision
+					}
+				} else {
+					err = m.client.closeConnection(connectionID)
+				}
+				if err != nil {
 					state.snapshot.Status = "Close connection failed: " + err.Error()
 				} else {
 					state.snapshot.Status = "Connection closed"
@@ -1298,6 +1335,12 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				applyTUIOperationSetting(state, m.service, m.client, key)
 			})
 		}
+	case tuiKeyTunScope:
+		if m.snapshot.Page == tuiPageTools {
+			return m.startOperation(func(state *tuiOperationState) {
+				applyTUITunScope(state, m.service)
+			})
+		}
 	case tuiKeySetPort:
 		if m.snapshot.Page == tuiPageDashboard || m.snapshot.Page == tuiPageTools {
 			m.beginInput(tuiInputMixedPort)
@@ -1309,6 +1352,11 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				return nil
 			}
 			return m.startOperation(func(state *tuiOperationState) {
+				enabled := !state.snapshot.Settings.SystemProxy
+				if enabled && state.snapshot.Settings.Mode == tuiSilentMode {
+					state.snapshot.Status = "System proxy cannot be enabled in silent mode; switch mode first"
+					return
+				}
 				autoStarted := false
 				if m.ownsCore && !state.coreRunning {
 					if !startTUIManagedCore(state, m.service) {
@@ -1319,7 +1367,6 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				if !prepareTUIBackendRevision(state, m.service) {
 					return
 				}
-				enabled := !state.snapshot.Settings.SystemProxy
 				status, err := m.service.setSystemProxy(
 					enabled,
 					state.backendRevision,
@@ -1496,12 +1543,63 @@ func applyTUIOperationSetting(
 		state.snapshot.Status = "Changing shared settings requires the managed backend"
 		return
 	}
+	if key == tuiKeyTun {
+		if !prepareTUIBackendRevision(state, service) {
+			return
+		}
+		scope := state.snapshot.Settings.TunScope
+		if scope == "" {
+			scope = tuiTunScopeUser
+		}
+		status, err := service.setTun(
+			!state.snapshot.Settings.TunEnabled,
+			scope,
+			state.backendRevision,
+		)
+		if err != nil {
+			state.snapshot.Status = "TUN update failed: " + err.Error()
+			return
+		}
+		state.backendRevision = status.Revision
+		state.snapshot.Settings.TunEnabled = status.TunState == "on"
+		state.snapshot.Settings.TunScope = status.TunScope
+		state.snapshot.Status = "TUN " + strings.ToUpper(status.TunScope) + " " + strings.ToUpper(status.TunState)
+		return
+	}
 	settings := state.snapshot.Settings
 	if !changeTUISettingsValue(&settings, key) {
 		state.snapshot.Status = "Setting is already at its limit"
 		return
 	}
 	commitTUIOperationSettings(state, service, client, settings)
+}
+
+func applyTUITunScope(state *tuiOperationState, service *tuiServiceClient) {
+	if service == nil {
+		state.snapshot.Status = "Changing TUN scope requires the managed Backend"
+		return
+	}
+	if state.snapshot.Settings.TunEnabled {
+		state.snapshot.Status = "Turn TUN off before changing its scope"
+		return
+	}
+	if !prepareTUIBackendRevision(state, service) {
+		return
+	}
+	scope := tuiEffectiveTunScope(state.snapshot.Settings.TunScope)
+	if scope == tuiTunScopeUser {
+		scope = tuiTunScopeSystem
+	} else {
+		scope = tuiTunScopeUser
+	}
+	status, err := service.setTun(false, scope, state.backendRevision)
+	if err != nil {
+		state.snapshot.Status = "TUN scope update failed: " + err.Error()
+		return
+	}
+	state.backendRevision = status.Revision
+	state.snapshot.Settings.TunScope = status.TunScope
+	state.snapshot.Status = "TUN scope " + strings.ToUpper(status.TunScope)
 }
 
 func commitTUIOperationSettings(
@@ -1841,15 +1939,6 @@ func setTUIYAMLScalar(mapping *yaml.Node, key, value, tag string) {
 	node.Content = nil
 }
 
-func ensureTUIProxyPortFree(port int) error {
-	address := fmt.Sprintf("0.0.0.0:%d", port)
-	probe, err := net.Listen("tcp4", address)
-	if err != nil {
-		return fmt.Errorf("proxy port %d is already in use", port)
-	}
-	return probe.Close()
-}
-
 func stageTUICoreSettings(settings tuiSettings) string {
 	data, err := json.Marshal(map[string]interface{}{
 		"mode":           settings.Mode,
@@ -1876,13 +1965,20 @@ func startTUIManagedCore(
 	if state.coreRunning {
 		return true
 	}
-	if state.snapshot.Settings.MixedPort <= 0 {
-		state.snapshot.Status = "Choose a positive Proxy port before starting"
-		return false
-	}
-	if err := ensureTUIProxyPortFree(state.snapshot.Settings.MixedPort); err != nil {
-		state.snapshot.Status = "Cannot start: " + err.Error()
-		return false
+	mode := strings.ToLower(state.snapshot.Settings.Mode)
+	if service == nil {
+		if mode == tuiSilentMode {
+			state.snapshot.Status = "Silent mode requires the managed backend"
+			return false
+		}
+		if state.snapshot.Settings.MixedPort <= 0 {
+			state.snapshot.Status = "Choose a positive Proxy port before starting"
+			return false
+		}
+		if err := ensureTUIProxyPortFree(state.snapshot.Settings.MixedPort); err != nil {
+			state.snapshot.Status = "Cannot start: " + err.Error()
+			return false
+		}
 	}
 	port := state.snapshot.Settings.MixedPort
 	if state.stagedSettings != nil {
@@ -1919,6 +2015,12 @@ func startTUIManagedCore(
 			return false
 		}
 		state.backendRevision = status.Revision
+		state.snapshot.Settings.Mode = status.Mode
+		state.snapshot.Settings.MixedPort = status.ConfiguredProxyPort
+		state.snapshot.ActiveProxyPort = status.ActiveProxyPort
+		state.snapshot.Settings.SystemProxy = status.SystemProxy
+		state.snapshot.FLCEnabled = status.FLCEnabled
+		state.snapshot.FLCOutbound = status.FLCOutbound
 	} else if !handleStartListener() {
 		state.snapshot.Status = "Cannot start core listeners"
 		return false
@@ -1927,7 +2029,11 @@ func startTUIManagedCore(
 	state.pendingMixedPort = nil
 	state.stagedSettings = nil
 	state.settingsDirty = false
-	state.snapshot.Status = fmt.Sprintf("Core listeners started on port %d", port)
+	if mode == tuiSilentMode {
+		state.snapshot.Status = "Core started in silent mode; only flc uses the private listener"
+	} else {
+		state.snapshot.Status = fmt.Sprintf("Core listeners started on port %d", port)
+	}
 	return true
 }
 
@@ -2138,6 +2244,8 @@ func (m *tuiModel) selectTUISetting(index int) tea.Cmd {
 		return m.handleKey(tuiKeyTCPConcurrent)
 	case tuiSettingsLogLevelRow:
 		return m.handleKey(tuiKeyLogLevel)
+	case tuiSettingsTunScopeRow:
+		return m.handleKey(tuiKeyTunScope)
 	case tuiSettingsTunRow:
 		return m.handleKey(tuiKeyTun)
 	case tuiSettingsServiceRow:
@@ -2739,7 +2847,8 @@ func (m *tuiModel) changeMode(mode string) tea.Cmd {
 		state.backendRevision = status.Revision
 		state.coreRunning = status.Running
 		state.snapshot.Settings.Mode = status.Mode
-		state.snapshot.Settings.MixedPort = status.ProxyPort
+		state.snapshot.Settings.MixedPort = status.ConfiguredProxyPort
+		state.snapshot.ActiveProxyPort = status.ActiveProxyPort
 		state.snapshot.Settings.SystemProxy = status.SystemProxy
 		if status.Mode == tuiSilentMode {
 			state.snapshot.Settings.TunEnabled = false
@@ -3042,7 +3151,8 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			state.backendRevision = status.Revision
 			state.coreRunning = status.Running
 			state.snapshot.Settings.Mode = status.Mode
-			state.snapshot.Settings.MixedPort = status.ProxyPort
+			state.snapshot.Settings.MixedPort = status.ConfiguredProxyPort
+			state.snapshot.ActiveProxyPort = status.ActiveProxyPort
 			state.snapshot.Settings.SystemProxy = status.SystemProxy
 			state.snapshot.FLCEnabled = status.FLCEnabled
 			state.snapshot.FLCOutbound = status.FLCOutbound

@@ -19,7 +19,7 @@ The Dashboard deliberately shows these as separate rows:
 | **Backend** | The detached per-user coordinator, private IPC, profile transactions, shared History, Core lifecycle, and System proxy changes | A running Backend does not mean proxy listeners are running |
 | **Core** | The managed Mihomo executor and its listeners | Starting Core does not automatically change desktop proxy settings |
 | **System proxy** | Linux desktop HTTP/HTTPS proxy settings, currently through GNOME/MATE `gsettings` | Applications that ignore system proxy settings are not captured |
-| **TUN** | Network-layer interception configured in Mihomo | It is independent of System proxy and can require additional Linux privileges |
+| **TUN** | Explicit user-scoped or system-scoped network interception | Debian installs a restricted root helper; Backend/Core stays under the user's UID |
 
 `flclash core stop` therefore stops Core listeners but leaves Backend available for CLI/TUI clients. `flclash backend stop`, `flclash shutdown`, or managed-TUI `Ctrl+C` stops both Backend and Core and disconnects every frontend.
 
@@ -45,24 +45,28 @@ An explicit external-controller session (`flclash tui --no-start --controller ..
 
 Backend and Core management use private Unix sockets rather than a public TCP controller. The Backend socket is mode `0600`; mutations carry a monotonically increasing revision and retry IDs. Profile edits additionally use content digests and per-profile locks.
 
+Each UID has its own Backend, Core, TUI clients, runtime configuration, and connection history. Managed listeners are loopback-only and reject clients whose Linux socket owner does not match the Backend UID. If the configured Proxy port is occupied, Backend chooses an available runtime port without overwriting the preferred value; status and TUI show both values when they differ.
+
+TUN has two scopes. `tun user on` captures only the current UID and may coexist with other users' user TUNs. `tun system on` requires Polkit administrator authorization, captures all users, and is exclusive with every other TUN lease. The helper creates the device and policy routes, passes its file descriptor to the unprivileged Backend, and cleans up when Backend disconnects. User TUN restores after Backend restart; system TUN must be authorized again.
+
 ## Install
 
 ### Debian or Ubuntu packages
 
-Choose the package matching `dpkg --print-architecture` from [GitHub Releases](https://github.com/yqlay/flclash-tui/releases). Version 0.4.4 packages are named:
+Choose the package matching `dpkg --print-architecture` from [GitHub Releases](https://github.com/yqlay/flclash-tui/releases). Version 0.5.0 packages are named:
 
 ```text
-flclash-tui_0.4.4_amd64.deb
-flclash-tui_0.4.4_arm64.deb
+flclash-tui_0.5.0_amd64.deb
+flclash-tui_0.5.0_arm64.deb
 ```
 
 Example for AMD64:
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.4/flclash-tui_0.4.4_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.4/flclash-tui_0.4.4_amd64.deb.sha256
-sha256sum -c flclash-tui_0.4.4_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.4.4_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.0/flclash-tui_0.5.0_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.0/flclash-tui_0.5.0_amd64.deb.sha256
+sha256sum -c flclash-tui_0.5.0_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.5.0_amd64.deb
 ```
 
 The package installs `/usr/bin/flclash`, the `/usr/bin/flc` entry point, documentation, and bundled GeoIP/GeoSite/ASN data. Missing or unusable Geo files can be restored locally before Core initialization, so first startup does not depend on downloading those files from GitHub.
@@ -89,8 +93,8 @@ With the implicit default data directory, Backend creates a minimal DIRECT-only 
 1. Open **Profiles**, select **Import subscription URL**, paste the URL, and press Enter.
 2. Select the downloaded profile and press Enter to activate it.
 3. Open **Proxies**, open a group, and select a node.
-4. Return to **Dashboard** and choose `rule`, `global`, `direct`, or `silent` mode.
-5. Start **Core**. If desktop applications should use the normal Proxy port, enable **System proxy**; that action starts Core automatically when needed.
+4. The default is `silent`; choose `rule`, `global`, or `direct` only when a normal proxy entry is needed.
+5. In silent mode, select an FLC outbound before starting **Core**. To proxy desktop applications, leave silent mode before enabling **System proxy**.
 
 On a headless server, use `flc`, an application's explicit proxy setting, or TUN instead of expecting desktop `gsettings` to affect remote shells.
 
@@ -106,23 +110,22 @@ These modes decide what Mihomo does **after traffic reaches it**. They do not by
 
 ### Silent mode
 
-`silent` is a FlClash runtime mode rather than a Mihomo YAML mode. It means: **ordinary programs remain direct, and only commands prefixed with `flc` receive a proxy environment**.
+`silent` is the default FlClash runtime mode rather than a Mihomo YAML mode. It means: **FlClash does not proactively take over the user's network connections; ordinary programs remain direct, and only commands prefixed with `flc` receive a proxy environment**.
 
 In silent mode Backend builds a temporary runtime overlay that:
 
 - turns off the normal Proxy port and all ordinary HTTP/SOCKS/redir/tproxy listeners;
 - disables System proxy, TUN, LAN access, DNS listening, external controllers, user listeners, tunnels, and server listeners in the runtime copy;
-- exposes exactly one random loopback-only mixed listener for `flc`;
+- after an FLC outbound is configured, exposes exactly one random loopback-only mixed listener for `flc`; without one, exposes no traffic entry at all;
 - protects that listener with random per-runtime credentials;
 - routes it directly through the selected FLC outbound (a node or proxy group);
 - leaves the shared profile YAML byte-for-byte unchanged and removes runtime overlays during shutdown.
 
-Select an outbound before entering silent mode:
+On first use, select an outbound before starting Core. Until then Backend remains available, Core stays stopped, and no normal Proxy port is opened:
 
 ```bash
-flclash core start
 flclash flc select PROXY
-flclash mode silent
+flclash core start
 flc curl https://example.com
 ```
 
@@ -147,6 +150,8 @@ flclash flc env
 ```
 
 `flclash flc test` performs a real HTTP request through the active command proxy. `flclash flc env` (and `flclash env`) prints shell exports; in silent mode that output contains temporary credentials, so do not paste it into logs or a persistent shell profile.
+
+Backend owns live Proxy-port changes. The configured value remains the preferred port; if it is occupied, Backend selects a free runtime port. It verifies the new loopback listener and closure of the old port, then updates the desktop System proxy to the actual port. A failure restores the previous profile, Core listener, and managed System proxy. Listener recreation can still cause a brief transition gap.
 
 ## Command reference
 
@@ -181,7 +186,9 @@ Top-level `start`, `stop`, `restart`, and `reload` are compatibility shortcuts f
 | `flclash sys [status]` | Show whether the managed Linux System proxy is enabled |
 | `flclash sys on` | Start Core if necessary, then enable System proxy; rejected in silent mode |
 | `flclash sys off` | Disable the System proxy without stopping Core |
-| `flclash tun [status\|on\|off]` | Show or transactionally change TUN in the active profile |
+| `flclash tun [status\|on\|off]` | Inspect or toggle current-user TUN |
+| `flclash tun user on\|off` | Explicitly control current-UID interception |
+| `flclash tun system on\|off` | Control exclusive whole-system TUN; enabling requires Polkit |
 | `flclash mode` | Print the current synthetic/native traffic mode |
 | `flclash mode rule\|global\|direct\|silent` | Change mode; silent uses a runtime overlay |
 | `flclash port` | Print the configured Proxy port; silent reports it as off while retaining the configured value |
@@ -336,7 +343,8 @@ Relevant behavior:
 - **`flc` refuses to run:** it fails closed. Check `flclash status`, `flclash flc status`, the selected FLC outbound, and `flclash doctor`.
 - **A mutation reports a revision/content conflict:** another frontend changed state. Refresh (`r` or rerun the command) and apply the choice again.
 - **A different `--directory` is rejected:** one managed Backend is allowed per user. Stop the active Backend before intentionally switching its data directory.
-- **TUN cannot start:** ensure the host/kernel/container provides TUN and the process has the required network capabilities.
+- **TUN helper unavailable:** install the `.deb` and inspect `systemctl status flclash-tun-helper`; the portable tarball does not install privileged integration.
+- **TUN cannot start:** ensure `/dev/net/tun`, cgroup v2, `iproute2`, and `iptables` are available, and that no conflicting system lease exists.
 - **HTTPS uses an `http://` proxy URL:** this is expected. HTTPS clients use HTTP `CONNECT` through the mixed Proxy port.
 
 ## Update

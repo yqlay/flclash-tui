@@ -36,10 +36,14 @@ external-controller-pipe: user-pipe
 external-controller-unix: /tmp/user-controller.sock
 external-ui: ./ui
 external-ui-url: https://example.invalid/ui.zip
+external-doh-server: 0.0.0.0:8053
+geo-auto-update: true
 dns:
   enable: true
   listen: 0.0.0.0:1053
 tun:
+  enable: true
+ntp:
   enable: true
 iptables:
   enable: true
@@ -130,16 +134,20 @@ rules:
 		"external-controller-unix",
 		"external-ui",
 		"external-ui-url",
+		"external-doh-server",
 	} {
 		if config[key] != "" {
 			t.Fatalf("%s = %#v, want empty", key, config[key])
 		}
 	}
-	for _, key := range []string{"tun", "iptables", "tuic-server"} {
+	for _, key := range []string{"tun", "ntp", "iptables", "tuic-server"} {
 		mapping, ok := config[key].(map[string]any)
 		if !ok || mapping["enable"] != false {
 			t.Fatalf("%s = %#v, want enable false", key, config[key])
 		}
+	}
+	if config["geo-auto-update"] != false {
+		t.Fatalf("geo-auto-update = %#v, want false", config["geo-auto-update"])
 	}
 	dns, ok := config["dns"].(map[string]any)
 	if !ok || dns["listen"] != "" {
@@ -177,6 +185,135 @@ rules:
 	}
 }
 
+func TestTUITrafficModeDefaultsToSilentUntilExplicitlyChanged(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	if err := os.WriteFile(
+		configPath,
+		[]byte("mixed-port: 7891\nmode: global\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if mode := loadTUITrafficMode(directory, configPath); mode != tuiSilentMode {
+		t.Fatalf("default traffic mode = %q, want silent", mode)
+	}
+	if err := rememberTUITrafficMode(directory, "global"); err != nil {
+		t.Fatal(err)
+	}
+	if mode := loadTUITrafficMode(directory, configPath); mode != "global" {
+		t.Fatalf("saved traffic mode = %q, want global", mode)
+	}
+}
+
+func TestDefaultSilentBackendWaitsForFLCOutbound(t *testing.T) {
+	directory, err := os.MkdirTemp("/tmp", "flclash-default-silent-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	previousRuntimeDirectory := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = directory
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntimeDirectory })
+
+	proxyPort := freeTUITestPort(t)
+	configPath := filepath.Join(directory, "config.yaml")
+	source := fmt.Appendf(nil, `mixed-port: %d
+mode: rule
+log-level: silent
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [DIRECT]
+rules:
+  - MATCH,PROXY
+`, proxyPort)
+	if err := os.WriteFile(configPath, source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	serviceDone := make(chan error, 1)
+	go func() {
+		serviceDone <- runTUIService(
+			cliPaths{homeDir: directory, configPath: configPath},
+			defaultCLITestURL,
+			nil,
+			false,
+		)
+	}()
+	service := newTUIServiceClient(directory)
+	shutdown := true
+	t.Cleanup(func() {
+		if shutdown {
+			_ = service.shutdown()
+		}
+	})
+	status := waitForTUIServiceStatus(t, service)
+	baseline, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Mode != tuiSilentMode || status.Running || status.FLCEnabled ||
+		status.SystemProxy {
+		t.Fatalf("default silent status = %+v", status)
+	}
+	if waitForTUIProxyPortState(proxyPort, true, 150*time.Millisecond) {
+		t.Fatal("default silent mode opened the normal proxy port")
+	}
+	failedStatus, err := service.startAtRevision(status.Revision)
+	if err == nil || !strings.Contains(err.Error(), "requires an FLC outbound") {
+		t.Fatalf("start without FLC outbound = %+v, %v", failedStatus, err)
+	}
+	if failedStatus.Running {
+		t.Fatal("failed default-silent start marked Core running")
+	}
+
+	status, err = service.setFLCOutbound("PROXY", status.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Running || status.FLCEnabled || status.FLCOutbound != "PROXY" {
+		t.Fatalf("stopped FLC selection status = %+v", status)
+	}
+	status, err = service.startAtRevision(status.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Running || !status.FLCEnabled || status.SystemProxy {
+		t.Fatalf("started default silent status = %+v", status)
+	}
+	if waitForTUIProxyPortState(proxyPort, true, 150*time.Millisecond) {
+		t.Fatal("normal proxy port opened after starting default silent mode")
+	}
+	privateStatus, err := service.flcProxy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateURL, err := url.Parse(privateStatus.FLCProxyURL)
+	if err != nil || privateURL.User == nil || privateURL.Hostname() != "127.0.0.1" {
+		t.Fatalf("private FLC URL = %q, %v", privateStatus.FLCProxyURL, err)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(baseline) {
+		t.Fatal("default silent mode modified the shared profile")
+	}
+	if err := service.shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	shutdown = false
+	select {
+	case err := <-serviceDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Backend did not exit after shutdown ACK")
+	}
+}
+
 func TestNewTUIFLCListenerStateCreatesAuthenticatedLoopbackURL(t *testing.T) {
 	state, err := newTUIFLCListenerState("PROXY")
 	if err != nil {
@@ -211,6 +348,223 @@ func TestWriteTUISilentRuntimeConfigRejectsIncompleteCredentials(t *testing.T) {
 	}
 }
 
+func TestWriteTUISilentRuntimeConfigWithoutOutboundHasNoInbound(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(defaultTUIConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtimePath, err := writeTUISilentRuntimeConfig(
+		cliPaths{homeDir: directory, configPath: configPath},
+		tuiFLCListenerState{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cleanupTUISilentRuntimeConfigs(directory, "") })
+	data, err := os.ReadFile(runtimePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	listeners, ok := config["listeners"].([]any)
+	if !ok || len(listeners) != 0 {
+		t.Fatalf("silent listeners without outbound = %#v, want empty", config["listeners"])
+	}
+	if mixedPort, ok := config["mixed-port"].(int); !ok || mixedPort != 0 {
+		t.Fatalf("silent mixed-port without outbound = %#v, want 0", config["mixed-port"])
+	}
+	if tun, ok := config["tun"].(map[string]any); !ok || tun["enable"] != false {
+		t.Fatalf("silent TUN without outbound = %#v, want disabled", config["tun"])
+	}
+}
+
+func TestWriteTUIManagedRuntimeConfigScopesUserTun(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	source := []byte(`mixed-port: 7891
+allow-lan: true
+mode: global
+listeners:
+  - name: public
+    type: mixed
+    listen: 0.0.0.0
+    port: 9999
+tun:
+  enable: false
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [DIRECT]
+rules:
+  - MATCH,PROXY
+`)
+	if err := os.WriteFile(configPath, source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtimePath, err := writeTUIManagedRuntimeConfig(
+		cliPaths{homeDir: directory, configPath: configPath},
+		"rule",
+		17891,
+		true,
+		tuiTunScopeUser,
+		123,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cleanupTUISilentRuntimeConfigs(directory, "") })
+	if current, err := os.ReadFile(configPath); err != nil || string(current) != string(source) {
+		t.Fatalf("logical profile changed: %v", err)
+	}
+	data, err := os.ReadFile(runtimePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["mixed-port"] != 17891 || config["allow-lan"] != false || config["find-process-mode"] != "always" {
+		t.Fatalf("managed listener policy = %#v", config)
+	}
+	rules, ok := config["rules"].([]any)
+	if !ok || len(rules) < 1 || rules[0] != fmt.Sprintf(
+		"AND,((IN-NAME,DEFAULT-MIXED),(NOT,((UID,%d)))),REJECT",
+		os.Getuid(),
+	) {
+		t.Fatalf("managed UID guard rule = %#v", config["rules"])
+	}
+	if listeners, ok := config["listeners"].([]any); !ok || len(listeners) != 0 {
+		t.Fatalf("managed listeners = %#v", config["listeners"])
+	}
+	tun, ok := config["tun"].(map[string]any)
+	if !ok || tun["enable"] != true || tun["file-descriptor"] != 123 || tun["auto-route"] != false {
+		t.Fatalf("managed TUN = %#v", config["tun"])
+	}
+	uidList, ok := tun["include-uid"].([]any)
+	if !ok || len(uidList) != 1 || uidList[0] != os.Getuid() {
+		t.Fatalf("managed TUN UID = %#v", tun["include-uid"])
+	}
+	directPath, err := writeTUIManagedRuntimeConfig(
+		cliPaths{homeDir: directory, configPath: configPath},
+		"direct",
+		17892,
+		false,
+		tuiTunScopeUser,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directData, err := os.ReadFile(directPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var directConfig map[string]any
+	if err := yaml.Unmarshal(directData, &directConfig); err != nil {
+		t.Fatal(err)
+	}
+	directRules, ok := directConfig["rules"].([]any)
+	if directConfig["mode"] != "rule" || !ok || len(directRules) != 2 || directRules[1] != "MATCH,DIRECT" {
+		t.Fatalf("managed direct mode = %#v", directConfig)
+	}
+}
+
+func TestEnteringSilentWithoutOutboundClosesNormalListener(t *testing.T) {
+	directory, err := os.MkdirTemp("/tmp", "flclash-enter-silent-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	previousRuntimeDirectory := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = directory
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntimeDirectory })
+
+	proxyPort := freeTUITestPort(t)
+	configPath := filepath.Join(directory, "config.yaml")
+	source := fmt.Appendf(nil, `mixed-port: %d
+mode: rule
+log-level: silent
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [DIRECT]
+rules:
+  - MATCH,PROXY
+`, proxyPort)
+	if err := os.WriteFile(configPath, source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rememberTUITrafficMode(directory, "rule"); err != nil {
+		t.Fatal(err)
+	}
+	serviceDone := make(chan error, 1)
+	go func() {
+		serviceDone <- runTUIService(
+			cliPaths{homeDir: directory, configPath: configPath},
+			defaultCLITestURL,
+			nil,
+			false,
+		)
+	}()
+	service := newTUIServiceClient(directory)
+	shutdown := true
+	t.Cleanup(func() {
+		if shutdown {
+			_ = service.shutdown()
+		}
+	})
+	status := waitForTUIServiceStatus(t, service)
+	baseline, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err = service.startAtRevision(status.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !waitForTUIProxyPortState(proxyPort, true, tuiListenerValidationTimeout) {
+		t.Fatal("normal proxy listener did not start")
+	}
+	status, err = service.setMode(tuiSilentMode, status.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Mode != tuiSilentMode || !status.Running || status.FLCEnabled ||
+		status.SystemProxy || status.FLCOutbound != "" {
+		t.Fatalf("silent-without-outbound status = %+v", status)
+	}
+	if !waitForTUIProxyPortState(proxyPort, false, tuiListenerValidationTimeout) {
+		t.Fatal("entering silent without outbound left the normal proxy listener open")
+	}
+	if _, err := service.flcProxy(); err == nil {
+		t.Fatal("silent without outbound exposed FLC credentials")
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(baseline) {
+		t.Fatal("entering silent without outbound modified the shared profile")
+	}
+	if err := service.shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	shutdown = false
+	select {
+	case err := <-serviceDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Backend did not exit after shutdown ACK")
+	}
+}
+
 func TestSilentModeRunsOnlyAuthenticatedFLCListener(t *testing.T) {
 	directory, err := os.MkdirTemp("/tmp", "flclash-silent-integration-")
 	if err != nil {
@@ -240,6 +594,9 @@ rules:
 		t.Fatal(err)
 	}
 	paths := cliPaths{homeDir: directory, configPath: configPath}
+	if err := rememberTUITrafficMode(directory, "rule"); err != nil {
+		t.Fatal(err)
+	}
 	serviceDone := make(chan error, 1)
 	go func() {
 		serviceDone <- runTUIService(paths, defaultCLITestURL, nil, false)

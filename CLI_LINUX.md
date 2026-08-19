@@ -17,10 +17,12 @@ make cli-linux
 - **Backend** is the detached per-user coordinator and the only managed writer of shared YAML/state and System proxy settings.
 - **Core** is Mihomo and its traffic listeners. It may be stopped while Backend stays running.
 - **System proxy** changes supported Linux desktop HTTP/HTTPS settings; it is not the same as starting Core.
-- **TUN** is a separate network-layer entry and may require additional privileges.
+- **TUN** is a separately leased user- or system-scoped entry managed by the packaged root helper.
 - **Proxy port** is Mihomo's `mixed-port`: one port accepts HTTP and SOCKS5 proxy clients.
 
 CLI and TUI frontends submit revisioned transactions to Backend over a private Unix socket. Backend validates, writes atomically, reloads Core, and rolls back on failure. Multiple TUI frontends may attach to the same Backend, but only one Backend is allowed per user.
+
+Managed proxy listeners accept only loopback sockets owned by the Backend UID. Each user therefore sees and closes only connections accepted by that user's Core. Port conflicts do not prevent a second user from starting: Backend keeps the configured port as the preference and selects a free runtime port.
 
 Lifecycle keys and commands:
 
@@ -104,6 +106,17 @@ flclash connections close all
 
 History is Backend's shared, up-to-500-entry record derived from active Mihomo connections. It contains active and recently completed flows, not HTTP bodies. `history clear` does not close connections; `connections close all` does not erase History.
 
+TUN scope is explicit:
+
+```bash
+flclash tun on              # current UID; same as: tun user on
+flclash tun user off
+flclash tun system on       # Polkit authorization; exclusive for the machine
+flclash tun status
+```
+
+Multiple user-scoped leases may coexist. A system-scoped lease conflicts with every other TUN lease and is released automatically when its owning Backend exits. User scope restores after Backend restart; system scope stays off until authorized again. The `.deb` installs `flclash-tun-helper.service`; portable tar installations retain non-TUN features but report that the helper is unavailable.
+
 Other commands:
 
 ```bash
@@ -121,12 +134,11 @@ Compatibility aliases include `service`, `system-proxy`, `outbound-mode`, `mixed
 
 ## Silent mode and `flc`
 
-`silent` means that ordinary applications remain direct and only `flc`-prefixed commands use FlClash. Backend disables normal ports, System proxy, TUN, LAN/DNS/controller/user listeners in a temporary runtime overlay and exposes one authenticated loopback listener. The shared YAML is not modified.
+`silent` is the default. It does not proactively take over user network connections: ordinary applications remain direct and only `flc`-prefixed commands use FlClash. Backend disables normal ports, System proxy, TUN, LAN/DNS/controller/user listeners in a temporary runtime overlay. Once an FLC outbound is selected it exposes one authenticated loopback listener; before that it exposes no traffic entry, and Backend remains available with Core stopped. The shared YAML is not modified.
 
 ```bash
-flclash core start
 flclash flc select PROXY
-flclash mode silent
+flclash core start
 flc curl https://example.com
 ```
 
@@ -135,6 +147,8 @@ Outside silent mode, `flc` uses the normal Proxy port. It sets `HTTP_PROXY`, `HT
 ```bash
 flc sh -c 'curl -s https://example.com | jq .'
 ```
+
+Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availability, the new listener, old-listener closure, and managed System proxy are checked, with rollback on failure. Listener recreation is not a zero-gap handoff.
 
 ## TUI pages and keys
 

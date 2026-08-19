@@ -61,6 +61,11 @@ func dispatchCLI(program string, args []string) error {
 		return systemProxyCommand(commandArgs)
 	case "tun":
 		return tunCommand(commandArgs)
+	case "tun-helper":
+		if len(commandArgs) != 1 || commandArgs[0] != "serve" {
+			return errors.New("usage: flclash tun-helper serve")
+		}
+		return runTUITunHelper()
 	case "mode", "outbound-mode":
 		return modeCommand(commandArgs)
 	case "port", "mixed-port":

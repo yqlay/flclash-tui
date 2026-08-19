@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -39,6 +40,11 @@ type tuiServiceRuntime struct {
 	proxyPort        int
 	trafficMode      string
 	configuredPort   int
+	runtimePort      int
+	activePort       int
+	tunScope         string
+	tunEnabled       bool
+	tunLease         *tuiTunLease
 	actualConfigPath string
 	flc              tuiFLCListenerState
 	history          []tuiRequest
@@ -69,7 +75,8 @@ func newTUIServiceRuntime(
 			),
 		},
 		setupParams:      append([]byte(nil), setupParams...),
-		trafficMode:      "rule",
+		trafficMode:      tuiSilentMode,
+		tunScope:         tuiTunScopeUser,
 		actualConfigPath: paths.configPath,
 		revision:         1,
 		changed:          make(chan struct{}),
@@ -112,13 +119,16 @@ func (r *tuiServiceRuntime) handle(
 		status = r.flcProxy(request.RequestID)
 	case "history":
 		status = r.historyStatus(request.RequestID)
+	case "connections":
+		status = r.connectionsStatus(request.RequestID)
 	case "watch":
 		status = r.watch(request)
 	case "speed_proxy":
 		status = r.testProxySpeed(request)
 	case "speed_route", "delay_route":
 		status = r.testRoute(request)
-	case "start", "stop", "reload", "apply_settings", "set_system_proxy",
+	case "start", "stop", "reload", "apply_settings", "set_system_proxy", "set_tun",
+		"close_connection", "close_all_connections",
 		"set_mode", "set_flc_outbound", "select_proxy", "clear_history", "put_profile",
 		"rename_profile", "delete_profile", "link_profile", "backup_profile",
 		"restore_profile", "shutdown":
@@ -139,22 +149,37 @@ func (r *tuiServiceRuntime) handle(
 func (r *tuiServiceRuntime) snapshot(requestID string) tuiServiceStatus {
 	r.mu.RLock()
 	status := tuiServiceStatus{
-		ProtocolVersion: tuiServiceProtocolVersion,
-		RequestID:       requestID,
-		Revision:        r.revision,
-		OK:              true,
-		PID:             os.Getpid(),
-		Version:         cliVersion,
-		HomeDir:         r.paths.homeDir,
-		ConfigPath:      r.paths.configPath,
-		CoreSocket:      r.coreSocket,
-		Running:         r.running,
-		ShuttingDown:    r.shuttingDown,
-		SystemProxy:     r.systemProxy,
-		Mode:            r.trafficMode,
-		ProxyPort:       r.configuredPort,
-		FLCEnabled:      r.running && r.trafficMode == tuiSilentMode && r.flc.Port > 0,
-		FLCOutbound:     r.flc.Outbound,
+		ProtocolVersion:     tuiServiceProtocolVersion,
+		RequestID:           requestID,
+		Revision:            r.revision,
+		OK:                  true,
+		PID:                 os.Getpid(),
+		Version:             cliVersion,
+		HomeDir:             r.paths.homeDir,
+		ConfigPath:          r.paths.configPath,
+		CoreSocket:          r.coreSocket,
+		Running:             r.running,
+		ShuttingDown:        r.shuttingDown,
+		SystemProxy:         r.systemProxy,
+		Mode:                r.trafficMode,
+		ProxyPort:           r.configuredPort,
+		ConfiguredProxyPort: r.configuredPort,
+		ActiveProxyPort:     r.activePort,
+		FLCEnabled:          r.running && r.trafficMode == tuiSilentMode && r.flc.Port > 0,
+		FLCOutbound:         r.flc.Outbound,
+		TunScope:            r.tunScope,
+	}
+	if r.tunEnabled {
+		status.TunState = "on"
+		if r.tunLease != nil {
+			status.TunOwnerUID = uint32(os.Getuid())
+			status.TunOwnerPID = os.Getpid()
+		}
+	} else {
+		status.TunState = "off"
+	}
+	if r.activePort > 0 {
+		status.ProxyPort = r.activePort
 	}
 	r.mu.RUnlock()
 	if frontends, err := listCLIFrontends(); err == nil {
@@ -224,14 +249,7 @@ func (r *tuiServiceRuntime) mutate(
 	var err error
 	switch request.Action {
 	case "start":
-		if !status.Running {
-			if !handleStartListener() {
-				err = errors.New("start proxy listeners failed")
-			} else {
-				r.setRunning(true)
-				changed = true
-			}
-		}
+		changed, err = r.startCoreListeners()
 	case "stop":
 		changed, err = r.stopCoreAndProxy(status)
 	case "reload":
@@ -251,6 +269,12 @@ func (r *tuiServiceRuntime) mutate(
 		} else {
 			changed, err = r.applySystemProxy(*request.Enabled)
 		}
+	case "set_tun":
+		if request.Enabled == nil {
+			err = errors.New("enabled must be explicitly true or false")
+		} else {
+			changed, err = r.applyTun(*request.Enabled, request.TunScope)
+		}
 	case "set_mode":
 		changed, err = r.applyTrafficMode(request.Mode)
 	case "set_flc_outbound":
@@ -262,6 +286,16 @@ func (r *tuiServiceRuntime) mutate(
 		changed = len(r.history) > 0
 		r.history = nil
 		r.mu.Unlock()
+	case "close_connection":
+		if strings.TrimSpace(request.ConnectionID) == "" {
+			err = errors.New("connection ID is required")
+		} else {
+			err = r.coreController.closeConnection(request.ConnectionID)
+			changed = err == nil
+		}
+	case "close_all_connections":
+		err = r.coreController.closeAllConnections()
+		changed = err == nil
 	case "put_profile":
 		changed, resultPath, err = r.putProfile(request)
 	case "rename_profile":
@@ -310,9 +344,128 @@ func (r *tuiServiceRuntime) configureRuntimePolicy(
 	r.mu.Lock()
 	r.trafficMode = mode
 	r.configuredPort = configuredPort
+	r.runtimePort = configuredPort
 	r.actualConfigPath = actualConfigPath
 	r.flc = flc
 	r.mu.Unlock()
+}
+
+func (r *tuiServiceRuntime) configureManagedRuntimePolicy(
+	mode string,
+	configuredPort int,
+	runtimePort int,
+	actualConfigPath string,
+	flc tuiFLCListenerState,
+	tunScope string,
+	tunEnabled bool,
+) {
+	r.configureRuntimePolicy(mode, configuredPort, actualConfigPath, flc)
+	r.mu.Lock()
+	r.runtimePort = runtimePort
+	r.tunScope = tunScope
+	r.tunEnabled = tunEnabled
+	r.mu.Unlock()
+}
+
+func tuiRuntimeProxyPort(
+	mode string,
+	configuredPort int,
+	flc tuiFLCListenerState,
+) (int, error) {
+	if mode != tuiSilentMode {
+		return configuredPort, nil
+	}
+	if flc.proxyURL() == "" {
+		return 0, errors.New(
+			"silent mode requires an FLC outbound; run `flclash flc select NAME` first",
+		)
+	}
+	return flc.Port, nil
+}
+
+func (r *tuiServiceRuntime) startCoreListeners() (bool, error) {
+	r.mu.RLock()
+	if r.running {
+		r.mu.RUnlock()
+		return false, nil
+	}
+	mode := r.trafficMode
+	runtimePort := r.runtimePort
+	flc := r.flc
+	tunEnabled := r.tunEnabled
+	tunLease := r.tunLease
+	tunScope := r.tunScope
+	systemProxy := r.systemProxy
+	systemProxyPort := r.proxyPort
+	r.mu.RUnlock()
+	if tunEnabled && tunLease == nil {
+		lease, _, leaseErr := acquireTUITunLease(tunScope)
+		if leaseErr != nil {
+			return false, leaseErr
+		}
+		r.mu.Lock()
+		r.tunLease = lease
+		r.mu.Unlock()
+		if _, reloadErr := r.reloadUnlocked("", ""); reloadErr != nil {
+			r.releaseTunLease()
+			return false, fmt.Errorf("prepare TUN runtime: %w", reloadErr)
+		}
+		r.mu.RLock()
+		runtimePort = r.runtimePort
+		r.mu.RUnlock()
+		defer func() {
+			if !r.running {
+				r.releaseTunLease()
+			}
+		}()
+	}
+
+	port, err := tuiRuntimeProxyPort(mode, runtimePort, flc)
+	if err != nil {
+		return false, err
+	}
+	if port > 0 {
+		if err := ensureTUIProxyPortFree(port); err != nil {
+			if mode == tuiSilentMode {
+				return false, err
+			}
+			if _, reloadErr := r.reloadUnlocked("", ""); reloadErr != nil {
+				return false, fmt.Errorf("reallocate occupied proxy port: %w", reloadErr)
+			}
+			r.mu.RLock()
+			port = r.runtimePort
+			r.mu.RUnlock()
+			if err := ensureTUIProxyPortFree(port); err != nil {
+				return false, err
+			}
+		}
+	}
+	if !handleStartListener() {
+		return false, errors.New("start proxy listeners failed")
+	}
+	if port > 0 && !waitForTUIProxyPortState(
+		port,
+		true,
+		tuiListenerValidationTimeout,
+	) {
+		_ = handleStopListener()
+		return false, fmt.Errorf(
+			"proxy listener on 127.0.0.1:%d did not become ready; Core listeners stopped",
+			port,
+		)
+	}
+	if systemProxy && systemProxyPort != port {
+		if err := setLinuxSystemProxy(port, true); err != nil {
+			_ = handleStopListener()
+			return false, fmt.Errorf("update System proxy to active port: %w", err)
+		}
+		r.setSystemProxyState(true, port)
+	}
+	r.mu.Lock()
+	r.running = true
+	r.activePort = port
+	r.mu.Unlock()
+	return true, nil
 }
 
 func (r *tuiServiceRuntime) flcProxy(requestID string) tuiServiceStatus {
@@ -635,6 +788,10 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	paths := r.paths
 	oldFLC := r.flc
 	systemProxy := r.systemProxy
+	oldTunEnabled := r.tunEnabled
+	oldTunScope := r.tunScope
+	oldTunLease := r.tunLease
+	running := r.running
 	r.mu.RUnlock()
 	if mode == currentMode {
 		return false, nil
@@ -645,9 +802,13 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	}
 	if mode == tuiSilentMode {
 		outbound := loadTUIFLCOutbound(paths.homeDir)
-		flc, err := newTUIFLCListenerState(outbound)
-		if err != nil {
-			return false, err
+		flc := tuiFLCListenerState{Outbound: outbound}
+		if outbound != "" {
+			var err error
+			flc, err = newTUIFLCListenerState(outbound)
+			if err != nil {
+				return false, err
+			}
 		}
 		if systemProxy {
 			if _, err := r.applySystemProxy(false); err != nil {
@@ -658,11 +819,15 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 		r.mu.Lock()
 		r.trafficMode = mode
 		r.flc = flc
+		r.tunEnabled = false
+		r.tunLease = nil
 		r.mu.Unlock()
 		if _, err := r.reloadUnlocked(paths.configPath, ""); err != nil {
 			r.mu.Lock()
 			r.trafficMode = currentMode
 			r.flc = oldFLC
+			r.tunEnabled = oldTunEnabled
+			r.tunLease = oldTunLease
 			r.mu.Unlock()
 			if systemProxy {
 				_, _ = r.applySystemProxy(true)
@@ -673,6 +838,8 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 			r.mu.Lock()
 			r.trafficMode = currentMode
 			r.flc = oldFLC
+			r.tunEnabled = oldTunEnabled
+			r.tunLease = oldTunLease
 			r.mu.Unlock()
 			_, rollbackErr := r.reloadUnlocked(paths.configPath, "")
 			if systemProxy {
@@ -687,6 +854,7 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 			}
 			return false, fmt.Errorf("save silent mode: %w", err)
 		}
+		oldTunLease.release()
 		return true, nil
 	}
 	if currentMode != tuiSilentMode {
@@ -711,16 +879,36 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	r.mu.Lock()
 	r.trafficMode = mode
 	r.flc = tuiFLCListenerState{Outbound: oldFLC.Outbound}
+	restoreUserTun := oldTunScope == tuiTunScopeUser && oldSettings.TunEnabled
+	r.tunEnabled = restoreUserTun
 	r.mu.Unlock()
+	var restoredTunLease *tuiTunLease
+	if restoreUserTun && running {
+		restoredTunLease, _, err = acquireTUITunLease(tuiTunScopeUser)
+		if err != nil {
+			r.mu.Lock()
+			r.trafficMode = currentMode
+			r.flc = oldFLC
+			r.tunEnabled = false
+			r.mu.Unlock()
+			return false, err
+		}
+		r.mu.Lock()
+		r.tunLease = restoredTunLease
+		r.mu.Unlock()
+	}
 	if profileChanged {
 		_, err = r.applySettings(updated)
 	} else {
 		_, err = r.reloadUnlocked(paths.configPath, "")
 	}
 	if err != nil {
+		restoredTunLease.release()
 		r.mu.Lock()
 		r.trafficMode = currentMode
 		r.flc = oldFLC
+		r.tunEnabled = false
+		r.tunLease = nil
 		r.mu.Unlock()
 		return false, err
 	}
@@ -742,7 +930,10 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 		r.mu.Lock()
 		r.trafficMode = currentMode
 		r.flc = oldFLC
+		r.tunEnabled = false
+		r.tunLease = nil
 		r.mu.Unlock()
+		restoredTunLease.release()
 		_, coreRollbackErr := r.reloadUnlocked(paths.configPath, "")
 		if profileRollbackErr != nil || coreRollbackErr != nil {
 			return false, fmt.Errorf(
@@ -961,6 +1152,11 @@ func (r *tuiServiceRuntime) historyStatus(requestID string) tuiServiceStatus {
 				err.Error(),
 			)
 		}
+		connections = filterTUIConnections(
+			connections,
+			uint32(os.Getuid()),
+			status.TunState == "on" && status.TunScope == tuiTunScopeSystem,
+		)
 		r.mu.Lock()
 		r.history = updateTUIRequestHistory(r.history, connections, time.Now())
 		status.History = append([]tuiRequest(nil), r.history...)
@@ -971,6 +1167,40 @@ func (r *tuiServiceRuntime) historyStatus(requestID string) tuiServiceStatus {
 		r.mu.RUnlock()
 	}
 	return status
+}
+
+func (r *tuiServiceRuntime) connectionsStatus(requestID string) tuiServiceStatus {
+	status := r.snapshot(requestID)
+	if !status.Running {
+		return status
+	}
+	connections, err := loadTUIActiveConnections(r.coreController)
+	if err != nil {
+		return failTUIServiceStatus(status, tuiServiceErrorOperation, err.Error())
+	}
+	status.Connections = filterTUIConnections(
+		connections,
+		uint32(os.Getuid()),
+		status.TunState == "on" && status.TunScope == tuiTunScopeSystem,
+	)
+	return status
+}
+
+func filterTUIConnections(
+	connections []tuiConnection,
+	uid uint32,
+	systemTun bool,
+) []tuiConnection {
+	if systemTun {
+		return connections
+	}
+	filtered := connections[:0]
+	for _, connection := range connections {
+		if connection.UID == uid {
+			filtered = append(filtered, connection)
+		}
+	}
+	return filtered
 }
 
 func loadTUIActiveConnections(controller controllerClient) ([]tuiConnection, error) {
@@ -990,6 +1220,8 @@ func loadTUIActiveConnections(controller controllerClient) ([]tuiConnection, err
 				DestinationIP   string `json:"destinationIP"`
 				DestinationPort string `json:"destinationPort"`
 				Process         string `json:"process"`
+				ProcessPath     string `json:"processPath"`
+				UID             uint32 `json:"uid"`
 				Network         string `json:"network"`
 			} `json:"metadata"`
 			Upload   int64    `json:"upload"`
@@ -1014,13 +1246,15 @@ func loadTUIActiveConnections(controller controllerClient) ([]tuiConnection, err
 			)
 		}
 		connections = append(connections, tuiConnection{
-			ID:       item.ID,
-			Host:     host,
-			Process:  item.Metadata.Process,
-			Network:  item.Metadata.Network,
-			Chain:    chain,
-			Upload:   item.Upload,
-			Download: item.Download,
+			ID:          item.ID,
+			Host:        host,
+			Process:     item.Metadata.Process,
+			ProcessPath: item.Metadata.ProcessPath,
+			UID:         item.Metadata.UID,
+			Network:     item.Metadata.Network,
+			Chain:       chain,
+			Upload:      item.Upload,
+			Download:    item.Download,
 		})
 	}
 	return connections, nil
@@ -1067,7 +1301,16 @@ func (r *tuiServiceRuntime) stopCoreAndProxy(
 		r.setRunning(false)
 		changed = true
 	}
+	r.releaseTunLease()
 	return changed, nil
+}
+
+func (r *tuiServiceRuntime) releaseTunLease() {
+	r.mu.Lock()
+	lease := r.tunLease
+	r.tunLease = nil
+	r.mu.Unlock()
+	lease.release()
 }
 
 func (r *tuiServiceRuntime) reload(configPath string) (bool, error) {
@@ -1187,6 +1430,10 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 	running := r.running
 	mode := r.trafficMode
 	flc := r.flc
+	tunScope := r.tunScope
+	tunEnabled := r.tunEnabled
+	tunLease := r.tunLease
+	activePort := r.activePort
 	previousActualPath := r.actualConfigPath
 	r.mu.RUnlock()
 	if configPath == "" {
@@ -1204,13 +1451,56 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 			)
 		}
 	}
+	settings := loadTUIConfiguredSettings(configPath, true)
+	if settings == nil {
+		return false, errors.New("could not load active settings")
+	}
 	actualConfigPath := configPath
+	targetPort := settings.MixedPort
+	tunFD := 0
 	if mode == tuiSilentMode {
 		logicalPaths := paths
 		logicalPaths.configPath = configPath
 		var err error
 		actualConfigPath, err = writeTUISilentRuntimeConfig(logicalPaths, flc)
 		if err != nil {
+			return false, err
+		}
+		if flc.proxyURL() == "" {
+			targetPort = 0
+		} else {
+			targetPort = flc.Port
+		}
+	} else {
+		if targetPort > 0 && targetPort != activePort {
+			var err error
+			targetPort, err = chooseTUIProxyPort(targetPort)
+			if err != nil {
+				return false, err
+			}
+		}
+		if tunEnabled {
+			var err error
+			tunFD, err = tunLease.duplicateFD()
+			if err != nil {
+				return false, err
+			}
+		}
+		logicalPaths := paths
+		logicalPaths.configPath = configPath
+		var err error
+		actualConfigPath, err = writeTUIManagedRuntimeConfig(
+			logicalPaths,
+			mode,
+			targetPort,
+			tunEnabled,
+			tunScope,
+			tunFD,
+		)
+		if err != nil {
+			if tunFD > 0 {
+				_ = syscall.Close(tunFD)
+			}
 			return false, err
 		}
 	}
@@ -1224,10 +1514,43 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 		running,
 	)
 	if err != nil {
-		if mode == tuiSilentMode {
+		if tunFD > 0 {
+			_ = syscall.Close(tunFD)
+		}
+		if actualConfigPath != configPath {
 			_ = os.Remove(actualConfigPath)
 		}
 		return false, err
+	}
+	if running {
+		if err := validateTUIProxyPortTransition(activePort, targetPort); err != nil {
+			validationErr := err
+			if filepath.Clean(actualConfigPath) != filepath.Clean(previousActualPath) {
+				_, rollbackErr := reloadTUIActualConfig(
+					paths.homeDir,
+					actualConfigPath,
+					previousActualPath,
+					r.testURL,
+					r.coreSocket,
+					reloaded,
+					running,
+				)
+				if rollbackErr == nil {
+					rollbackErr = validateTUIProxyPortTransition(targetPort, activePort)
+				}
+				if rollbackErr != nil {
+					return false, fmt.Errorf(
+						"validate proxy port switch: %v; Core rollback failed: %w",
+						validationErr,
+						rollbackErr,
+					)
+				}
+			}
+			if actualConfigPath != configPath {
+				_ = os.Remove(actualConfigPath)
+			}
+			return false, fmt.Errorf("validate proxy port switch: %w", validationErr)
+		}
 	}
 	updatedPaths := paths
 	updatedPaths.configPath = configPath
@@ -1255,29 +1578,53 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 			return false, fmt.Errorf("remember active profile: %w", err)
 		}
 	}
-	settings := loadTUIConfiguredSettings(configPath, true)
 	r.mu.Lock()
 	r.paths.configPath = configPath
 	r.setupParams = append([]byte(nil), reloaded...)
 	r.actualConfigPath = actualConfigPath
+	r.runtimePort = targetPort
 	if settings != nil {
 		r.configuredPort = settings.MixedPort
 		if mode != tuiSilentMode {
 			r.trafficMode = strings.ToLower(settings.Mode)
 		}
 	}
+	if running {
+		r.activePort = targetPort
+	}
 	r.mu.Unlock()
 	if mode != tuiSilentMode && settings != nil {
 		_ = rememberTUITrafficMode(paths.homeDir, settings.Mode)
 	}
 	if previousActualPath != actualConfigPath &&
-		strings.Contains(filepath.Base(previousActualPath), tuiSilentRuntimeConfigPrefix) {
+		(strings.Contains(filepath.Base(previousActualPath), tuiSilentRuntimeConfigPrefix) ||
+			strings.Contains(filepath.Base(previousActualPath), tuiManagedRuntimeConfigPrefix)) {
 		_ = os.Remove(previousActualPath)
 	}
-	if mode == tuiSilentMode {
-		cleanupTUISilentRuntimeConfigs(paths.homeDir, actualConfigPath)
-	}
+	cleanupTUISilentRuntimeConfigs(paths.homeDir, actualConfigPath)
 	return true, nil
+}
+
+func validateTUIProxyPortTransition(previousPort, targetPort int) error {
+	if targetPort > 0 && !waitForTUIProxyPortState(
+		targetPort,
+		true,
+		tuiListenerValidationTimeout,
+	) {
+		return fmt.Errorf(
+			"proxy listener on 127.0.0.1:%d did not become ready",
+			targetPort,
+		)
+	}
+	if previousPort > 0 && previousPort != targetPort &&
+		!waitForTUIProxyPortState(
+			previousPort,
+			false,
+			tuiListenerValidationTimeout,
+		) {
+		return fmt.Errorf("previous proxy listener on 127.0.0.1:%d did not close", previousPort)
+	}
+	return nil
 }
 
 func (r *tuiServiceRuntime) applySettings(
@@ -1301,7 +1648,6 @@ func (r *tuiServiceRuntime) applySettings(
 		return false, err
 	}
 	defer lease.release()
-	previousSettings := loadTUIConfiguredSettings(configPath, true)
 	writePath, info, original, err := readTUIWritableConfig(configPath)
 	if err != nil {
 		return false, err
@@ -1310,6 +1656,9 @@ func (r *tuiServiceRuntime) applySettings(
 		return false, err
 	}
 	if _, err := r.reloadUnlocked(configPath, ""); err == nil {
+		r.mu.RLock()
+		newActivePort := r.activePort
+		r.mu.RUnlock()
 		if systemProxy && settings.MixedPort <= 0 {
 			if proxyPort > 0 && linuxSystemProxyMatches(proxyPort) {
 				if proxyErr := setLinuxSystemProxy(proxyPort, false); proxyErr != nil {
@@ -1322,11 +1671,10 @@ func (r *tuiServiceRuntime) applySettings(
 			r.setSystemProxyState(false, 0)
 			return true, nil
 		}
-		if systemProxy &&
-			(previousSettings == nil || previousSettings.MixedPort != settings.MixedPort) {
+		if systemProxy && proxyPort != newActivePort {
 			if proxyPort > 0 && !linuxSystemProxyMatches(proxyPort) {
 				r.setSystemProxyState(false, 0)
-			} else if proxyErr := setLinuxSystemProxy(settings.MixedPort, true); proxyErr != nil {
+			} else if proxyErr := setLinuxSystemProxy(newActivePort, true); proxyErr != nil {
 				if restoreErr := writeTUIProfileAtomically(
 					writePath,
 					original,
@@ -1354,7 +1702,7 @@ func (r *tuiServiceRuntime) applySettings(
 					proxyErr,
 				)
 			} else {
-				r.setSystemProxyState(true, settings.MixedPort)
+				r.setSystemProxyState(true, newActivePort)
 			}
 		}
 		return true, nil
@@ -1371,7 +1719,17 @@ func (r *tuiServiceRuntime) applySettings(
 				restoreErr,
 			)
 		}
-		return false, fmt.Errorf("apply settings: %w; original configuration restored", reloadErr)
+		if _, rollbackErr := r.reloadUnlocked(configPath, ""); rollbackErr != nil {
+			return false, fmt.Errorf(
+				"apply settings: %v; original profile restored but Core rollback failed: %w",
+				reloadErr,
+				rollbackErr,
+			)
+		}
+		return false, fmt.Errorf(
+			"apply settings: %w; original configuration and Core listener restored",
+			reloadErr,
+		)
 	}
 }
 
@@ -1422,7 +1780,11 @@ func (r *tuiServiceRuntime) applySystemProxy(enabled bool) (bool, error) {
 	}
 	r.mu.RLock()
 	proxyPort := r.proxyPort
+	activePort := r.activePort
 	r.mu.RUnlock()
+	if proxyPort <= 0 {
+		proxyPort = activePort
+	}
 	if proxyPort <= 0 {
 		proxyPort = settings.MixedPort
 	}
@@ -1430,14 +1792,74 @@ func (r *tuiServiceRuntime) applySystemProxy(enabled bool) (bool, error) {
 		r.setSystemProxyState(false, 0)
 		return true, nil
 	}
-	port := settings.MixedPort
+	port := proxyPort
 	if !enabled {
 		port = proxyPort
 	}
 	if err := setLinuxSystemProxy(port, enabled); err != nil {
 		return false, err
 	}
-	r.setSystemProxyState(enabled, settings.MixedPort)
+	r.setSystemProxyState(enabled, proxyPort)
+	return true, nil
+}
+
+func (r *tuiServiceRuntime) applyTun(enabled bool, requestedScope string) (bool, error) {
+	scope, err := normalizeTUITunScope(requestedScope)
+	if err != nil {
+		return false, err
+	}
+	r.mu.RLock()
+	previousScope := r.tunScope
+	previousEnabled := r.tunEnabled
+	mode := r.trafficMode
+	running := r.running
+	r.mu.RUnlock()
+	if enabled && mode == tuiSilentMode {
+		return false, errors.New("TUN cannot be enabled in silent mode")
+	}
+	if enabled == previousEnabled && scope == previousScope {
+		return false, nil
+	}
+	var replacementLease *tuiTunLease
+	if enabled && running {
+		replacementLease, _, err = acquireTUITunLease(scope)
+		if err != nil {
+			return false, err
+		}
+	}
+	settings := loadTUIConfiguredSettings(r.paths.configPath, true)
+	if settings == nil {
+		return false, errors.New("could not read the active configuration")
+	}
+	r.mu.Lock()
+	previousLease := r.tunLease
+	r.tunScope = scope
+	r.tunEnabled = enabled && running
+	r.tunLease = replacementLease
+	r.mu.Unlock()
+	settings.TunEnabled = enabled && scope == tuiTunScopeUser
+	if _, err := r.applySettings(*settings); err != nil {
+		replacementLease.release()
+		r.mu.Lock()
+		r.tunScope = previousScope
+		r.tunEnabled = previousEnabled
+		r.tunLease = previousLease
+		r.mu.Unlock()
+		return false, err
+	}
+	if err := rememberTUITunScope(r.paths.homeDir, scope); err != nil {
+		replacementLease.release()
+		r.mu.Lock()
+		r.tunScope = previousScope
+		r.tunEnabled = previousEnabled
+		r.tunLease = previousLease
+		r.mu.Unlock()
+		return false, fmt.Errorf("remember TUN scope: %w", err)
+	}
+	r.mu.Lock()
+	r.tunEnabled = enabled
+	r.mu.Unlock()
+	previousLease.release()
 	return true, nil
 }
 
@@ -1475,14 +1897,13 @@ func (r *tuiServiceRuntime) testRoute(
 				"prepare stopped Core for test: "+err.Error(),
 			)
 		}
-		if !handleStartListener() {
+		if _, startErr := r.startCoreListeners(); startErr != nil {
 			return failTUIServiceStatus(
 				status,
 				tuiServiceErrorOperation,
-				"start proxy listeners for test failed",
+				"start proxy listeners for test: "+startErr.Error(),
 			)
 		}
-		r.setRunning(true)
 	}
 	client, closeClient, err := newTUIRouteHTTPClient(request.MixedPort)
 	if err == nil {
@@ -1517,6 +1938,9 @@ func (r *tuiServiceRuntime) testRoute(
 func (r *tuiServiceRuntime) setRunning(running bool) {
 	r.mu.Lock()
 	r.running = running
+	if !running {
+		r.activePort = 0
+	}
 	r.mu.Unlock()
 }
 

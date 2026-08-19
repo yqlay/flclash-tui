@@ -1,3 +1,11 @@
+## FlClash TUI v0.5.0
+
+- Isolate managed Backends, runtime proxy entries, connections, and TUI clients per Linux UID.
+- Automatically select a free runtime Proxy port while retaining the configured preferred port.
+- Add user-scoped and exclusive system-scoped TUN modes with Backend IPC protocol v4.
+- Install a Polkit-authorized root helper that owns TUN devices, policy routes, cgroup loop prevention, leases, and Backend-disconnect cleanup.
+- Route connection mutations through Backend and expose UID/process ownership in History and Connections.
+
 ## FlClash TUI v0.4.3
 
 - Open a four-item `rule` / `silent` / `global` / `direct` selector before the
