@@ -18,10 +18,137 @@ import (
 )
 
 const (
-	tuiSilentMode                = "silent"
-	tuiSilentRuntimeConfigPrefix = ".flclash-silent-runtime-"
-	tuiFLCListenerName           = "flc-private"
+	tuiSilentMode                 = "silent"
+	tuiSilentRuntimeConfigPrefix  = ".flclash-silent-runtime-"
+	tuiManagedRuntimeConfigPrefix = ".flclash-managed-runtime-"
+	tuiFLCListenerName            = "flc-private"
 )
+
+func writeTUIManagedRuntimeConfig(
+	paths cliPaths,
+	mode string,
+	port int,
+	tunEnabled bool,
+	tunScope string,
+	tunFD int,
+) (string, error) {
+	data, err := os.ReadFile(paths.configPath)
+	if err != nil {
+		return "", err
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return "", fmt.Errorf("parse profile for managed runtime: %w", err)
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
+		return "", errors.New("configuration root must be a YAML mapping")
+	}
+	root := document.Content[0]
+	for _, key := range []string{"port", "socks-port", "redir-port", "tproxy-port"} {
+		setTUIYAMLScalar(root, key, "0", "!!int")
+	}
+	setTUIYAMLScalar(root, "mixed-port", strconv.Itoa(port), "!!int")
+	setTUIYAMLScalar(root, "allow-lan", "false", "!!bool")
+	setTUIYAMLScalar(root, "bind-address", "127.0.0.1", "!!str")
+	// Keep the Core in rule mode so the per-UID admission rule is evaluated
+	// even when FlClash presents direct/global as the selected outbound mode.
+	setTUIYAMLScalar(root, "mode", "rule", "!!str")
+	setTUIYAMLScalar(root, "find-process-mode", "always", "!!str")
+	if mode == "direct" || mode == "global" {
+		target := strings.ToUpper(mode)
+		setTUIYAMLSequence(root, "rules", []string{"MATCH," + target}, "!!str")
+	}
+	prependTUIYAMLSequenceValue(
+		root,
+		"rules",
+		fmt.Sprintf(
+			"AND,((IN-NAME,DEFAULT-MIXED),(NOT,((UID,%d)))),REJECT",
+			os.Getuid(),
+		),
+	)
+	setTUIYAMLNode(root, "listeners", &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"})
+	setTUIYAMLNode(root, "tunnels", &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"})
+	for _, key := range []string{"ss-config", "vmess-config", "external-controller", "external-controller-tls", "external-controller-pipe", "external-controller-unix", "external-ui", "external-ui-url", "external-doh-server"} {
+		setTUIYAMLScalar(root, key, "", "!!str")
+	}
+	for _, key := range []string{"ntp", "iptables", "tuic-server"} {
+		mapping := ensureTUIYAMLMapping(root, key)
+		setTUIYAMLScalar(mapping, "enable", "false", "!!bool")
+	}
+
+	tun := ensureTUIYAMLMapping(root, "tun")
+	setTUIYAMLScalar(tun, "enable", strconv.FormatBool(tunEnabled), "!!bool")
+	if tunEnabled {
+		if tunFD <= 0 {
+			return "", errors.New("TUN helper did not provide a file descriptor")
+		}
+		setTUIYAMLScalar(tun, "file-descriptor", strconv.Itoa(tunFD), "!!int")
+		setTUIYAMLScalar(tun, "auto-route", "false", "!!bool")
+		setTUIYAMLScalar(tun, "auto-detect-interface", "true", "!!bool")
+		octet := 1 + os.Getuid()%250
+		setTUIYAMLSequence(tun, "inet4-address", []string{fmt.Sprintf("198.19.%d.1/30", octet)}, "!!str")
+		if tunScope == tuiTunScopeUser {
+			uid := os.Getuid()
+			setTUIYAMLSequence(tun, "include-uid", []string{strconv.Itoa(uid)}, "!!int")
+			deleteTUIYAMLKey(tun, "include-uid-range")
+			setTUIYAMLScalar(tun, "device", "flc-u"+strconv.FormatInt(int64(uid), 36), "!!str")
+			setTUIYAMLScalar(tun, "iproute2-table-index", strconv.Itoa(10000+uid), "!!int")
+			setTUIYAMLScalar(tun, "iproute2-rule-index", strconv.Itoa(20000+uid), "!!int")
+		} else {
+			for _, key := range []string{"include-uid", "include-uid-range", "exclude-uid", "exclude-uid-range"} {
+				deleteTUIYAMLKey(tun, key)
+			}
+			setTUIYAMLScalar(tun, "device", "flc-system", "!!str")
+		}
+	} else {
+		deleteTUIYAMLKey(tun, "file-descriptor")
+	}
+	updated, err := yaml.Marshal(&document)
+	if err != nil {
+		return "", fmt.Errorf("encode managed runtime configuration: %w", err)
+	}
+	if message := validateConfigBytes(updated); message != "" {
+		return "", errors.New(message)
+	}
+	runtimeID := make([]byte, 12)
+	if _, err := rand.Read(runtimeID); err != nil {
+		return "", err
+	}
+	runtimePath := filepath.Join(paths.homeDir, tuiManagedRuntimeConfigPrefix+hex.EncodeToString(runtimeID)+".yaml")
+	if err := writeTUIProfileAtomically(runtimePath, updated, 0o600); err != nil {
+		return "", err
+	}
+	return runtimePath, nil
+}
+
+func setTUIYAMLSequence(root *yaml.Node, key string, values []string, tag string) {
+	sequence := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	for _, value := range values {
+		sequence.Content = append(sequence.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value})
+	}
+	setTUIYAMLNode(root, key, sequence)
+}
+
+func prependTUIYAMLSequenceValue(root *yaml.Node, key, value string) {
+	sequence := tuiYAMLMappingValue(root, key)
+	if sequence == nil || sequence.Kind != yaml.SequenceNode {
+		sequence = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		setTUIYAMLNode(root, key, sequence)
+	}
+	sequence.Content = append(
+		[]*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}},
+		sequence.Content...,
+	)
+}
+
+func deleteTUIYAMLKey(root *yaml.Node, key string) {
+	for index := 0; index+1 < len(root.Content); index += 2 {
+		if root.Content[index].Value == key {
+			root.Content = append(root.Content[:index], root.Content[index+2:]...)
+			return
+		}
+	}
+}
 
 type tuiFLCListenerState struct {
 	Outbound string
@@ -72,14 +199,18 @@ func writeTUISilentRuntimeConfig(
 	paths cliPaths,
 	state tuiFLCListenerState,
 ) (string, error) {
-	if strings.TrimSpace(state.Outbound) == "" {
-		return "", errors.New("silent runtime outbound must not be empty")
+	hasOutbound := strings.TrimSpace(state.Outbound) != ""
+	hasPrivateListener := state.Port != 0 || state.Username != "" || state.Password != ""
+	if hasOutbound != hasPrivateListener {
+		return "", errors.New("silent runtime listener state is incomplete")
 	}
-	if state.Port <= 0 || state.Port > 65535 {
-		return "", errors.New("silent runtime port must be between 1 and 65535")
-	}
-	if state.Username == "" || len(state.Password) < 12 {
-		return "", errors.New("silent runtime credentials are incomplete")
+	if hasPrivateListener {
+		if state.Port <= 0 || state.Port > 65535 {
+			return "", errors.New("silent runtime port must be between 1 and 65535")
+		}
+		if state.Username == "" || len(state.Password) < 12 {
+			return "", errors.New("silent runtime credentials are incomplete")
+		}
 	}
 	data, err := os.ReadFile(paths.configPath)
 	if err != nil {
@@ -113,9 +244,13 @@ func writeTUISilentRuntimeConfig(
 	setTUIYAMLScalar(root, "external-controller-unix", "", "!!str")
 	setTUIYAMLScalar(root, "external-ui", "", "!!str")
 	setTUIYAMLScalar(root, "external-ui-url", "", "!!str")
+	setTUIYAMLScalar(root, "external-doh-server", "", "!!str")
+	setTUIYAMLScalar(root, "geo-auto-update", "false", "!!bool")
 
 	tun := ensureTUIYAMLMapping(root, "tun")
 	setTUIYAMLScalar(tun, "enable", "false", "!!bool")
+	ntp := ensureTUIYAMLMapping(root, "ntp")
+	setTUIYAMLScalar(ntp, "enable", "false", "!!bool")
 	iptables := ensureTUIYAMLMapping(root, "iptables")
 	setTUIYAMLScalar(iptables, "enable", "false", "!!bool")
 	tuicServer := ensureTUIYAMLMapping(root, "tuic-server")
@@ -124,21 +259,23 @@ func writeTUISilentRuntimeConfig(
 		setTUIYAMLScalar(dns, "listen", "", "!!str")
 	}
 
-	listener := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	setTUIYAMLScalar(listener, "name", tuiFLCListenerName, "!!str")
-	setTUIYAMLScalar(listener, "type", "mixed", "!!str")
-	setTUIYAMLScalar(listener, "listen", "127.0.0.1", "!!str")
-	setTUIYAMLScalar(listener, "port", strconv.Itoa(state.Port), "!!int")
-	setTUIYAMLScalar(listener, "proxy", state.Outbound, "!!str")
-	user := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	setTUIYAMLScalar(user, "username", state.Username, "!!str")
-	setTUIYAMLScalar(user, "password", state.Password, "!!str")
-	users := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{user}}
-	setTUIYAMLNode(listener, "users", users)
 	listeners := &yaml.Node{
-		Kind:    yaml.SequenceNode,
-		Tag:     "!!seq",
-		Content: []*yaml.Node{listener},
+		Kind: yaml.SequenceNode,
+		Tag:  "!!seq",
+	}
+	if hasPrivateListener {
+		listener := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		setTUIYAMLScalar(listener, "name", tuiFLCListenerName, "!!str")
+		setTUIYAMLScalar(listener, "type", "mixed", "!!str")
+		setTUIYAMLScalar(listener, "listen", "127.0.0.1", "!!str")
+		setTUIYAMLScalar(listener, "port", strconv.Itoa(state.Port), "!!int")
+		setTUIYAMLScalar(listener, "proxy", state.Outbound, "!!str")
+		user := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		setTUIYAMLScalar(user, "username", state.Username, "!!str")
+		setTUIYAMLScalar(user, "password", state.Password, "!!str")
+		users := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: []*yaml.Node{user}}
+		setTUIYAMLNode(listener, "users", users)
+		listeners.Content = []*yaml.Node{listener}
 	}
 	setTUIYAMLNode(root, "listeners", listeners)
 	setTUIYAMLNode(root, "tunnels", &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"})
@@ -165,14 +302,14 @@ func writeTUISilentRuntimeConfig(
 }
 
 func cleanupTUISilentRuntimeConfigs(homeDir, keep string) {
-	matches, _ := filepath.Glob(
-		filepath.Join(homeDir, tuiSilentRuntimeConfigPrefix+"*.yaml"),
-	)
-	for _, match := range matches {
-		if keep != "" && filepath.Clean(match) == filepath.Clean(keep) {
-			continue
+	for _, prefix := range []string{tuiSilentRuntimeConfigPrefix, tuiManagedRuntimeConfigPrefix} {
+		matches, _ := filepath.Glob(filepath.Join(homeDir, prefix+"*.yaml"))
+		for _, match := range matches {
+			if keep != "" && filepath.Clean(match) == filepath.Clean(keep) {
+				continue
+			}
+			_ = os.Remove(match)
 		}
-		_ = os.Remove(match)
 	}
 }
 

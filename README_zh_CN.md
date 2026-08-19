@@ -19,7 +19,7 @@ Dashboard 有意将下列状态分成独立选项：
 | **Backend** | 每用户一个的后台协调进程、私有 IPC、配置事务、共享 History、Core 生命周期和系统代理修改 | Backend 正在运行，不代表代理监听端口已经启动 |
 | **Core** | 由 FlClash 管理的 Mihomo 执行器及其监听器 | 启动 Core 不会自动修改桌面系统代理 |
 | **System proxy（系统代理）** | 目前通过 GNOME/MATE `gsettings` 设置 Linux 桌面 HTTP/HTTPS 代理 | 不读取系统代理的应用不会因此被接管 |
-| **TUN** | Mihomo 的网络层流量接管 | 它与系统代理互相独立，并可能需要额外 Linux 权限 |
+| **TUN** | 显式开启的用户范围或整机范围网络接管 | Debian 包安装受限 root 辅助服务；Backend/Core 仍以用户 UID 运行 |
 
 因此，`flclash core stop` 只停止 Core 监听器，Backend 仍可继续服务 CLI/TUI。`flclash backend stop`、`flclash shutdown` 或托管 TUI 中的 `Ctrl+C` 才会停止 Backend 和 Core，并断开所有前端。
 
@@ -45,24 +45,28 @@ Dashboard 只是 TUI 的一个页面，不是另一个守护进程。“所有�
 
 Backend 与托管 Core 默认使用私有 Unix socket，不需要开放 TCP Controller。Backend socket 权限为 `0600`；状态修改包含单调递增的 revision 和请求重试 ID；Profile 编辑还会使用内容摘要与逐 Profile 文件锁。
 
+每个 UID 拥有独立的 Backend、Core、TUI 客户端、运行时配置和连接历史。受管 listener 只监听回环地址，并拒绝 Linux socket 所属 UID 与 Backend 不一致的客户端。配置的 Proxy port 被占用时，Backend 会选择空闲运行端口且不覆盖首选值；两者不同时，状态和 TUI 会同时显示。
+
+TUN 分为两种作用域：`tun user on` 只捕获当前 UID，可与其他用户的用户 TUN 并存；`tun system on` 需要 Polkit 管理员授权，捕获所有用户，并与全部其他 TUN 租约互斥。辅助服务创建设备和策略路由，将文件描述符交给非特权 Backend，并在 Backend 断开后清理。用户 TUN 会在 Backend 重启后恢复；系统 TUN 必须重新授权。
+
 ## 安装
 
 ### Debian / Ubuntu 安装包
 
-在 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) 中选择与 `dpkg --print-architecture` 一致的包。0.4.4 的包名为：
+在 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) 中选择与 `dpkg --print-architecture` 一致的包。0.5.0 的包名为：
 
 ```text
-flclash-tui_0.4.4_amd64.deb
-flclash-tui_0.4.4_arm64.deb
+flclash-tui_0.5.0_amd64.deb
+flclash-tui_0.5.0_arm64.deb
 ```
 
 AMD64 示例：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.4/flclash-tui_0.4.4_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.4.4/flclash-tui_0.4.4_amd64.deb.sha256
-sha256sum -c flclash-tui_0.4.4_amd64.deb.sha256
-sudo dpkg -i flclash-tui_0.4.4_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.0/flclash-tui_0.5.0_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.0/flclash-tui_0.5.0_amd64.deb.sha256
+sha256sum -c flclash-tui_0.5.0_amd64.deb.sha256
+sudo dpkg -i flclash-tui_0.5.0_amd64.deb
 ```
 
 安装包提供 `/usr/bin/flclash`、`/usr/bin/flc`、文档以及内置 GeoIP/GeoSite/ASN 数据。Core 初始化前可以从本地安装资源恢复缺失或不可用的 Geo 文件，首次启动不依赖从 GitHub 下载这些基础文件。
@@ -89,8 +93,8 @@ flclash
 1. 打开 **Profiles**，选择 **Import subscription URL**，粘贴订阅地址并按 Enter。
 2. 选中下载完成的 Profile，按 Enter 激活。
 3. 打开 **Proxies**，进入代理组并选择节点。
-4. 回到 **Dashboard**，选择 `rule`、`global`、`direct` 或 `silent`。
-5. 启动 **Core**。需要桌面应用使用普通代理端口时，再开启 **System proxy**；该操作会在必要时自动启动 Core。
+4. 默认处于 `silent`；如需普通代理入口，再选择 `rule`、`global` 或 `direct`。
+5. silent 下先选择 FLC outbound，再启动 **Core**。需要桌面应用使用普通代理端口时，先退出 silent，再开启 **System proxy**。
 
 无头服务器上通常没有可用的桌面 `gsettings` 会话，应使用 `flc`、应用自身的代理设置或 TUN，而不是期待“系统代理”影响远程 Shell。
 
@@ -106,23 +110,22 @@ flclash
 
 ### 静默模式（silent）
 
-`silent` 是 FlClash 的运行时模式，不是写入 Mihomo YAML 的原生模式。其含义是：**普通程序保持直连，只有以 `flc` 开头的命令才获得代理环境**。
+`silent` 是默认模式，也是 FlClash 的运行时模式，不是写入 Mihomo YAML 的原生模式。其含义是：**不主动接管当前用户的网络连接；普通程序保持直连，只有以 `flc` 开头的命令才获得代理环境**。
 
 进入 silent 后，Backend 会生成一份临时运行时覆盖配置：
 
 - 关闭普通 Proxy port，以及常规 HTTP/SOCKS/redir/tproxy 监听；
 - 在运行副本中关闭系统代理、TUN、LAN、DNS 监听、外部 Controller、用户 listeners、tunnels 和服务端监听；
-- 仅创建一个随机的、只绑定回环地址的 `flc` mixed listener；
+- 配置 FLC outbound 后，仅创建一个随机的、只绑定回环地址的 `flc` mixed listener；未配置时不创建任何流量入口；
 - 使用每次运行随机生成的认证信息保护该 listener；
 - 让它直接使用选定的 FLC outbound（节点或代理组）；
 - 共享 Profile YAML 保持逐字节不变，退出时删除临时覆盖文件。
 
-进入 silent 前先选择出口：
+首次使用先选择出口；在此之前 Backend 正常运行，但 Core 保持停止且不会开放普通 Proxy port：
 
 ```bash
-flclash core start
 flclash flc select PROXY
-flclash mode silent
+flclash core start
 flc curl https://example.com
 ```
 
@@ -147,6 +150,8 @@ flclash flc env
 ```
 
 `flclash flc test` 会真正通过当前命令代理发起 HTTP 请求，而不只是测试端口。`flclash flc env`（以及 `flclash env`）打印可供 Shell 使用的 export；silent 模式下其中包含临时认证信息，不要把输出写入日志或永久 Shell 配置。
+
+Proxy port 在线修改由 Backend 统一执行。配置值作为首选端口；若已被占用，Backend 会选择空闲运行端口。重载后确认新回环 listener 可连接且旧端口已关闭，再把桌面系统代理更新到实际端口。任何一步失败都会恢复原 Profile、Core listener 和受管系统代理；listener 重建期间仍可能有很短的切换间隙。
 
 ## 命令详解
 
@@ -181,7 +186,9 @@ flclash flc env
 | `flclash sys [status]` | 查看 Backend 管理的 Linux 系统代理状态 |
 | `flclash sys on` | 必要时启动 Core，然后开启系统代理；silent 模式拒绝该操作 |
 | `flclash sys off` | 关闭系统代理，但不停止 Core |
-| `flclash tun [status\|on\|off]` | 查看或以事务方式修改活动 Profile 的 TUN |
+| `flclash tun [status\|on\|off]` | 查看或切换当前用户范围 TUN |
+| `flclash tun user on\|off` | 显式控制当前 UID 的流量接管 |
+| `flclash tun system on\|off` | 控制整机唯一 TUN；开启时需要 Polkit 授权 |
 | `flclash mode` | 输出当前 FlClash/原生流量模式 |
 | `flclash mode rule\|global\|direct\|silent` | 切换模式；silent 使用运行时覆盖配置 |
 | `flclash port` | 输出配置的 Proxy port；silent 下显示监听关闭，但保留配置值 |
@@ -336,7 +343,8 @@ Ctrl+C        托管模式下优雅停止 Backend 与 Core，然后断开所有�
 - **`flc` 拒绝执行：**它采用失败关闭。检查 `flclash status`、`flclash flc status`、FLC outbound 与 `flclash doctor`。
 - **修改提示 revision/content conflict：**另一前端已改变状态。刷新（TUI 按 `r` 或重新运行命令）后再操作。
 - **不同 `--directory` 被拒绝：**每用户只能有一个托管 Backend。确需切换时先停止当前 Backend。
-- **TUN 无法启动：**确认宿主机/内核/容器提供 TUN，并赋予进程所需网络权限。
+- **TUN helper 不可用：**安装 `.deb` 并检查 `systemctl status flclash-tun-helper`；便携 tar 包不会安装特权组件。
+- **TUN 无法启动：**确认存在 `/dev/net/tun`、cgroup v2、`iproute2` 与 `iptables`，并确认没有冲突的系统 TUN 租约。
 - **HTTPS 为何使用 `http://` 代理 URL：**这是正常现象；HTTPS 客户端通过 HTTP `CONNECT` 使用 mixed Proxy port。
 
 ## 更新

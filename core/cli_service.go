@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	tuiServiceProtocolVersion = 3
+	tuiServiceProtocolVersion = 4
 	tuiServiceSocketFilename  = ".flclash-cli-service.sock"
 	tuiCoreSocketFilename     = ".flclash-cli-core.sock"
 	tuiServiceLogFilename     = "flclash-cli-service.log"
@@ -44,6 +44,7 @@ type tuiServiceRequest struct {
 	ProxyName        string       `json:"proxy_name,omitempty"`
 	Mode             string       `json:"mode,omitempty"`
 	MixedPort        int          `json:"mixed_port,omitempty"`
+	TunScope         string       `json:"tun_scope,omitempty"`
 	TestURL          string       `json:"test_url,omitempty"`
 	Settings         *tuiSettings `json:"settings,omitempty"`
 	Enabled          *bool        `json:"enabled,omitempty"`
@@ -52,35 +53,43 @@ type tuiServiceRequest struct {
 	CreateOnly       bool         `json:"create_only,omitempty"`
 	SubscriptionURL  *string      `json:"subscription_url,omitempty"`
 	NewName          string       `json:"new_name,omitempty"`
+	ConnectionID     string       `json:"connection_id,omitempty"`
 	AfterRevision    uint64       `json:"after_revision,omitempty"`
 	WatchTimeoutMS   int          `json:"watch_timeout_ms,omitempty"`
 }
 
 type tuiServiceStatus struct {
-	ProtocolVersion int             `json:"protocol_version,omitempty"`
-	RequestID       string          `json:"request_id,omitempty"`
-	Revision        uint64          `json:"revision,omitempty"`
-	OK              bool            `json:"ok"`
-	ErrorCode       string          `json:"error_code,omitempty"`
-	Error           string          `json:"error,omitempty"`
-	PID             int             `json:"pid"`
-	Version         string          `json:"version"`
-	HomeDir         string          `json:"home_dir"`
-	ConfigPath      string          `json:"config_path"`
-	CoreSocket      string          `json:"core_socket"`
-	Running         bool            `json:"running"`
-	ShuttingDown    bool            `json:"shutting_down,omitempty"`
-	SystemProxy     bool            `json:"system_proxy"`
-	Mode            string          `json:"mode,omitempty"`
-	ProxyPort       int             `json:"proxy_port,omitempty"`
-	FLCEnabled      bool            `json:"flc_enabled,omitempty"`
-	FLCOutbound     string          `json:"flc_outbound,omitempty"`
-	FLCProxyURL     string          `json:"flc_proxy_url,omitempty"`
-	ResultPath      string          `json:"result_path,omitempty"`
-	History         []tuiRequest    `json:"history,omitempty"`
-	FrontendCount   int             `json:"frontend_count"`
-	Delay           int             `json:"delay,omitempty"`
-	Speed           *tuiSpeedResult `json:"speed,omitempty"`
+	ProtocolVersion     int             `json:"protocol_version,omitempty"`
+	RequestID           string          `json:"request_id,omitempty"`
+	Revision            uint64          `json:"revision,omitempty"`
+	OK                  bool            `json:"ok"`
+	ErrorCode           string          `json:"error_code,omitempty"`
+	Error               string          `json:"error,omitempty"`
+	PID                 int             `json:"pid"`
+	Version             string          `json:"version"`
+	HomeDir             string          `json:"home_dir"`
+	ConfigPath          string          `json:"config_path"`
+	CoreSocket          string          `json:"core_socket"`
+	Running             bool            `json:"running"`
+	ShuttingDown        bool            `json:"shutting_down,omitempty"`
+	SystemProxy         bool            `json:"system_proxy"`
+	Mode                string          `json:"mode,omitempty"`
+	ProxyPort           int             `json:"proxy_port,omitempty"`
+	ConfiguredProxyPort int             `json:"configured_proxy_port,omitempty"`
+	ActiveProxyPort     int             `json:"active_proxy_port,omitempty"`
+	TunScope            string          `json:"tun_scope,omitempty"`
+	TunState            string          `json:"tun_state,omitempty"`
+	TunOwnerUID         uint32          `json:"tun_owner_uid,omitempty"`
+	TunOwnerPID         int             `json:"tun_owner_pid,omitempty"`
+	FLCEnabled          bool            `json:"flc_enabled,omitempty"`
+	FLCOutbound         string          `json:"flc_outbound,omitempty"`
+	FLCProxyURL         string          `json:"flc_proxy_url,omitempty"`
+	ResultPath          string          `json:"result_path,omitempty"`
+	History             []tuiRequest    `json:"history,omitempty"`
+	Connections         []tuiConnection `json:"connections,omitempty"`
+	FrontendCount       int             `json:"frontend_count"`
+	Delay               int             `json:"delay,omitempty"`
+	Speed               *tuiSpeedResult `json:"speed,omitempty"`
 }
 
 type tuiServiceError struct {
@@ -175,6 +184,12 @@ func (c *tuiServiceClient) sendRequest(
 	var status tuiServiceStatus
 	if err := json.NewDecoder(bufio.NewReader(connection)).Decode(&status); err != nil {
 		return tuiServiceStatus{}, err
+	}
+	if status.ConfiguredProxyPort == 0 {
+		status.ConfiguredProxyPort = status.ProxyPort
+	}
+	if status.ActiveProxyPort == 0 && status.Running {
+		status.ActiveProxyPort = status.ProxyPort
 	}
 	if !status.OK {
 		if status.Error == "" {
@@ -375,6 +390,43 @@ func (c *tuiServiceClient) setSystemProxy(
 	return c.requestPayload(tuiServiceRequest{
 		Action:           "set_system_proxy",
 		Enabled:          &enabled,
+		ExpectedRevision: &revision,
+	})
+}
+
+func (c *tuiServiceClient) setTun(
+	enabled bool,
+	scope string,
+	revision uint64,
+) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{
+		Action:           "set_tun",
+		Enabled:          &enabled,
+		TunScope:         scope,
+		ExpectedRevision: &revision,
+	})
+}
+
+func (c *tuiServiceClient) connections() (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{Action: "connections"})
+}
+
+func (c *tuiServiceClient) closeConnectionManaged(
+	id string,
+	revision uint64,
+) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{
+		Action:           "close_connection",
+		ConnectionID:     id,
+		ExpectedRevision: &revision,
+	})
+}
+
+func (c *tuiServiceClient) closeAllConnectionsManaged(
+	revision uint64,
+) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{
+		Action:           "close_all_connections",
 		ExpectedRevision: &revision,
 	})
 }
@@ -953,13 +1005,19 @@ func runTUIService(
 		configuredPort = configuredSettings.MixedPort
 	}
 	trafficMode := loadTUITrafficMode(paths.homeDir, paths.configPath)
+	tunScope := loadTUITunScope(paths.homeDir)
+	tunEnabled := configuredSettings != nil && configuredSettings.TunEnabled && tunScope == tuiTunScopeUser
 	actualPaths := paths
+	runtimePort := configuredPort
 	flcState := tuiFLCListenerState{Outbound: loadTUIFLCOutbound(paths.homeDir)}
 	cleanupTUISilentRuntimeConfigs(paths.homeDir, "")
 	if trafficMode == tuiSilentMode {
-		flcState, err = newTUIFLCListenerState(flcState.Outbound)
-		if err != nil {
-			return err
+		tunEnabled = false
+		if flcState.Outbound != "" {
+			flcState, err = newTUIFLCListenerState(flcState.Outbound)
+			if err != nil {
+				return err
+			}
 		}
 		actualPaths.configPath, err = writeTUISilentRuntimeConfig(paths, flcState)
 		if err != nil {
@@ -971,6 +1029,25 @@ func runTUIService(
 				return fmt.Errorf("disable system proxy for silent mode: %w", err)
 			}
 		}
+	} else {
+		if configuredPort > 0 {
+			runtimePort, err = chooseTUIProxyPort(configuredPort)
+			if err != nil {
+				return err
+			}
+		}
+		actualPaths.configPath, err = writeTUIManagedRuntimeConfig(
+			paths,
+			trafficMode,
+			runtimePort,
+			false,
+			tunScope,
+			0,
+		)
+		if err != nil {
+			return err
+		}
+		defer cleanupTUISilentRuntimeConfigs(paths.homeDir, "")
 	}
 	setupParams, err := initializeCore(
 		actualPaths,
@@ -1009,11 +1086,14 @@ func runTUIService(
 		},
 	)
 	defer runtime.closeCoreController()
-	runtime.configureRuntimePolicy(
+	runtime.configureManagedRuntimePolicy(
 		trafficMode,
 		configuredPort,
+		runtimePort,
 		actualPaths.configPath,
 		flcState,
+		tunScope,
+		tunEnabled,
 	)
 	go collectTUIServiceHistory(runtime, shutdown)
 	if settings := loadTUIConfiguredSettings(paths.configPath, true); settings != nil {

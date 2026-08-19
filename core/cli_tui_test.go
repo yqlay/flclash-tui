@@ -943,7 +943,7 @@ func TestTUISettingsExposeAllInteractiveRows(t *testing.T) {
 		"Allow LAN     ON",
 		"IPv6          OFF",
 		"Log level     info",
-		"TUN           ON",
+		"TUN           USER ON",
 		"Core          STOPPED · Enter to start",
 		"System proxy  DISABLED · Enter to enable (starts Core)",
 	} {
@@ -2394,6 +2394,9 @@ rules:
   - MATCH,PROXY
 `, mixedPort)
 	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rememberTUITrafficMode(directory, "rule"); err != nil {
 		t.Fatal(err)
 	}
 	subscription := httptest.NewServer(http.HandlerFunc(

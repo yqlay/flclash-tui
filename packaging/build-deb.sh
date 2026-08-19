@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.4.4}"
+VERSION="${VERSION:-0.5.0}"
 ARCH="${ARCH:-amd64}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist}"
 PACKAGE_NAME="flclash-tui_${VERSION}_${ARCH}"
@@ -27,6 +27,8 @@ mkdir -p "${WORK_DIR}/DEBIAN"
 mkdir -p "${WORK_DIR}/usr/bin"
 mkdir -p "${WORK_DIR}/usr/share/doc/flclash-tui"
 mkdir -p "${WORK_DIR}/usr/share/flclash-tui/data"
+mkdir -p "${WORK_DIR}/usr/lib/systemd/system"
+mkdir -p "${WORK_DIR}/usr/share/polkit-1/actions"
 chmod 0755 "${WORK_DIR}" "${WORK_DIR}/DEBIAN" "${WORK_DIR}/usr" \
   "${WORK_DIR}/usr/share" "${WORK_DIR}/usr/share/doc" \
   "${WORK_DIR}/usr/share/doc/flclash-tui" \
@@ -50,6 +52,10 @@ install -m 0644 "${ROOT_DIR}/README_zh_CN.md" "${WORK_DIR}/usr/share/doc/flclash
 install -m 0644 "${ROOT_DIR}/CLI_LINUX.md" "${WORK_DIR}/usr/share/doc/flclash-tui/CLI_LINUX.md"
 install -m 0644 "${ROOT_DIR}/LICENSE" "${WORK_DIR}/usr/share/doc/flclash-tui/LICENSE"
 install -m 0644 "${ROOT_DIR}/NOTICE" "${WORK_DIR}/usr/share/doc/flclash-tui/NOTICE"
+install -m 0644 "${ROOT_DIR}/packaging/flclash-tun-helper.service" \
+  "${WORK_DIR}/usr/lib/systemd/system/flclash-tun-helper.service"
+install -m 0644 "${ROOT_DIR}/packaging/org.flclash.tun.policy" \
+  "${WORK_DIR}/usr/share/polkit-1/actions/org.flclash.tun.policy"
 for geo_file in GEOIP.metadb GEOIP.dat GEOSITE.dat ASN.mmdb; do
   install -m 0644 \
     "${ROOT_DIR}/assets/data/${geo_file}" \
@@ -66,10 +72,39 @@ Maintainer: yqlay <yqlay@users.noreply.github.com>
 Conflicts: flclash-cli
 Replaces: flclash-cli
 Provides: flclash-cli
+Depends: iproute2, iptables, polkitd | policykit-1
 Description: Linux terminal client derived from FlClash
  Unofficial Linux terminal interface and command-line client that reuses the FlClash Mihomo core.
  Supports interactive proxy management, config profiles, settings, and scriptable control.
 EOF
+
+cat > "${WORK_DIR}/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload || true
+  systemctl enable --now flclash-tun-helper.service || true
+fi
+EOF
+chmod 0755 "${WORK_DIR}/DEBIAN/postinst"
+
+cat > "${WORK_DIR}/DEBIAN/prerm" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = remove ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl disable --now flclash-tun-helper.service || true
+fi
+EOF
+chmod 0755 "${WORK_DIR}/DEBIAN/prerm"
+
+cat > "${WORK_DIR}/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload || true
+fi
+EOF
+chmod 0755 "${WORK_DIR}/DEBIAN/postrm"
 
 dpkg-deb --build --root-owner-group "${WORK_DIR}" "${OUTPUT_DIR}/${PACKAGE_NAME}.deb" >/dev/null
 echo "Built ${OUTPUT_DIR}/${PACKAGE_NAME}.deb"

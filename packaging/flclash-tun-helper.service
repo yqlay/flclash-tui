@@ -1,0 +1,22 @@
+[Unit]
+Description=FlClash privileged TUN lease helper
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/flclash tun-helper serve
+Restart=on-failure
+RuntimeDirectory=flclash
+RuntimeDirectoryMode=0755
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+DeviceAllow=/dev/net/tun rw
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/sys/fs/cgroup /run/flclash
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
