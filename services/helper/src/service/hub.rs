@@ -40,9 +40,8 @@ static PROCESS: Lazy<Arc<Mutex<Option<std::process::Child>>>> =
 
 fn start(start_params: StartParams) -> impl Reply {
     if !cfg!(debug_assertions) {
-        let sha256 = sha256_file(start_params.path.as_str()).unwrap_or("".to_string());
-        if sha256 != env!("TOKEN") {
-            return format!("The SHA256 hash of the program requesting execution is: {}. The helper program only allows execution of applications with the SHA256 hash: {}.", sha256,  env!("TOKEN"),);
+        if let Err(error) = verify_executable(start_params.path.as_str(), env!("TOKEN")) {
+            return error;
         }
     }
     stop();
@@ -77,6 +76,18 @@ fn start(start_params: StartParams) -> impl Reply {
             e.to_string()
         }
     }
+}
+
+fn verify_executable(path: &str, expected_sha256: &str) -> Result<(), String> {
+    if expected_sha256.is_empty() {
+        return Err("The helper was built without an executable authorization token.".to_string());
+    }
+    let actual_sha256 = sha256_file(path)
+        .map_err(|error| format!("Unable to verify the requesting executable: {error}"))?;
+    if actual_sha256 != expected_sha256 {
+        return Err("The requesting executable is not authorized by this helper.".to_string());
+    }
+    Ok(())
 }
 
 fn stop() -> impl Reply {
@@ -115,13 +126,59 @@ pub async fn run_service() -> anyhow::Result<()> {
         .and(warp::body::json())
         .map(|start_params: StartParams| start(start_params));
 
-    let api_stop = warp::post().and(warp::path("stop")).map(|| stop());
+    let api_stop = warp::post().and(warp::path("stop")).map(stop);
 
-    let api_logs = warp::get().and(warp::path("logs")).map(|| get_logs());
+    let api_logs = warp::get().and(warp::path("logs")).map(get_logs);
 
     warp::serve(api_ping.or(api_start).or(api_stop).or(api_logs))
         .run(([127, 0, 0, 1], LISTEN_PORT))
         .await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sha256_file, verify_executable};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_file() -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after the Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("flclash-helper-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn verification_rejects_an_empty_build_token() {
+        let path = temporary_file();
+        fs::write(&path, b"trusted executable").expect("write test executable");
+        let result = verify_executable(path.to_str().expect("UTF-8 test path"), "");
+        fs::remove_file(path).expect("remove test executable");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verification_rejects_missing_and_mismatched_executables() {
+        let missing = temporary_file();
+        assert!(verify_executable(missing.to_str().expect("UTF-8 test path"), "expected").is_err());
+
+        fs::write(&missing, b"untrusted executable").expect("write test executable");
+        let result = verify_executable(missing.to_str().expect("UTF-8 test path"), "expected");
+        fs::remove_file(missing).expect("remove test executable");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verification_accepts_the_exact_executable_hash() {
+        let path = temporary_file();
+        fs::write(&path, b"trusted executable").expect("write test executable");
+        let path_string = path.to_str().expect("UTF-8 test path");
+        let expected = sha256_file(path_string).expect("hash test executable");
+        let result = verify_executable(path_string, &expected);
+        fs::remove_file(path).expect("remove test executable");
+        assert!(result.is_ok());
+    }
 }

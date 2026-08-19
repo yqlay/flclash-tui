@@ -126,12 +126,6 @@ func activeCLIProxyURLForPaths(paths cliPaths) (string, error) {
 			statusErr,
 		)
 	}
-	if !status.Running {
-		return "", errors.New(
-			"FlClash Core is stopped; run `flclash start` first.\n" +
-				"FlClash Core 已停止；请先执行 `flclash start`。",
-		)
-	}
 	if status.Mode == tuiSilentMode {
 		privateStatus, err := client.flcProxy()
 		if err != nil {
@@ -159,6 +153,12 @@ func activeCLIProxyURLForPaths(paths cliPaths) (string, error) {
 		}
 		_ = connection.Close()
 		return privateStatus.FLCProxyURL, nil
+	}
+	if !status.Running {
+		return "", errors.New(
+			"FlClash Core is stopped; run `flclash start` first.\n" +
+				"FlClash Core 已停止；请先执行 `flclash start`。",
+		)
 	}
 	if strings.TrimSpace(status.CoreSocket) == "" {
 		return "", errors.New(

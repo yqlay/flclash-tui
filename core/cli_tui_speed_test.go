@@ -5,11 +5,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -145,81 +142,57 @@ func TestTUIParallelDownloadSpeedUsesSharedFixedWindow(t *testing.T) {
 }
 
 func TestTUIRouteDelayUsesActiveFallbackPortAndReturnsSamples(t *testing.T) {
-	directory, err := os.MkdirTemp("/tmp", "flclash-route-delay-")
-	if err != nil {
-		t.Fatal(err)
+	const (
+		configuredPort = 7890
+		activePort     = 39123
+	)
+	runtime := newTestTUIServiceRuntime(t)
+	runtime.configureManagedRuntimePolicy(
+		"rule",
+		configuredPort,
+		activePort,
+		"config.yaml",
+		tuiFLCListenerState{},
+		tuiTunScopeUser,
+		false,
+	)
+	runtime.setRunning(true)
+	runtime.mu.Lock()
+	runtime.activePort = activePort
+	runtime.mu.Unlock()
+	usedPort := 0
+	runtime.routeClient = func(port int) (*http.Client, func(), error) {
+		usedPort = port
+		return &http.Client{}, func() {}, nil
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(directory) })
-	previousRuntimeDirectory := cliRuntimeDirectoryOverride
-	cliRuntimeDirectoryOverride = directory
-	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntimeDirectory })
-
-	occupied, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	runtime.routeDelayTest = func(
+		context.Context,
+		*http.Client,
+		string,
+	) (tuiDelayResult, error) {
+		return tuiDelayResult{
+			MedianMillis: 42,
+			JitterMillis: 3,
+			MinMillis:    38,
+			MaxMillis:    47,
+			Samples:      tuiDelayTestSamples,
+		}, nil
 	}
-	defer occupied.Close()
-	configuredPort := occupied.Addr().(*net.TCPAddr).Port
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer target.Close()
-	configPath := filepath.Join(directory, "config.yaml")
-	source := fmt.Appendf(nil, `mixed-port: %d
-mode: rule
-log-level: silent
-ipv6: false
-rules:
-  - MATCH,DIRECT
-`, configuredPort)
-	if err := os.WriteFile(configPath, source, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := rememberTUITrafficMode(directory, "rule"); err != nil {
-		t.Fatal(err)
-	}
-	serviceDone := make(chan error, 1)
-	go func() {
-		serviceDone <- runTUIService(
-			cliPaths{homeDir: directory, configPath: configPath},
-			target.URL,
-			nil,
-			false,
-		)
-	}()
-	service := newTUIServiceClient(directory)
-	shutdown := true
-	t.Cleanup(func() {
-		if shutdown {
-			_ = service.shutdown()
-		}
+	status := runtime.testRoute(tuiServiceRequest{
+		Action:    "delay_route",
+		MixedPort: configuredPort,
+		TestURL:   "https://example.com/generate_204",
 	})
-	status := waitForTUIServiceStatus(t, service)
-	status, err = service.startAtRevision(status.Revision)
-	if err != nil {
-		t.Fatal(err)
+	if !status.OK {
+		t.Fatalf("route delay failed: %+v", status)
 	}
-	if status.ActiveProxyPort <= 0 || status.ActiveProxyPort == configuredPort {
-		t.Fatalf("active fallback status = %+v", status)
+	if usedPort != activePort {
+		t.Fatalf("route test port = %d, want active port %d", usedPort, activePort)
 	}
-	delay, err := service.testRouteDelay(configuredPort, target.URL)
-	if err != nil {
-		t.Fatalf("route delay through active fallback port: %v", err)
-	}
-	if delay.MedianMillis <= 0 || delay.Samples != tuiDelayTestSamples {
-		t.Fatalf("route delay result = %+v", delay)
-	}
-	if err := service.shutdown(); err != nil {
-		t.Fatal(err)
-	}
-	shutdown = false
-	select {
-	case err := <-serviceDone:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("Backend did not exit after route delay test")
+	if status.Delay != 42 || status.DelayJitter != 3 ||
+		status.DelayMin != 38 || status.DelayMax != 47 ||
+		status.DelaySamples != tuiDelayTestSamples {
+		t.Fatalf("route delay status = %+v", status)
 	}
 }
 

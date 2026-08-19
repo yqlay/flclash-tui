@@ -475,7 +475,7 @@ rules:
 	}
 }
 
-func TestFirstFLCCommandAutoSelectsOutboundInSilentMode(t *testing.T) {
+func TestFirstFLCCommandStartsCoreAndAutoSelectsOutboundInSilentMode(t *testing.T) {
 	directory, err := os.MkdirTemp("/tmp", "flclash-enter-silent-")
 	if err != nil {
 		t.Fatal(err)
@@ -500,9 +500,6 @@ rules:
 	if err := os.WriteFile(configPath, source, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := rememberTUITrafficMode(directory, "rule"); err != nil {
-		t.Fatal(err)
-	}
 	serviceDone := make(chan error, 1)
 	go func() {
 		serviceDone <- runTUIService(
@@ -524,23 +521,12 @@ rules:
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, err = service.startAtRevision(status.Revision)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !waitForTUIProxyPortState(proxyPort, true, tuiListenerValidationTimeout) {
-		t.Fatal("normal proxy listener did not start")
-	}
-	status, err = service.setMode(tuiSilentMode, status.Revision)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.Mode != tuiSilentMode || !status.Running || status.FLCEnabled ||
+	if status.Mode != tuiSilentMode || status.Running || status.FLCEnabled ||
 		status.SystemProxy || status.FLCOutbound != "" {
-		t.Fatalf("silent-without-outbound status = %+v", status)
+		t.Fatalf("stopped silent-without-outbound status = %+v", status)
 	}
-	if !waitForTUIProxyPortState(proxyPort, false, tuiListenerValidationTimeout) {
-		t.Fatal("entering silent without outbound left the normal proxy listener open")
+	if waitForTUIProxyPortState(proxyPort, true, 150*time.Millisecond) {
+		t.Fatal("stopped silent mode opened the normal proxy listener")
 	}
 	privateProxyURL, err := activeCLIProxyURLForPaths(
 		cliPaths{homeDir: directory, configPath: configPath},
@@ -556,7 +542,8 @@ rules:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !privateStatus.FLCEnabled || privateStatus.FLCOutbound != "PROXY" {
+	if !privateStatus.Running || !privateStatus.FLCEnabled ||
+		privateStatus.FLCOutbound != "PROXY" {
 		t.Fatalf("auto-selected FLC status = %+v", privateStatus)
 	}
 	privatePort, err := strconv.Atoi(privateURL.Port())

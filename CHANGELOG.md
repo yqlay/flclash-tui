@@ -1,5 +1,23 @@
 ## Unreleased
 
+- Start a fresh silent-mode Core on the first `flc COMMAND`, automatically
+  selecting and persisting a usable FLC outbound instead of leaving the CLI in
+  a Core-stopped/FLC-not-selected deadlock.
+- Bound desktop Core startup and shutdown waits, report early process exits,
+  reap local Core processes, and release completed or timed-out IPC callbacks.
+- Fail the Windows helper closed when its executable authorization token is
+  absent or unreadable, and upgrade its HTTP stack to remove reachable Rust
+  security advisories.
+- Update vulnerable Go networking dependencies and the CI Go toolchain to
+  versions with no reachable known vulnerabilities.
+- Validate Flutter, plugin, Linux CLI, and Windows helper tests on every pull
+  request, while keeping multi-platform packaging restricted to release tags.
+- Make Android signing optional but all-or-nothing, repair changelog/release-note
+  generation, and decouple GitHub releases from optional Telegram and external
+  repository credentials.
+- Fix the CargoKit Apple build script's shell declaration and stop printing the
+  complete build environment into logs.
+- Make route-port tests deterministic and remove deprecated Flutter color APIs.
 - Measure route and node latency from five samples, reporting the median and
   successive-sample jitter instead of a single inconsistent request.
 - Measure aggregate Cloudflare download throughput over four concurrent streams
