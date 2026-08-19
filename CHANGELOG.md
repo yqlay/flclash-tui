@@ -1,3 +1,7 @@
+## FlClash TUI v0.5.1
+
+- Repair a missing silent-mode private listener on the first `flc COMMAND` invocation by automatically selecting the first usable configured proxy group, reloading Core transactionally, and persisting that FLC outbound.
+
 ## FlClash TUI v0.5.0
 
 - Isolate managed Backends, runtime proxy entries, connections, and TUI clients per Linux UID.

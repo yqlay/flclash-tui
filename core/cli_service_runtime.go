@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,8 +116,6 @@ func (r *tuiServiceRuntime) handle(
 	switch request.Action {
 	case "status":
 		status = r.snapshot(request.RequestID)
-	case "flc_proxy":
-		status = r.flcProxy(request.RequestID)
 	case "history":
 		status = r.historyStatus(request.RequestID)
 	case "connections":
@@ -127,7 +126,7 @@ func (r *tuiServiceRuntime) handle(
 		status = r.testProxySpeed(request)
 	case "speed_route", "delay_route":
 		status = r.testRoute(request)
-	case "start", "stop", "reload", "apply_settings", "set_system_proxy", "set_tun",
+	case "start", "stop", "reload", "apply_settings", "set_system_proxy", "set_tun", "flc_proxy",
 		"close_connection", "close_all_connections",
 		"set_mode", "set_flc_outbound", "select_proxy", "clear_history", "put_profile",
 		"rename_profile", "delete_profile", "link_profile", "backup_profile",
@@ -279,6 +278,8 @@ func (r *tuiServiceRuntime) mutate(
 		changed, err = r.applyTrafficMode(request.Mode)
 	case "set_flc_outbound":
 		changed, err = r.applyFLCOutbound(request.ProxyName)
+	case "flc_proxy":
+		changed, err = r.ensureFLCProxy()
 	case "select_proxy":
 		changed, err = r.selectProxy(request.ProxyGroup, request.ProxyName)
 	case "clear_history":
@@ -325,6 +326,11 @@ func (r *tuiServiceRuntime) mutate(
 		r.bumpRevision()
 	}
 	status = r.snapshot(request.RequestID)
+	if request.Action == "flc_proxy" {
+		r.mu.RLock()
+		status.FLCProxyURL = r.flc.proxyURL()
+		r.mu.RUnlock()
+	}
 	status.ResultPath = resultPath
 	return r.completeMutation(request, status)
 }
@@ -496,6 +502,66 @@ func (r *tuiServiceRuntime) flcProxy(requestID string) tuiServiceStatus {
 	}
 	status.FLCProxyURL = proxyURL
 	return status
+}
+
+func (r *tuiServiceRuntime) ensureFLCProxy() (bool, error) {
+	status := r.snapshot("")
+	if !status.Running {
+		return false, errors.New("FlClash Core is stopped; run `flclash core start` first")
+	}
+	if status.Mode != tuiSilentMode {
+		return false, errors.New("private FLC listener is only active in silent mode")
+	}
+	r.mu.RLock()
+	proxyURL := r.flc.proxyURL()
+	configPath := r.paths.configPath
+	r.mu.RUnlock()
+	if proxyURL != "" {
+		return false, nil
+	}
+	outbound, err := chooseDefaultTUIFLCOutbound(r.coreController, configPath)
+	if err != nil {
+		return false, err
+	}
+	return r.applyFLCOutbound(outbound)
+}
+
+func chooseDefaultTUIFLCOutbound(controller controllerClient, configPath string) (string, error) {
+	data, err := controller.request(http.MethodGet, "/proxies", nil)
+	if err != nil {
+		return "", fmt.Errorf("read proxy list for FLC auto-selection: %w", err)
+	}
+	var response tuiProxyResponse
+	if err := json.Unmarshal(data, &response); err != nil {
+		return "", fmt.Errorf("parse proxy list for FLC auto-selection: %w", err)
+	}
+	usable := func(name string) bool {
+		proxy, ok := response.Proxies[name]
+		return ok && len(proxy.All) > 0 && isTUIGroup(proxy.Type)
+	}
+	for _, name := range loadTUIProxyGroupOrder(configPath) {
+		if usable(name) {
+			return name, nil
+		}
+	}
+	for _, preferred := range []string{"PROXY", "GLOBAL"} {
+		if usable(preferred) {
+			return preferred, nil
+		}
+	}
+	names := make([]string, 0, len(response.Proxies))
+	for name := range response.Proxies {
+		if usable(name) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	if len(names) > 0 {
+		return names[0], nil
+	}
+	return "", errors.New(
+		"silent mode has no usable proxy group for FLC; run `flclash flc select NAME`",
+	)
 }
 
 func (r *tuiServiceRuntime) putProfile(
