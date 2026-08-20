@@ -10,6 +10,16 @@ FlClash TUI is a Linux terminal proxy manager for Mihomo/Clash configurations. I
 
 This is an unofficial derivative of [FlClash](https://github.com/chen08209/FlClash). It reuses FlClash's Go/Mihomo integration but has a terminal-specific lifecycle, Backend, command set, and interface. It is not an official FlClash or Mihomo release. See [NOTICE](NOTICE) and [LICENSE](LICENSE).
 
+## Highlights
+
+- Full-screen, keyboard-driven TUI with Dashboard, Proxies, Profiles, History, Connections, Logs, Settings, and Maintenance pages.
+- Scriptable commands that correspond to Dashboard controls, with JSON/watch output where automation benefits from it.
+- Default `silent` mode: ordinary programs stay direct and only `flc COMMAND` receives an authenticated private proxy entry.
+- One detached Backend per Linux UID, shared safely by multiple TUI/CLI frontends without frontends racing to edit YAML.
+- Current-user TUNs may coexist; whole-system TUN is administrator-authorized and globally exclusive.
+- Transactional profile edits, subscription refresh, port hot switching with automatic fallback, and rollback on failed reloads.
+- Native AMD64 and ARM64 Linux releases as Debian packages and portable archives.
+
 ## The four states that matter
 
 The Dashboard deliberately shows these as separate rows:
@@ -71,6 +81,21 @@ sudo dpkg -i flclash-tui_0.5.2_amd64.deb
 
 The package installs `/usr/bin/flclash`, the `/usr/bin/flc` entry point, documentation, and bundled GeoIP/GeoSite/ASN data. Missing or unusable Geo files can be restored locally before Core initialization, so first startup does not depend on downloading those files from GitHub.
 
+### Portable archive
+
+The release also provides `tar.gz` archives for AMD64 and ARM64. They do not install the privileged TUN helper, so use the Debian package when user/system TUN is required. Example for AMD64:
+
+```bash
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.tar.gz
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.tar.gz.sha256
+sha256sum -c flclash-tui_0.5.2_amd64.tar.gz.sha256
+tar -xzf flclash-tui_0.5.2_amd64.tar.gz
+cd flclash-tui_0.5.2_amd64
+./flclash
+```
+
+Keep the bundled `data/` directory beside `flclash`. `flc` in the archive is a symlink to the same executable.
+
 ### Build from source
 
 ```bash
@@ -97,6 +122,22 @@ With the implicit default data directory, Backend creates a minimal DIRECT-only 
 5. In silent mode, the first `flc COMMAND` automatically selects the first usable proxy group and starts **Core**. You can still choose a different FLC outbound explicitly. To proxy desktop applications, leave silent mode before enabling **System proxy**.
 
 On a headless server, use `flc`, an application's explicit proxy setting, or TUN instead of expecting desktop `gsettings` to affect remote shells.
+
+### Dashboard command map
+
+The short CLI names intentionally match the controls shown in the TUI:
+
+| TUI state or setting | Inspect | Change |
+| --- | --- | --- |
+| Backend | `flclash backend status` | `flclash backend start\|stop\|restart` |
+| Core | `flclash core status` | `flclash core start\|stop\|restart` |
+| System proxy | `flclash sys status` | `flclash sys on\|off` |
+| TUN | `flclash tun status` | `flclash tun user on\|off` or `flclash tun system on\|off` |
+| Mode | `flclash mode` | `flclash mode rule\|global\|direct\|silent` |
+| Proxy port | `flclash port` | `flclash port PORT\|off` |
+| FLC outbound | `flclash flc status` | `flclash flc select NAME` |
+
+Backend is the per-user manager; Core is the Mihomo process it controls. System proxy only changes supported Linux desktop proxy preferences, while TUN captures traffic at the network layer. They are separate switches by design.
 
 ## Traffic modes and `flc`
 
@@ -138,6 +179,14 @@ flc sh -c 'curl -s https://example.com | jq .'
 ```
 
 Pipes and redirections require an explicit shell as in the final example. The child application must honor standard proxy variables; `flc` cannot force an application that ignores them through a proxy. GNU Wget is invoked with `--no-config` so a stale `~/.wgetrc` proxy cannot override the live entry.
+
+`sudo` normally sanitizes proxy environment variables. If the privileged child must keep the `flc` entry and local sudo policy permits environment preservation, put `sudo -E` **after** `flc`:
+
+```bash
+flc sudo -E cc-switch update
+```
+
+Do not run `sudo flc ...`: that changes the effective user before `flc` connects and therefore targets root's separate Backend rather than the current user's Backend. Even with `-E`, the called program must support the proxy variables, and stricter sudo policy may still reject or remove them.
 
 Useful management commands:
 
