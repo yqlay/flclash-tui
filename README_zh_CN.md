@@ -10,6 +10,16 @@ FlClash TUI 是面向 Linux 的 Mihomo/Clash 终端代理管理器。它同时�
 
 本项目是 [FlClash](https://github.com/chen08209/FlClash) 的非官方衍生版本，复用了 FlClash 的 Go/Mihomo 集成，但重新设计了终端专用的 Backend、生命周期、命令与界面。它不是 FlClash 或 Mihomo 的官方发行版。版权与许可证见 [NOTICE](NOTICE) 和 [LICENSE](LICENSE)。
 
+## 功能亮点
+
+- 全屏键盘 TUI，包含 Dashboard、Proxies、Profiles、History、Connections、Logs、Settings 与 Maintenance 八个页面。
+- CLI 命令与 Dashboard 控件对应，并在适合自动化的命令中提供 JSON/watch 输出。
+- 默认 `silent` 模式：普通程序保持直连，只有 `flc 命令` 获得带认证的私有代理入口。
+- 每个 Linux UID 只有一个后台 Backend，多个 TUI/CLI 前端安全共享，前端不会竞相改写 YAML。
+- 多个用户的用户范围 TUN 可以共存；整机 TUN 需要管理员授权，并且全系统唯一。
+- Profile 事务修改、订阅更新、带自动备用端口的热切换，以及重载失败回滚。
+- 提供 AMD64 与 ARM64 Linux 原生 Debian 包和便携压缩包。
+
 ## 最重要的四种状态
 
 Dashboard 有意将下列状态分成独立选项：
@@ -71,6 +81,21 @@ sudo dpkg -i flclash-tui_0.5.2_amd64.deb
 
 安装包提供 `/usr/bin/flclash`、`/usr/bin/flc`、文档以及内置 GeoIP/GeoSite/ASN 数据。Core 初始化前可以从本地安装资源恢复缺失或不可用的 Geo 文件，首次启动不依赖从 GitHub 下载这些基础文件。
 
+### 便携压缩包
+
+Release 同时提供 AMD64 与 ARM64 的 `tar.gz`。便携包不会安装特权 TUN helper；需要用户/整机 TUN 时应使用 Debian 包。AMD64 示例：
+
+```bash
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.tar.gz
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.tar.gz.sha256
+sha256sum -c flclash-tui_0.5.2_amd64.tar.gz.sha256
+tar -xzf flclash-tui_0.5.2_amd64.tar.gz
+cd flclash-tui_0.5.2_amd64
+./flclash
+```
+
+请保持内置 `data/` 目录与 `flclash` 位于同一目录。压缩包中的 `flc` 是指向同一可执行文件的符号链接。
+
 ### 从源码构建
 
 ```bash
@@ -97,6 +122,22 @@ flclash
 5. silent 下首次运行 `flc 命令` 时会自动选择第一个可用代理组并启动 **Core**；仍可手动改选 FLC outbound。需要桌面应用使用普通代理端口时，先退出 silent，再开启 **System proxy**。
 
 无头服务器上通常没有可用的桌面 `gsettings` 会话，应使用 `flc`、应用自身的代理设置或 TUN，而不是期待“系统代理”影响远程 Shell。
+
+### Dashboard 命令对照
+
+CLI 的短命令有意与 TUI 中显示的控制项对应：
+
+| TUI 状态或设置 | 查看 | 修改 |
+| --- | --- | --- |
+| Backend | `flclash backend status` | `flclash backend start\|stop\|restart` |
+| Core | `flclash core status` | `flclash core start\|stop\|restart` |
+| System proxy | `flclash sys status` | `flclash sys on\|off` |
+| TUN | `flclash tun status` | `flclash tun user on\|off` 或 `flclash tun system on\|off` |
+| Mode | `flclash mode` | `flclash mode rule\|global\|direct\|silent` |
+| Proxy port | `flclash port` | `flclash port PORT\|off` |
+| FLC outbound | `flclash flc status` | `flclash flc select NAME` |
+
+Backend 是每用户管理进程，Core 是由它控制的 Mihomo 进程。系统代理只修改受支持的 Linux 桌面代理偏好；TUN 则在网络层接管流量。它们是有意分开的开关。
 
 ## 流量模式与 `flc`
 
@@ -138,6 +179,14 @@ flc sh -c 'curl -s https://example.com | jq .'
 ```
 
 管道和重定向需要像最后一条示例一样显式调用 Shell。子程序必须支持标准代理环境变量；若程序完全忽略这些变量，`flc` 无法强行接管它。GNU Wget 会附加 `--no-config`，避免 `~/.wgetrc` 中的旧代理覆盖实时入口。
+
+`sudo` 通常会清理代理环境变量。如果提权后的子进程必须继续使用 `flc` 入口，且本机 sudo 策略允许保留环境，应把 `sudo -E` 放在 **`flc` 后面**：
+
+```bash
+flc sudo -E cc-switch update
+```
+
+不要运行 `sudo flc ...`：那会先改变有效用户，使 `flc` 连接 root 自己的 Backend，而不是当前用户的 Backend。即使使用 `-E`，目标程序仍需支持代理环境变量，更严格的 sudo 策略也可能拒绝或继续删除这些变量。
 
 管理命令：
 
