@@ -74,12 +74,11 @@ AMD64 示例：
 
 ```bash
 wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.deb.sha256
-sha256sum -c flclash-tui_0.5.2_amd64.deb.sha256
+sha256sum flclash-tui_0.5.2_amd64.deb
 sudo dpkg -i flclash-tui_0.5.2_amd64.deb
 ```
 
-安装包提供 `/usr/bin/flclash`、`/usr/bin/flc`、文档以及内置 GeoIP/GeoSite/ASN 数据。Core 初始化前可以从本地安装资源恢复缺失或不可用的 Geo 文件，首次启动不依赖从 GitHub 下载这些基础文件。
+请把输出的哈希值与 GitHub Release 页面中该资产显示的 SHA-256 digest 对比。安装包提供 `/usr/bin/flclash`、`/usr/bin/flc`、文档以及内置 GeoIP/GeoSite/ASN 数据。Core 初始化前可以从本地安装资源恢复缺失或不可用的 Geo 文件，首次启动不依赖从 GitHub 下载这些基础文件。
 
 ### 便携压缩包
 
@@ -87,8 +86,7 @@ Release 同时提供 AMD64 与 ARM64 的 `tar.gz`。便携包不会安装特权 
 
 ```bash
 wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.tar.gz
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.tar.gz.sha256
-sha256sum -c flclash-tui_0.5.2_amd64.tar.gz.sha256
+sha256sum flclash-tui_0.5.2_amd64.tar.gz
 tar -xzf flclash-tui_0.5.2_amd64.tar.gz
 cd flclash-tui_0.5.2_amd64
 ./flclash
@@ -298,7 +296,7 @@ Profile 创建、编辑、订阅更新、重命名、删除、备份、恢复、
 | `flclash doctor [--json]` | 检查 Backend 协议、Core API、Profile 有效性与代理入口 |
 | `flclash completion bash\|zsh\|fish` | 生成顶层命令和子命令补全定义 |
 | `flclash update --check` | 只检查可信 GitHub Release，不安装 |
-| `flclash update [--yes] [--download-only]` | 下载并验证校验和/包元数据，可选择安装 Debian 更新 |
+| `flclash update [--yes] [--download-only]` | 下载并验证 GitHub 资产 digest/包元数据，可选择安装 Debian 更新 |
 | `flclash run [--config PATH]` | 不使用共享 Backend 的前台 Core 高级模式；`Ctrl+C` 停止，`SIGHUP` 重载 |
 | `flclash version` | 输出 CLI 版本 |
 
@@ -402,7 +400,7 @@ flclash update --check
 flclash update
 ```
 
-更新器从 `yqlay/flclash-tui` 读取 Release，选择当前架构 Debian 包，验证 SHA-256 以及包内名称、版本、架构，再调用 `sudo dpkg -i`。`--download-only` 只下载并验证，`--yes` 用于非交互确认。
+更新器从 `yqlay/flclash-tui` 读取 Release，选择当前架构 Debian 包，验证 GitHub Release API 提供的 SHA-256 digest 以及包内名称、版本、架构，再调用 `sudo dpkg -i`。`--download-only` 只下载并验证，`--yes` 用于非交互确认。
 
 > 当前版本使用正常时，请勿轻易更新。
 

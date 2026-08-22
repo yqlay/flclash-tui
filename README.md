@@ -74,12 +74,11 @@ Example for AMD64:
 
 ```bash
 wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.deb
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.deb.sha256
-sha256sum -c flclash-tui_0.5.2_amd64.deb.sha256
+sha256sum flclash-tui_0.5.2_amd64.deb
 sudo dpkg -i flclash-tui_0.5.2_amd64.deb
 ```
 
-The package installs `/usr/bin/flclash`, the `/usr/bin/flc` entry point, documentation, and bundled GeoIP/GeoSite/ASN data. Missing or unusable Geo files can be restored locally before Core initialization, so first startup does not depend on downloading those files from GitHub.
+Compare the printed hash with the SHA-256 digest GitHub shows for that asset on the Release page. The package installs `/usr/bin/flclash`, the `/usr/bin/flc` entry point, documentation, and bundled GeoIP/GeoSite/ASN data. Missing or unusable Geo files can be restored locally before Core initialization, so first startup does not depend on downloading those files from GitHub.
 
 ### Portable archive
 
@@ -87,8 +86,7 @@ The release also provides `tar.gz` archives for AMD64 and ARM64. They do not ins
 
 ```bash
 wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.tar.gz
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.tar.gz.sha256
-sha256sum -c flclash-tui_0.5.2_amd64.tar.gz.sha256
+sha256sum flclash-tui_0.5.2_amd64.tar.gz
 tar -xzf flclash-tui_0.5.2_amd64.tar.gz
 cd flclash-tui_0.5.2_amd64
 ./flclash
@@ -298,7 +296,7 @@ For an explicitly managed external controller, proxy inspection/selection accept
 | `flclash doctor [--json]` | Check Backend protocol, Core API, profile validity, and active proxy entry |
 | `flclash completion bash\|zsh\|fish` | Generate top-level and subcommand completion definitions |
 | `flclash update --check` | Check the trusted GitHub Release channel without installing |
-| `flclash update [--yes] [--download-only]` | Download, verify checksum/package metadata, and optionally install a Debian update |
+| `flclash update [--yes] [--download-only]` | Download, verify GitHub's asset digest/package metadata, and optionally install a Debian update |
 | `flclash run [--config PATH]` | Advanced foreground Core mode without shared Backend; `Ctrl+C` stops it and `SIGHUP` reloads |
 | `flclash version` | Print the CLI version |
 
@@ -402,7 +400,7 @@ flclash update --check
 flclash update
 ```
 
-The updater reads releases from `yqlay/flclash-tui`, selects the current architecture's Debian package, verifies its SHA-256 and internal package name/version/architecture, then invokes `sudo dpkg -i`. `--download-only` verifies without installing and `--yes` confirms non-interactively.
+The updater reads releases from `yqlay/flclash-tui`, selects the current architecture's Debian package, verifies the SHA-256 digest supplied by GitHub's Release API and the internal package name/version/architecture, then invokes `sudo dpkg -i`. `--download-only` verifies without installing and `--yes` confirms non-interactively.
 
 > If the current version works well, do not update lightly.
 

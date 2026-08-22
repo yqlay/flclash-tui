@@ -40,6 +40,7 @@ var cliUpdateHTTPClient = &http.Client{Timeout: cliUpdateTimeout}
 type cliReleaseAsset struct {
 	Name        string `json:"name"`
 	DownloadURL string `json:"browser_download_url"`
+	Digest      string `json:"digest"`
 	Size        int64  `json:"size"`
 }
 
@@ -55,7 +56,7 @@ type cliRelease struct {
 func updateCommand(args []string) error {
 	if cliSubcommandHelp(args) {
 		fmt.Println("Usage: flclash update [--check] [--download-only] [--yes]")
-		fmt.Println("Fetch a trusted GitHub Release, verify its checksum and package metadata, then install it.")
+		fmt.Println("Fetch a trusted GitHub Release, verify its asset digest and package metadata, then install it.")
 		return nil
 	}
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
@@ -115,7 +116,7 @@ func updateCommand(args []string) error {
 		}
 	}
 
-	debAsset, checksumAsset, err := selectCLIUpdateAssets(release, latestVersion, runtime.GOARCH)
+	debAsset, err := selectCLIUpdateAsset(release, latestVersion, runtime.GOARCH)
 	if err != nil {
 		return err
 	}
@@ -127,7 +128,6 @@ func updateCommand(args []string) error {
 		return fmt.Errorf("create update directory: %w", err)
 	}
 	debPath := filepath.Join(updateDirectory, debAsset.Name)
-	checksumPath := filepath.Join(updateDirectory, checksumAsset.Name)
 	fmt.Printf("Downloading %s...\n", debAsset.Name)
 	if err := downloadCLIUpdateAssetWithProgress(
 		ctx,
@@ -139,15 +139,7 @@ func updateCommand(args []string) error {
 	); err != nil {
 		return err
 	}
-	if err := downloadCLIUpdateAsset(
-		ctx,
-		cliUpdateHTTPClient,
-		checksumAsset,
-		checksumPath,
-	); err != nil {
-		return err
-	}
-	if err := verifyCLIUpdateChecksum(debPath, checksumPath); err != nil {
+	if err := verifyCLIUpdateDigest(debPath, debAsset.Digest); err != nil {
 		return fmt.Errorf("verify update: %w", err)
 	}
 	if err := validateCLIUpdateDebianPackage(
@@ -276,14 +268,14 @@ func isNewerCLIVersion(latest, current string) bool {
 	return latestVersion.prerelease > currentVersion.prerelease
 }
 
-func selectCLIUpdateAssets(
+func selectCLIUpdateAsset(
 	release cliRelease,
 	version,
 	goArch string,
-) (cliReleaseAsset, cliReleaseAsset, error) {
+) (cliReleaseAsset, error) {
 	debArch := cliDebianArchitecture(goArch)
 	if debArch == "" {
-		return cliReleaseAsset{}, cliReleaseAsset{}, fmt.Errorf(
+		return cliReleaseAsset{}, fmt.Errorf(
 			"automatic update is not supported on architecture %s",
 			goArch,
 		)
@@ -296,7 +288,7 @@ func selectCLIUpdateAssets(
 			debAsset = asset
 			bestDebScore = score
 		} else if score >= 0 && score == bestDebScore {
-			return cliReleaseAsset{}, cliReleaseAsset{}, fmt.Errorf(
+			return cliReleaseAsset{}, fmt.Errorf(
 				"release %s contains multiple equally suitable %s packages",
 				release.TagName,
 				debArch,
@@ -304,51 +296,35 @@ func selectCLIUpdateAssets(
 		}
 	}
 	if bestDebScore < 0 || debAsset.DownloadURL == "" {
-		return cliReleaseAsset{}, cliReleaseAsset{}, fmt.Errorf(
+		return cliReleaseAsset{}, fmt.Errorf(
 			"release %s does not contain a recognizable FlClash %s Debian package",
 			release.TagName,
 			debArch,
 		)
 	}
-	var checksumAsset cliReleaseAsset
-	bestChecksumScore := -1
-	for _, asset := range release.Assets {
-		score := scoreCLIUpdateChecksumAsset(asset.Name, debAsset.Name)
-		if score > bestChecksumScore {
-			checksumAsset = asset
-			bestChecksumScore = score
-		} else if score >= 0 && score == bestChecksumScore {
-			return cliReleaseAsset{}, cliReleaseAsset{}, fmt.Errorf(
-				"release %s contains ambiguous checksum assets for %s",
-				release.TagName,
-				debAsset.Name,
-			)
-		}
-	}
-	if bestChecksumScore < 0 || checksumAsset.DownloadURL == "" {
-		return cliReleaseAsset{}, cliReleaseAsset{}, fmt.Errorf(
-			"release %s does not contain a SHA-256 checksum for %s",
+	if _, err := parseCLIUpdateDigest(debAsset.Digest); err != nil {
+		return cliReleaseAsset{}, fmt.Errorf(
+			"release %s has an invalid GitHub digest for %s: %w",
 			release.TagName,
 			debAsset.Name,
+			err,
 		)
 	}
 	repository, err := trustedCLIReleaseRepository(release)
 	if err != nil {
-		return cliReleaseAsset{}, cliReleaseAsset{}, err
+		return cliReleaseAsset{}, err
 	}
-	for _, asset := range []cliReleaseAsset{debAsset, checksumAsset} {
-		if err := validateCLIUpdateAssetURLForRepository(
-			asset.DownloadURL,
-			repository,
-		); err != nil {
-			return cliReleaseAsset{}, cliReleaseAsset{}, fmt.Errorf(
-				"release asset %s: %w",
-				asset.Name,
-				err,
-			)
-		}
+	if err := validateCLIUpdateAssetURLForRepository(
+		debAsset.DownloadURL,
+		repository,
+	); err != nil {
+		return cliReleaseAsset{}, fmt.Errorf(
+			"release asset %s: %w",
+			debAsset.Name,
+			err,
+		)
 	}
-	return debAsset, checksumAsset, nil
+	return debAsset, nil
 }
 
 func cliDebianArchitecture(goArch string) string {
@@ -409,26 +385,6 @@ func cliUpdateAssetMatchesArchitecture(name, goArch string) bool {
 		}
 	}
 	return false
-}
-
-func scoreCLIUpdateChecksumAsset(name, debName string) int {
-	lowerName := strings.ToLower(strings.TrimSpace(name))
-	lowerDebName := strings.ToLower(debName)
-	switch {
-	case lowerName == lowerDebName+".sha256":
-		return 200
-	case strings.Contains(lowerName, lowerDebName) &&
-		(strings.Contains(lowerName, "sha256") ||
-			strings.Contains(lowerName, "checksum")):
-		return 150
-	case lowerName == "sha256sums" ||
-		lowerName == "sha256sums.txt" ||
-		lowerName == "checksums.txt" ||
-		lowerName == "checksums.sha256":
-		return 100
-	default:
-		return -1
-	}
 }
 
 func trustedCLIReleaseRepository(release cliRelease) (string, error) {
@@ -693,42 +649,27 @@ func isCLIProgressTerminal(output io.Writer) bool {
 	return ok && term.IsTerminal(int(file.Fd()))
 }
 
-func verifyCLIUpdateChecksum(debPath, checksumPath string) error {
-	checksumData, err := os.ReadFile(checksumPath)
+func parseCLIUpdateDigest(value string) ([]byte, error) {
+	algorithm, digest, found := strings.Cut(strings.TrimSpace(value), ":")
+	if !found || !strings.EqualFold(algorithm, "sha256") {
+		return nil, errors.New("GitHub asset digest is not SHA-256")
+	}
+	if len(digest) != sha256.Size*2 {
+		return nil, errors.New("GitHub SHA-256 digest is malformed")
+	}
+	expected, err := hex.DecodeString(digest)
+	if err != nil {
+		return nil, errors.New("GitHub SHA-256 digest is malformed")
+	}
+	return expected, nil
+}
+
+func verifyCLIUpdateDigest(path, digest string) error {
+	expected, err := parseCLIUpdateDigest(digest)
 	if err != nil {
 		return err
 	}
-	var expectedHex string
-	validHashes := make([]string, 0, 1)
-	debName := filepath.Base(debPath)
-	for _, line := range strings.Split(string(checksumData), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 || len(fields[0]) != sha256.Size*2 {
-			continue
-		}
-		if _, decodeErr := hex.DecodeString(fields[0]); decodeErr != nil {
-			continue
-		}
-		validHashes = append(validHashes, fields[0])
-		if len(fields) >= 2 {
-			checksumName := strings.TrimPrefix(fields[1], "*")
-			if filepath.Base(checksumName) == debName {
-				expectedHex = fields[0]
-				break
-			}
-		}
-	}
-	if expectedHex == "" && len(validHashes) == 1 {
-		expectedHex = validHashes[0]
-	}
-	if expectedHex == "" {
-		return errors.New("checksum file is malformed")
-	}
-	expected, err := hex.DecodeString(expectedHex)
-	if err != nil {
-		return errors.New("checksum file is malformed")
-	}
-	file, err := os.Open(debPath)
+	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
