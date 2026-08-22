@@ -37,6 +37,7 @@ func TestFetchLatestCLIRelease(t *testing.T) {
 				{
 					"name":"flclash-tui_9.8.7_amd64.deb",
 					"browser_download_url":"https://github.example/update.deb",
+					"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 					"size":123
 				}
 			]
@@ -52,7 +53,8 @@ func TestFetchLatestCLIRelease(t *testing.T) {
 	}
 	if release.TagName != "v9.8.7" ||
 		release.HTMLURL != "https://github.example/releases/v9.8.7" ||
-		len(release.Assets) != 1 {
+		len(release.Assets) != 1 ||
+		release.Assets[0].Digest != "sha256:"+strings.Repeat("a", 64) {
 		t.Fatalf("release = %+v", release)
 	}
 }
@@ -91,27 +93,28 @@ func TestSelectCLIUpdateAssets(t *testing.T) {
 			{
 				Name:        "flclash-tui_0.3.4_amd64.deb",
 				DownloadURL: "https://github.com/yqlay/flclash-tui/releases/download/v0.3.4/flclash-tui_0.3.4_amd64.deb",
-			},
-			{
-				Name:        "flclash-tui_0.3.4_amd64.deb.sha256",
-				DownloadURL: "https://github.com/yqlay/flclash-tui/releases/download/v0.3.4/flclash-tui_0.3.4_amd64.deb.sha256",
+				Digest:      "sha256:" + strings.Repeat("a", 64),
 			},
 		},
 	}
-	deb, checksum, err := selectCLIUpdateAssets(release, "0.3.4", "amd64")
+	deb, err := selectCLIUpdateAsset(release, "0.3.4", "amd64")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(deb.Name, "_amd64.deb") ||
-		checksum.Name != deb.Name+".sha256" {
-		t.Fatalf("selected assets = %+v %+v", deb, checksum)
+	if !strings.HasSuffix(deb.Name, "_amd64.deb") {
+		t.Fatalf("selected asset = %+v", deb)
 	}
-	if _, _, err := selectCLIUpdateAssets(release, "0.3.4", "mips64"); err == nil {
+	if _, err := selectCLIUpdateAsset(release, "0.3.4", "mips64"); err == nil {
 		t.Fatal("unsupported architecture was accepted")
 	}
 	release.Assets[0].DownloadURL = "https://example.test/update.deb"
-	if _, _, err := selectCLIUpdateAssets(release, "0.3.4", "amd64"); err == nil {
+	if _, err := selectCLIUpdateAsset(release, "0.3.4", "amd64"); err == nil {
 		t.Fatal("untrusted update URL was accepted")
+	}
+	release.Assets[0].DownloadURL = "https://github.com/yqlay/flclash-tui/releases/download/v0.3.4/flclash-tui_0.3.4_amd64.deb"
+	release.Assets[0].Digest = ""
+	if _, err := selectCLIUpdateAsset(release, "0.3.4", "amd64"); err == nil {
+		t.Fatal("asset without a GitHub digest was accepted")
 	}
 }
 
@@ -148,14 +151,11 @@ func TestSelectCLIUpdateAssetsSupportsRenamesAndLegacyPackages(
 					{
 						Name:        test.debName,
 						DownloadURL: baseURL + test.debName,
-					},
-					{
-						Name:        "SHA256SUMS",
-						DownloadURL: baseURL + "SHA256SUMS",
+						Digest:      "sha256:" + strings.Repeat("b", 64),
 					},
 				},
 			}
-			deb, checksum, err := selectCLIUpdateAssets(
+			deb, err := selectCLIUpdateAsset(
 				release,
 				"0.3.12",
 				test.goArch,
@@ -163,13 +163,8 @@ func TestSelectCLIUpdateAssetsSupportsRenamesAndLegacyPackages(
 			if err != nil {
 				t.Fatal(err)
 			}
-			if deb.Name != test.debName ||
-				checksum.Name != "SHA256SUMS" {
-				t.Fatalf(
-					"selected assets = %q and %q",
-					deb.Name,
-					checksum.Name,
-				)
+			if deb.Name != test.debName {
+				t.Fatalf("selected asset = %q", deb.Name)
 			}
 		})
 	}
@@ -187,7 +182,7 @@ func TestSelectCLIUpdateAssetsRejectsAmbiguousPackages(t *testing.T) {
 			},
 		},
 	}
-	if _, _, err := selectCLIUpdateAssets(
+	if _, err := selectCLIUpdateAsset(
 		release,
 		"0.3.12",
 		"amd64",
@@ -206,12 +201,6 @@ func TestDownloadAndVerifyCLIUpdate(t *testing.T) {
 		switch request.URL.Path {
 		case "/update.deb":
 			_, _ = writer.Write(debData)
-		case "/update.deb.sha256":
-			_, _ = fmt.Fprintf(
-				writer,
-				"%x  flclash-tui_9.8.7_amd64.deb\n",
-				checksum,
-			)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -220,7 +209,6 @@ func TestDownloadAndVerifyCLIUpdate(t *testing.T) {
 
 	directory := t.TempDir()
 	debPath := filepath.Join(directory, "update.deb")
-	checksumPath := debPath + ".sha256"
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := downloadCLIUpdateAsset(
@@ -235,54 +223,28 @@ func TestDownloadAndVerifyCLIUpdate(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	checksumData := fmt.Appendf(
-		nil,
-		"%x  flclash-tui_9.8.7_amd64.deb\n",
-		checksum,
-	)
-	if err := downloadCLIUpdateAsset(
-		ctx,
-		server.Client(),
-		cliReleaseAsset{
-			Name:        "update.deb.sha256",
-			DownloadURL: server.URL + "/update.deb.sha256",
-			Size:        int64(len(checksumData)),
-		},
-		checksumPath,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyCLIUpdateChecksum(debPath, checksumPath); err != nil {
+	digest := fmt.Sprintf("sha256:%x", checksum)
+	if err := verifyCLIUpdateDigest(debPath, digest); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(debPath, []byte("tampered"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyCLIUpdateChecksum(debPath, checksumPath); err == nil {
+	if err := verifyCLIUpdateDigest(debPath, digest); err == nil {
 		t.Fatal("tampered update passed checksum verification")
 	}
 }
 
-func TestVerifyCLIUpdateChecksumSelectsNamedHash(t *testing.T) {
-	directory := t.TempDir()
-	debPath := filepath.Join(directory, "selected.deb")
-	data := []byte("selected package")
-	if err := os.WriteFile(debPath, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	selectedHash := sha256.Sum256(data)
-	otherHash := sha256.Sum256([]byte("other package"))
-	checksumPath := filepath.Join(directory, "SHA256SUMS")
-	checksums := fmt.Sprintf(
-		"%x  other.deb\n%x  selected.deb\n",
-		otherHash,
-		selectedHash,
-	)
-	if err := os.WriteFile(checksumPath, []byte(checksums), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := verifyCLIUpdateChecksum(debPath, checksumPath); err != nil {
-		t.Fatal(err)
+func TestParseCLIUpdateDigestRejectsInvalidValues(t *testing.T) {
+	for _, digest := range []string{
+		"",
+		"md5:" + strings.Repeat("a", 32),
+		"sha256:short",
+		"sha256:" + strings.Repeat("z", 64),
+	} {
+		if _, err := parseCLIUpdateDigest(digest); err == nil {
+			t.Fatalf("invalid digest %q was accepted", digest)
+		}
 	}
 }
 

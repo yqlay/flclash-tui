@@ -118,8 +118,3 @@ cp -a "${WORK_DIR}/usr/share/doc/flclash-tui/." "${TARBALL_STAGE}/${PACKAGE_NAME
 cp -a "${WORK_DIR}/usr/share/flclash-tui/data" "${TARBALL_STAGE}/${PACKAGE_NAME}/"
 tar -C "${TARBALL_STAGE}" -czf "${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz" "${PACKAGE_NAME}"
 echo "Built ${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz"
-
-sha256sum "${OUTPUT_DIR}/${PACKAGE_NAME}.deb" \
-  | awk -v file="${PACKAGE_NAME}.deb" '{print $1 "  " file}' > "${OUTPUT_DIR}/${PACKAGE_NAME}.deb.sha256"
-sha256sum "${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz" \
-  | awk -v file="${PACKAGE_NAME}.tar.gz" '{print $1 "  " file}' > "${OUTPUT_DIR}/${PACKAGE_NAME}.tar.gz.sha256"
