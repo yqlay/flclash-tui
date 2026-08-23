@@ -440,9 +440,18 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			systemProxy := m.snapshot.Settings.SystemProxy
 			m.snapshot.Settings = *m.stagedSettings
 			m.snapshot.Settings.SystemProxy = systemProxy
+			if message.serviceStatus != nil {
+				m.snapshot.Settings.Mode = message.serviceStatus.Mode
+				m.snapshot.Settings.TunEnabled =
+					message.serviceStatus.TunState == "on"
+				m.snapshot.Settings.TunScope = message.serviceStatus.TunScope
+				if message.serviceStatus.Mode == tuiSilentMode {
+					m.snapshot.Settings.TunEnabled = false
+				}
+			}
 		}
 		if m.ownsCore && !m.coreRunning && m.snapshot.Status == "Connected" {
-			m.snapshot.Status = "Ready; enable System proxy on Dashboard to start"
+			m.snapshot.Status = "Ready; start Core or enable System proxy on Dashboard"
 		}
 		return m, nil
 	case tuiOperationResultMsg:
@@ -864,6 +873,11 @@ func tuiStatusIsControllerError(status string) bool {
 }
 
 func mergeTUIOperation(current, result tuiSnapshot) tuiSnapshot {
+	// Traffic updates arrive independently while an operation is running. The
+	// operation snapshot was captured before those updates, so never replace the
+	// live counters with its stale copy when the result is applied.
+	result.Traffic = current.Traffic
+	result.TotalTraffic = current.TotalTraffic
 	return preserveTUIInteraction(current, result)
 }
 

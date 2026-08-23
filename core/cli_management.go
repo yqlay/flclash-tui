@@ -895,6 +895,9 @@ func connectionsCommand(args []string) error {
 	}
 	switch args[0] {
 	case "list", "show":
+		if len(args) > 2 || len(args) == 2 && args[1] != "--json" {
+			return errors.New("usage: flclash connections [show [--json]] | close ID|all")
+		}
 		connectionStatus, err := service.connections()
 		if err != nil {
 			return err
@@ -914,6 +917,9 @@ func connectionsCommand(args []string) error {
 		_, err = service.closeConnectionManaged(args[1], status.Revision)
 		return err
 	case "close-all":
+		if len(args) != 1 {
+			return errors.New("usage: flclash connections close all")
+		}
 		_, err = service.closeAllConnectionsManaged(status.Revision)
 		return err
 	default:
