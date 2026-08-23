@@ -1,3 +1,15 @@
+## FlClash TUI v0.5.3
+
+- Allow `rule`, `global`, and `direct` mode changes to persist while Core
+  listeners are stopped, without contacting an unavailable live controller.
+- Make TUN scope, lease, profile, and Core updates transactional; reject active
+  scope replacement and restore the previous Core TUN state after failures.
+- Keep System proxy updates and Dashboard network detection on the actual
+  runtime listener when the configured Proxy port requires a fallback.
+- Preserve Backend-authoritative mode and TUN state while Core is stopped, and
+  prevent asynchronous TUI operations from restoring stale traffic counters.
+- Reject ignored extra arguments in `flclash connections` commands.
+
 ## FlClash TUI v0.5.2
 
 - Start a fresh silent-mode Core on the first `flc COMMAND`, automatically

@@ -63,19 +63,19 @@ TUN 分为两种作用域：`tun user on` 只捕获当前 UID，可与其他用�
 
 ### Debian / Ubuntu 安装包
 
-在 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) 中选择与 `dpkg --print-architecture` 一致的包。0.5.2 的包名为：
+在 [GitHub Releases](https://github.com/yqlay/flclash-tui/releases) 中选择与 `dpkg --print-architecture` 一致的包。0.5.3 的包名为：
 
 ```text
-flclash-tui_0.5.2_amd64.deb
-flclash-tui_0.5.2_arm64.deb
+flclash-tui_0.5.3_amd64.deb
+flclash-tui_0.5.3_arm64.deb
 ```
 
 AMD64 示例：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.deb
-sha256sum flclash-tui_0.5.2_amd64.deb
-sudo dpkg -i flclash-tui_0.5.2_amd64.deb
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.3/flclash-tui_0.5.3_amd64.deb
+sha256sum flclash-tui_0.5.3_amd64.deb
+sudo dpkg -i flclash-tui_0.5.3_amd64.deb
 ```
 
 请把输出的哈希值与 GitHub Release 页面中该资产显示的 SHA-256 digest 对比。安装包提供 `/usr/bin/flclash`、`/usr/bin/flc`、文档以及内置 GeoIP/GeoSite/ASN 数据。Core 初始化前可以从本地安装资源恢复缺失或不可用的 Geo 文件，首次启动不依赖从 GitHub 下载这些基础文件。
@@ -85,10 +85,10 @@ sudo dpkg -i flclash-tui_0.5.2_amd64.deb
 Release 同时提供 AMD64 与 ARM64 的 `tar.gz`。便携包不会安装特权 TUN helper；需要用户/整机 TUN 时应使用 Debian 包。AMD64 示例：
 
 ```bash
-wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.2/flclash-tui_0.5.2_amd64.tar.gz
-sha256sum flclash-tui_0.5.2_amd64.tar.gz
-tar -xzf flclash-tui_0.5.2_amd64.tar.gz
-cd flclash-tui_0.5.2_amd64
+wget https://github.com/yqlay/flclash-tui/releases/download/v0.5.3/flclash-tui_0.5.3_amd64.tar.gz
+sha256sum flclash-tui_0.5.3_amd64.tar.gz
+tar -xzf flclash-tui_0.5.3_amd64.tar.gz
+cd flclash-tui_0.5.3_amd64
 ./flclash
 ```
 
