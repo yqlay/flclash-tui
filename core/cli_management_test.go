@@ -71,3 +71,25 @@ func TestCompletionCoversPrimaryAndNestedCommands(t *testing.T) {
 		t.Fatalf("Fish completion has no `connections close all`: %s", fish)
 	}
 }
+
+func TestConnectionsArgs(t *testing.T) {
+	for name, args := range map[string][]string{
+		"show":      {"show", "unexpected"},
+		"json":      {"show", "--json", "unexpected"},
+		"close_all": {"close-all", "unexpected"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setupCLICommandTestDirectories(t)
+			serveCLICommandStatus(t, tuiServiceStatus{
+				OK:              true,
+				Version:         cliVersion,
+				ProtocolVersion: tuiServiceProtocolVersion,
+			})
+
+			err := connectionsCommand(args)
+			if err == nil || !strings.Contains(err.Error(), "usage:") {
+				t.Fatalf("connections %v = %v", args, err)
+			}
+		})
+	}
+}

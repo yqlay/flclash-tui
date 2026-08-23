@@ -69,10 +69,10 @@ func (m *tuiModel) networkCheckProxyPort() int {
 	if strings.EqualFold(m.snapshot.Settings.Mode, tuiSilentMode) {
 		return 0
 	}
-	if m.snapshot.Settings.MixedPort <= 0 {
-		return 0
-	}
 	if m.coreRunning || !m.ownsCore {
+		if m.snapshot.ActiveProxyPort > 0 {
+			return m.snapshot.ActiveProxyPort
+		}
 		return m.snapshot.Settings.MixedPort
 	}
 	return 0

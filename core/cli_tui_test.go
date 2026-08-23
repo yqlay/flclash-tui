@@ -1459,6 +1459,26 @@ func TestTUINetworkDetectionUsesConfiguredMixedPortProxy(t *testing.T) {
 	}
 }
 
+func TestTUINetworkDetectionUsesActiveFallbackPort(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.coreRunning = true
+	model.snapshot.Settings.Mode = "rule"
+	model.snapshot.Settings.MixedPort = 7890
+	model.snapshot.ActiveProxyPort = 17890
+
+	if port := model.networkCheckProxyPort(); port != 17890 {
+		t.Fatalf("network detection port = %d, want active fallback 17890", port)
+	}
+	if route := model.networkCheckRoute(); route != "proxy:17890" {
+		t.Fatalf("network detection route = %q", route)
+	}
+
+	model.snapshot.Settings.Mode = tuiSilentMode
+	if port := model.networkCheckProxyPort(); port != 0 {
+		t.Fatalf("silent network detection exposed private listener %d", port)
+	}
+}
+
 func TestTUIPublicIPDetectionAcceptsOriginalFlClashResponseShapes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter,
@@ -2019,6 +2039,46 @@ func TestTUIStagesPreStartSettings(t *testing.T) {
 	}
 }
 
+func TestTUIStoppedRefreshKeepsBackendModeAndTunState(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.stagedSettings = &tuiSettings{
+		Mode:       "rule",
+		MixedPort:  7890,
+		TunEnabled: true,
+		TunScope:   tuiTunScopeUser,
+	}
+	model.refreshSequence = 1
+	model.refreshInFlight = true
+	serviceStatus := &tuiServiceStatus{
+		Running:             false,
+		Mode:                tuiSilentMode,
+		ConfiguredProxyPort: 7890,
+		TunState:            "off",
+		TunScope:            tuiTunScopeSystem,
+	}
+
+	_, _ = model.Update(tuiRefreshResultMsg{
+		sequence: 1,
+		snapshot: tuiSnapshot{
+			Status:   "Connected",
+			Settings: tuiSettings{Mode: "rule", TunEnabled: true},
+		},
+		serviceStatus: serviceStatus,
+	})
+
+	if model.snapshot.Settings.Mode != tuiSilentMode ||
+		model.snapshot.Settings.TunEnabled ||
+		model.snapshot.Settings.TunScope != tuiTunScopeSystem {
+		t.Fatalf(
+			"staged YAML hid Backend mode/TUN state: %+v",
+			model.snapshot.Settings,
+		)
+	}
+	if !strings.Contains(model.snapshot.Status, "start Core") {
+		t.Fatalf("stopped Dashboard guidance = %q", model.snapshot.Status)
+	}
+}
+
 func TestTUIRunningCoreUsesLiveSettingsInsteadOfStagedYAML(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.snapshot.Settings = tuiSettings{MixedPort: 12345}
@@ -2051,6 +2111,29 @@ func TestTUIRunningCoreUsesLiveSettingsInsteadOfStagedYAML(t *testing.T) {
 		t.Fatalf(
 			"Dashboard mixed port = %d, want live Core port 8001",
 			model.snapshot.Settings.MixedPort,
+		)
+	}
+}
+
+func TestTUIOperationResultKeepsLiveTrafficUpdates(t *testing.T) {
+	current := tuiSnapshot{
+		Traffic:      trafficSnapshot{Up: 11, Down: 22},
+		TotalTraffic: trafficSnapshot{Up: 33, Down: 44},
+	}
+	staleResult := tuiSnapshot{
+		Traffic:      trafficSnapshot{Up: 1, Down: 2},
+		TotalTraffic: trafficSnapshot{Up: 3, Down: 4},
+	}
+
+	merged := mergeTUIOperation(current, staleResult)
+	if merged.Traffic != current.Traffic ||
+		merged.TotalTraffic != current.TotalTraffic {
+		t.Fatalf(
+			"operation result restored stale traffic: current=%+v/%+v merged=%+v/%+v",
+			current.Traffic,
+			current.TotalTraffic,
+			merged.Traffic,
+			merged.TotalTraffic,
 		)
 	}
 }

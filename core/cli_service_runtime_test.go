@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -390,6 +391,7 @@ func TestTUIServiceRuntimePatchesNativeModeWithoutReload(t *testing.T) {
 		configPath,
 		tuiFLCListenerState{},
 	)
+	runtime.setRunning(true)
 	changed, err := runtime.applyTrafficMode("global")
 	if err != nil || !changed {
 		t.Fatalf("native mode change = %t, %v", changed, err)
@@ -446,6 +448,7 @@ func TestTUIServiceRuntimeRestoresProfileWhenNativeModePatchFails(t *testing.T) 
 		configPath,
 		tuiFLCListenerState{},
 	)
+	runtime.setRunning(true)
 	if changed, err := runtime.applyTrafficMode("global"); err == nil || changed {
 		t.Fatalf("failed native mode patch = %t, %v", changed, err)
 	}
@@ -455,6 +458,170 @@ func TestTUIServiceRuntimeRestoresProfileWhenNativeModePatchFails(t *testing.T) 
 	}
 	if status := runtime.snapshot(""); status.Mode != "rule" {
 		t.Fatalf("failed patch changed runtime mode to %q", status.Mode)
+	}
+}
+
+func TestTUIServiceRuntimeChangesNativeModeWhileCoreStopped(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(defaultTUIConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newTUIServiceRuntime(
+		cliPaths{homeDir: directory, configPath: configPath},
+		defaultCLITestURL,
+		filepath.Join(directory, "missing-core.sock"),
+		nil,
+		nil,
+	)
+	runtime.configureRuntimePolicy(
+		"rule",
+		7890,
+		configPath,
+		tuiFLCListenerState{},
+	)
+
+	changed, err := runtime.applyTrafficMode("global")
+	if err != nil || !changed {
+		t.Fatalf("stopped native mode change = %t, %v", changed, err)
+	}
+	settings := loadTUIConfiguredSettings(configPath, true)
+	if settings == nil || settings.Mode != "global" {
+		t.Fatalf("persisted stopped settings = %+v", settings)
+	}
+	status := runtime.snapshot("")
+	if status.Running || status.Mode != "global" {
+		t.Fatalf("stopped runtime status = %+v", status)
+	}
+	if saved := loadTUITrafficMode(directory, configPath); saved != "global" {
+		t.Fatalf("saved stopped mode = %q", saved)
+	}
+}
+
+func TestTUIServiceRuntimeRejectsActiveTunScopeChange(t *testing.T) {
+	runtime := newTestTUIServiceRuntime(t)
+	runtime.configureManagedRuntimePolicy(
+		"rule",
+		7890,
+		7890,
+		runtime.paths.configPath,
+		tuiFLCListenerState{},
+		tuiTunScopeUser,
+		true,
+	)
+
+	changed, err := runtime.applyTun(true, tuiTunScopeSystem)
+	if err == nil || changed ||
+		!strings.Contains(err.Error(), "Turn TUN off") &&
+			!strings.Contains(err.Error(), "turn TUN off") {
+		t.Fatalf("active TUN scope change = %t, %v", changed, err)
+	}
+	status := runtime.snapshot("")
+	if status.TunScope != tuiTunScopeUser || status.TunState != "on" {
+		t.Fatalf("TUN changed after rejected scope switch: %+v", status)
+	}
+}
+
+func TestTUIServiceRuntimeDoesNotApplyTunWhenScopeSaveFails(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(defaultTUIConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(
+		filepath.Join(directory, tuiTunScopeFilename),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newTUIServiceRuntime(
+		cliPaths{homeDir: directory, configPath: configPath},
+		defaultCLITestURL,
+		filepath.Join(directory, "core.sock"),
+		nil,
+		nil,
+	)
+	runtime.configureManagedRuntimePolicy(
+		"rule",
+		7890,
+		7890,
+		configPath,
+		tuiFLCListenerState{},
+		tuiTunScopeUser,
+		false,
+	)
+
+	changed, err := runtime.applyTun(true, tuiTunScopeUser)
+	if err == nil || changed {
+		t.Fatalf("TUN with unwritable scope state = %t, %v", changed, err)
+	}
+	settings := loadTUIConfiguredSettings(configPath, true)
+	if settings == nil || settings.TunEnabled {
+		t.Fatalf("failed TUN scope save changed profile: %+v", settings)
+	}
+	status := runtime.snapshot("")
+	if status.TunState != "off" || status.TunScope != tuiTunScopeUser {
+		t.Fatalf("failed TUN scope save changed runtime: %+v", status)
+	}
+}
+
+func TestTUIServiceRuntimeRestoresTunRuntimeAfterSettingsFailure(t *testing.T) {
+	directory := t.TempDir()
+	profileDirectory := filepath.Join(directory, "profiles")
+	if err := os.Mkdir(profileDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(profileDirectory, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(defaultTUIConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(profileDirectory, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(profileDirectory, 0o700) })
+
+	runtime := newTUIServiceRuntime(
+		cliPaths{homeDir: directory, configPath: configPath},
+		defaultCLITestURL,
+		filepath.Join(directory, "core.sock"),
+		nil,
+		nil,
+	)
+	runtime.configureManagedRuntimePolicy(
+		"rule",
+		7890,
+		7890,
+		configPath,
+		tuiFLCListenerState{},
+		tuiTunScopeUser,
+		false,
+	)
+
+	changed, err := runtime.applyTun(true, tuiTunScopeUser)
+	if err == nil || changed {
+		t.Fatalf("TUN with unwritable profile = %t, %v", changed, err)
+	}
+	status := runtime.snapshot("")
+	if status.TunState != "off" || status.TunScope != tuiTunScopeUser {
+		t.Fatalf("failed TUN settings changed runtime: %+v", status)
+	}
+	settings := loadTUIConfiguredSettings(configPath, true)
+	if settings == nil || settings.TunEnabled {
+		t.Fatalf("failed TUN settings changed profile: %+v", settings)
+	}
+	if saved := loadTUITunScope(directory); saved != tuiTunScopeUser {
+		t.Fatalf("failed TUN settings left scope %q", saved)
+	}
+	data, err := runtime.coreController.request(http.MethodGet, "/configs", nil)
+	if err != nil {
+		t.Fatalf("restored Core state is unavailable: %v", err)
+	}
+	var coreSettings tuiConfigResponse
+	if err := json.Unmarshal(data, &coreSettings); err != nil {
+		t.Fatal(err)
+	}
+	if coreSettings.Tun.Enable {
+		t.Fatal("Core retained TUN after the settings transaction rolled back")
 	}
 }
 

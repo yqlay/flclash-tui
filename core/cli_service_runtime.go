@@ -945,6 +945,7 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 			paths,
 			oldFLC,
 			*oldSettings,
+			running,
 		)
 	}
 
@@ -1035,6 +1036,7 @@ func (r *tuiServiceRuntime) applyNativeTrafficMode(
 	paths cliPaths,
 	oldFLC tuiFLCListenerState,
 	oldSettings tuiSettings,
+	running bool,
 ) (bool, error) {
 	lease, err := acquireTUIProfileLocks(paths.homeDir, paths.configPath)
 	if err != nil {
@@ -1058,22 +1060,24 @@ func (r *tuiServiceRuntime) applyNativeTrafficMode(
 	}
 
 	controller := r.coreController
-	if err := controller.patchConfig(map[string]interface{}{"mode": mode}); err != nil {
-		if !profileChanged {
-			return false, fmt.Errorf("switch Core mode: %w", err)
+	if running {
+		if err := controller.patchConfig(map[string]interface{}{"mode": mode}); err != nil {
+			if !profileChanged {
+				return false, fmt.Errorf("switch Core mode: %w", err)
+			}
+			if rollbackErr := writeTUIProfileAtomically(
+				writePath,
+				originalProfile,
+				profileInfo.Mode(),
+			); rollbackErr != nil {
+				return false, fmt.Errorf(
+					"switch Core mode: %v; profile rollback failed: %w",
+					err,
+					rollbackErr,
+				)
+			}
+			return false, fmt.Errorf("switch Core mode: %w; profile restored", err)
 		}
-		if rollbackErr := writeTUIProfileAtomically(
-			writePath,
-			originalProfile,
-			profileInfo.Mode(),
-		); rollbackErr != nil {
-			return false, fmt.Errorf(
-				"switch Core mode: %v; profile rollback failed: %w",
-				err,
-				rollbackErr,
-			)
-		}
-		return false, fmt.Errorf("switch Core mode: %w; profile restored", err)
 	}
 
 	if err := rememberTUITrafficMode(paths.homeDir, mode); err != nil {
@@ -1085,9 +1089,12 @@ func (r *tuiServiceRuntime) applyNativeTrafficMode(
 				profileInfo.Mode(),
 			)
 		}
-		coreRollbackErr := controller.patchConfig(
-			map[string]interface{}{"mode": currentMode},
-		)
+		var coreRollbackErr error
+		if running {
+			coreRollbackErr = controller.patchConfig(
+				map[string]interface{}{"mode": currentMode},
+			)
+		}
 		if profileRollbackErr != nil || coreRollbackErr != nil {
 			return false, fmt.Errorf(
 				"save mode: %v; profile rollback: %v; Core rollback: %v",
@@ -1423,8 +1430,7 @@ func (r *tuiServiceRuntime) reloadExpected(
 	if err != nil || !systemProxy {
 		return changed, err
 	}
-	settings := loadTUIConfiguredSettings(configPath, true)
-	if settings == nil {
+	if loadTUIConfiguredSettings(configPath, true) == nil {
 		return r.rollbackReloadProxy(
 			paths.configPath,
 			proxyPort,
@@ -1435,20 +1441,23 @@ func (r *tuiServiceRuntime) reloadExpected(
 		r.setSystemProxyState(false, 0)
 		return changed, nil
 	}
-	if settings.MixedPort <= 0 {
+	r.mu.RLock()
+	activePort := r.activePort
+	r.mu.RUnlock()
+	if activePort <= 0 {
 		if err := setLinuxSystemProxy(proxyPort, false); err != nil {
 			return r.rollbackReloadProxy(paths.configPath, proxyPort, err)
 		}
 		r.setSystemProxyState(false, 0)
 		return changed, nil
 	}
-	if settings.MixedPort == proxyPort {
+	if activePort == proxyPort {
 		return changed, nil
 	}
-	if err := setLinuxSystemProxy(settings.MixedPort, true); err != nil {
+	if err := setLinuxSystemProxy(activePort, true); err != nil {
 		return r.rollbackReloadProxy(paths.configPath, proxyPort, err)
 	}
-	r.setSystemProxyState(true, settings.MixedPort)
+	r.setSystemProxyState(true, activePort)
 	return changed, nil
 }
 
@@ -1901,6 +1910,13 @@ func (r *tuiServiceRuntime) applyTun(enabled bool, requestedScope string) (bool,
 	if enabled == previousEnabled && scope == previousScope {
 		return false, nil
 	}
+	if enabled && previousEnabled && scope != previousScope {
+		return false, errors.New("turn TUN off before changing its scope")
+	}
+	settings := loadTUIConfiguredSettings(r.paths.configPath, true)
+	if settings == nil {
+		return false, errors.New("could not read the active configuration")
+	}
 	var replacementLease *tuiTunLease
 	if enabled && running {
 		replacementLease, _, err = acquireTUITunLease(scope)
@@ -1908,9 +1924,9 @@ func (r *tuiServiceRuntime) applyTun(enabled bool, requestedScope string) (bool,
 			return false, err
 		}
 	}
-	settings := loadTUIConfiguredSettings(r.paths.configPath, true)
-	if settings == nil {
-		return false, errors.New("could not read the active configuration")
+	if err := rememberTUITunScope(r.paths.homeDir, scope); err != nil {
+		replacementLease.release()
+		return false, fmt.Errorf("remember TUN scope: %w", err)
 	}
 	r.mu.Lock()
 	previousLease := r.tunLease
@@ -1920,22 +1936,38 @@ func (r *tuiServiceRuntime) applyTun(enabled bool, requestedScope string) (bool,
 	r.mu.Unlock()
 	settings.TunEnabled = enabled && scope == tuiTunScopeUser
 	if _, err := r.applySettings(*settings); err != nil {
-		replacementLease.release()
 		r.mu.Lock()
 		r.tunScope = previousScope
 		r.tunEnabled = previousEnabled
 		r.tunLease = previousLease
 		r.mu.Unlock()
+		replacementLease.release()
+		scopeRestoreErr := rememberTUITunScope(
+			r.paths.homeDir,
+			previousScope,
+		)
+		_, coreRestoreErr := r.reloadUnlocked(r.paths.configPath, "")
+		if scopeRestoreErr != nil || coreRestoreErr != nil {
+			var rollbackErrors []error
+			if scopeRestoreErr != nil {
+				rollbackErrors = append(
+					rollbackErrors,
+					fmt.Errorf("restore TUN scope: %w", scopeRestoreErr),
+				)
+			}
+			if coreRestoreErr != nil {
+				rollbackErrors = append(
+					rollbackErrors,
+					fmt.Errorf("restore Core TUN state: %w", coreRestoreErr),
+				)
+			}
+			return false, fmt.Errorf(
+				"apply TUN settings: %v; rollback failed: %w",
+				err,
+				errors.Join(rollbackErrors...),
+			)
+		}
 		return false, err
-	}
-	if err := rememberTUITunScope(r.paths.homeDir, scope); err != nil {
-		replacementLease.release()
-		r.mu.Lock()
-		r.tunScope = previousScope
-		r.tunEnabled = previousEnabled
-		r.tunLease = previousLease
-		r.mu.Unlock()
-		return false, fmt.Errorf("remember TUN scope: %w", err)
 	}
 	r.mu.Lock()
 	r.tunEnabled = enabled
