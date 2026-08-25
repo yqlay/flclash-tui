@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.5.3"
+const cliVersion = "0.5.4"
 
 type cliPaths struct {
 	homeDir    string

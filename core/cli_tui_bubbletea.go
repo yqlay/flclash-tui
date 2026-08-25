@@ -549,8 +549,7 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				state.snapshot.Status = "Edited configuration was not committed: " + err.Error()
 				return
 			}
-			state.backendRevision = status.Revision
-			state.coreRunning = status.Running
+			applyTUIOperationServiceStatus(state, status)
 			if filepath.Clean(editorPath) == filepath.Clean(state.paths.configPath) {
 				state.snapshot.Status = "Configuration saved and hot-reloaded"
 				syncStoppedTUISettings(state)
@@ -1389,8 +1388,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				if err != nil {
 					state.snapshot.Status = "System proxy update failed: " + err.Error()
 				} else {
-					state.backendRevision = status.Revision
-					state.snapshot.Settings.SystemProxy = status.SystemProxy
+					applyTUIOperationServiceStatus(state, status)
 					state.snapshot.Status = "System proxy " + cliOnOff(status.SystemProxy)
 				}
 				if proxyUpdated {
@@ -1574,9 +1572,7 @@ func applyTUIOperationSetting(
 			state.snapshot.Status = "TUN update failed: " + err.Error()
 			return
 		}
-		state.backendRevision = status.Revision
-		state.snapshot.Settings.TunEnabled = status.TunState == "on"
-		state.snapshot.Settings.TunScope = status.TunScope
+		applyTUIOperationServiceStatus(state, status)
 		state.snapshot.Status = "TUN " + strings.ToUpper(status.TunScope) + " " + strings.ToUpper(status.TunState)
 		return
 	}
@@ -1611,8 +1607,7 @@ func applyTUITunScope(state *tuiOperationState, service *tuiServiceClient) {
 		state.snapshot.Status = "TUN scope update failed: " + err.Error()
 		return
 	}
-	state.backendRevision = status.Revision
-	state.snapshot.Settings.TunScope = status.TunScope
+	applyTUIOperationServiceStatus(state, status)
 	state.snapshot.Status = "TUN scope " + strings.ToUpper(status.TunScope)
 }
 
@@ -1625,15 +1620,17 @@ func commitTUIOperationSettings(
 	if !prepareTUIBackendRevision(state, service) {
 		return
 	}
-	status, err := service.applySettings(settings, state.backendRevision)
+	profileSettings, err := tuiProfileSettingsForCommit(state, settings)
 	if err != nil {
 		state.snapshot.Status = "Settings commit failed: " + err.Error()
 		return
 	}
-	state.backendRevision = status.Revision
-	state.snapshot.Settings = settings
-	state.snapshot.Settings.SystemProxy = status.SystemProxy
-	state.coreRunning = status.Running
+	status, err := service.applySettings(profileSettings, state.backendRevision)
+	if err != nil {
+		state.snapshot.Status = "Settings commit failed: " + err.Error()
+		return
+	}
+	state.snapshot.Settings = profileSettings
 	state.settingsDirty = false
 	state.stagedSettings = nil
 	state.pendingMixedPort = nil
@@ -1642,6 +1639,26 @@ func commitTUIOperationSettings(
 		status.Revision,
 	)
 	refreshTUISnapshot(&state.snapshot, client)
+	applyTUIOperationServiceStatus(state, status)
+}
+
+func tuiProfileSettingsForCommit(
+	state *tuiOperationState,
+	settings tuiSettings,
+) (tuiSettings, error) {
+	configured := loadTUIConfiguredSettings(state.paths.configPath, true)
+	if configured == nil || strings.EqualFold(configured.Mode, tuiSilentMode) {
+		return tuiSettings{}, errors.New(
+			"could not load native mode and TUN settings from the active YAML profile",
+		)
+	}
+	// Mode and TUN are Backend-owned controls. The snapshot contains their
+	// effective display state (including FlClash-only silent mode and system
+	// TUN), which must never be serialized back into the shared YAML by an
+	// unrelated settings or port edit.
+	settings.Mode = configured.Mode
+	settings.TunEnabled = configured.TunEnabled
+	return settings, nil
 }
 
 func prepareTUIBackendRevision(
@@ -1656,10 +1673,37 @@ func prepareTUIBackendRevision(
 		state.snapshot.Status = "Cannot read backend state: " + err.Error()
 		return false
 	}
+	applyTUIOperationServiceStatus(state, status)
+	return true
+}
+
+func applyTUIOperationServiceStatus(
+	state *tuiOperationState,
+	status tuiServiceStatus,
+) {
 	state.backendRevision = status.Revision
 	state.coreRunning = status.Running
+	if status.ConfigPath != "" {
+		state.paths.configPath = status.ConfigPath
+	}
 	state.snapshot.Settings.SystemProxy = status.SystemProxy
-	return true
+	if status.Mode != "" {
+		state.snapshot.Settings.Mode = status.Mode
+	}
+	state.snapshot.Settings.MixedPort = status.ConfiguredProxyPort
+	state.snapshot.ConfiguredProxyPort = status.ConfiguredProxyPort
+	state.snapshot.ActiveProxyPort = status.ActiveProxyPort
+	if status.TunState != "" {
+		state.snapshot.Settings.TunEnabled = status.TunState == "on"
+	}
+	if status.TunScope != "" {
+		state.snapshot.Settings.TunScope = status.TunScope
+	}
+	if status.Mode == tuiSilentMode {
+		state.snapshot.Settings.TunEnabled = false
+	}
+	state.snapshot.FLCEnabled = status.FLCEnabled
+	state.snapshot.FLCOutbound = status.FLCOutbound
 }
 
 func changeTUISettingsValue(settings *tuiSettings, key tuiKey) bool {
@@ -1703,9 +1747,17 @@ func syncStoppedTUISettings(state *tuiOperationState) {
 		state.snapshot.Status += "; could not reload settings from YAML"
 		return
 	}
+	backendMode := state.snapshot.Settings.Mode
+	backendTunEnabled := state.snapshot.Settings.TunEnabled
+	backendTunScope := state.snapshot.Settings.TunScope
 	settings.SystemProxy = state.snapshot.Settings.SystemProxy
-	state.snapshot.Settings = *settings
 	state.stagedSettings = cloneTUISettings(settings)
+	state.snapshot.Settings = *settings
+	if strings.EqualFold(backendMode, tuiSilentMode) {
+		state.snapshot.Settings.Mode = tuiSilentMode
+	}
+	state.snapshot.Settings.TunEnabled = backendTunEnabled
+	state.snapshot.Settings.TunScope = backendTunScope
 	state.settingsDirty = false
 	port := settings.MixedPort
 	state.pendingMixedPort = &port
@@ -1754,8 +1806,7 @@ func reloadTUIOperationConfigExpected(
 		if err != nil {
 			return err
 		}
-		state.coreRunning = status.Running
-		state.backendRevision = status.Revision
+		applyTUIOperationServiceStatus(state, status)
 		state.snapshot.GroupOrder = loadTUIProxyGroupOrder(state.paths.configPath)
 		return nil
 	}
@@ -1995,22 +2046,28 @@ func startTUIManagedCore(
 		}
 	}
 	port := state.snapshot.Settings.MixedPort
-	if state.stagedSettings != nil {
+	if state.stagedSettings != nil && state.settingsDirty {
 		if service != nil {
 			if !prepareTUIBackendRevision(state, service) {
 				return false
 			}
-			status, err := service.applySettings(
+			profileSettings, profileErr := tuiProfileSettingsForCommit(
+				state,
 				*state.stagedSettings,
+			)
+			if profileErr != nil {
+				state.snapshot.Status = "Cannot commit staged settings: " + profileErr.Error()
+				return false
+			}
+			status, err := service.applySettings(
+				profileSettings,
 				state.backendRevision,
 			)
 			if err != nil {
 				state.snapshot.Status = "Cannot commit staged settings: " + err.Error()
 				return false
 			}
-			state.backendRevision = status.Revision
-			state.paths.configPath = status.ConfigPath
-			state.snapshot.Settings.SystemProxy = status.SystemProxy
+			applyTUIOperationServiceStatus(state, status)
 		}
 		if service == nil {
 			if message := stageTUICoreSettings(*state.stagedSettings); message != "" {
@@ -2028,13 +2085,7 @@ func startTUIManagedCore(
 			state.snapshot.Status = "Cannot start core listeners: " + err.Error()
 			return false
 		}
-		state.backendRevision = status.Revision
-		state.snapshot.Settings.Mode = status.Mode
-		state.snapshot.Settings.MixedPort = status.ConfiguredProxyPort
-		state.snapshot.ActiveProxyPort = status.ActiveProxyPort
-		state.snapshot.Settings.SystemProxy = status.SystemProxy
-		state.snapshot.FLCEnabled = status.FLCEnabled
-		state.snapshot.FLCOutbound = status.FLCOutbound
+		applyTUIOperationServiceStatus(state, status)
 	} else if !handleStartListener() {
 		state.snapshot.Status = "Cannot start core listeners"
 		return false
@@ -2067,18 +2118,14 @@ func stopTUIManagedCore(
 			state.snapshot.Status = "Cannot stop core listeners: " + err.Error()
 			return false
 		}
-		state.backendRevision = status.Revision
-		state.snapshot.Settings.SystemProxy = status.SystemProxy
+		applyTUIOperationServiceStatus(state, status)
 	} else if !handleStopListener() {
 		state.snapshot.Status = "Cannot stop core listeners"
 		return false
 	}
-	port := state.snapshot.Settings.MixedPort
 	state.coreRunning = false
-	state.pendingMixedPort = &port
-	state.stagedSettings = cloneTUISettings(&state.snapshot.Settings)
-	state.settingsDirty = false
 	state.snapshot.Status = "Core listeners stopped"
+	syncStoppedTUISettings(state)
 	return true
 }
 
@@ -2137,14 +2184,7 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			state.pendingMixedPort = nil
 			state.stagedSettings = nil
 			state.settingsDirty = false
-			if !state.coreRunning {
-				state.stagedSettings = loadTUIConfiguredSettings(state.paths.configPath, true)
-				if state.stagedSettings != nil {
-					state.snapshot.Settings = *state.stagedSettings
-					port := state.stagedSettings.MixedPort
-					state.pendingMixedPort = &port
-				}
-			}
+			syncStoppedTUISettings(state)
 		})
 	case tuiPageTools:
 		return m.selectTUISetting(m.snapshot.SelectedTool)
@@ -2190,9 +2230,9 @@ func selectTUIServiceProxy(
 		state.snapshot.Status = "Switch failed: " + err.Error()
 		return
 	}
-	state.backendRevision = status.Revision
 	state.snapshot.Status = fmt.Sprintf("Switched %s to %s", group.Name, node)
 	refreshTUISnapshot(&state.snapshot, client)
+	applyTUIOperationServiceStatus(state, status)
 }
 
 func switchTUIServiceProfile(
@@ -2231,12 +2271,11 @@ func switchTUIServiceProfile(
 		return
 	}
 	state.paths.configPath = profile.Path
-	state.coreRunning = status.Running
-	state.backendRevision = status.Revision
 	state.snapshot.GroupOrder = loadTUIProxyGroupOrder(profile.Path)
 	state.snapshot.ProxyNodeFocus = false
 	state.snapshot.Status = "Active profile: " + profile.Name
 	refreshTUISnapshot(&state.snapshot, client)
+	applyTUIOperationServiceStatus(state, status)
 	refreshTUIProfiles(&state.snapshot, state.paths)
 }
 
@@ -2310,8 +2349,7 @@ func (m *tuiModel) runTool(index int) tea.Cmd {
 			if err != nil {
 				state.snapshot.Status = "Restore failed: " + err.Error()
 			} else {
-				state.backendRevision = status.Revision
-				state.coreRunning = status.Running
+				applyTUIOperationServiceStatus(state, status)
 				state.snapshot.Status = "Restored and hot-reloaded: " +
 					filepath.Base(status.ResultPath)
 				syncStoppedTUISettings(state)
@@ -2855,17 +2893,7 @@ func (m *tuiModel) changeMode(mode string) tea.Cmd {
 			state.snapshot.Status = "Mode change failed: " + err.Error()
 			return
 		}
-		state.backendRevision = status.Revision
-		state.coreRunning = status.Running
-		state.snapshot.Settings.Mode = status.Mode
-		state.snapshot.Settings.MixedPort = status.ConfiguredProxyPort
-		state.snapshot.ActiveProxyPort = status.ActiveProxyPort
-		state.snapshot.Settings.SystemProxy = status.SystemProxy
-		if status.Mode == tuiSilentMode {
-			state.snapshot.Settings.TunEnabled = false
-		}
-		state.snapshot.FLCEnabled = status.FLCEnabled
-		state.snapshot.FLCOutbound = status.FLCOutbound
+		applyTUIOperationServiceStatus(state, status)
 		state.snapshot.Status = "Mode changed to " + status.Mode
 	})
 	if command != nil {
@@ -2968,8 +2996,7 @@ func (m *tuiModel) startProfileSubscriptionUpdate(
 			state.snapshot.Status = "Subscription update failed: " + err.Error()
 			return
 		}
-		state.backendRevision = status.Revision
-		state.coreRunning = status.Running
+		applyTUIOperationServiceStatus(state, status)
 		if isActive {
 			state.snapshot.Status = "Subscription refreshed and hot-reloaded: " +
 				filepath.Base(profilePath)
@@ -3159,14 +3186,7 @@ func (m *tuiModel) submitInput() tea.Cmd {
 				state.snapshot.Status = "FLC outbound selection failed: " + err.Error()
 				return
 			}
-			state.backendRevision = status.Revision
-			state.coreRunning = status.Running
-			state.snapshot.Settings.Mode = status.Mode
-			state.snapshot.Settings.MixedPort = status.ConfiguredProxyPort
-			state.snapshot.ActiveProxyPort = status.ActiveProxyPort
-			state.snapshot.Settings.SystemProxy = status.SystemProxy
-			state.snapshot.FLCEnabled = status.FLCEnabled
-			state.snapshot.FLCOutbound = status.FLCOutbound
+			applyTUIOperationServiceStatus(state, status)
 			state.snapshot.Status = "FLC outbound selected: " + status.FLCOutbound
 		})
 	case tuiInputSubscription:

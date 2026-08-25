@@ -1,3 +1,13 @@
+## FlClash TUI v0.5.4
+
+- Separate Backend-only `silent` and effective TUN state from the native mode
+  and TUN values stored in YAML profiles.
+- Prevent stopped-Core restarts and ordinary settings or Proxy port changes
+  from attempting to serialize `silent` into the active profile.
+- Preserve Backend-authoritative mode, TUN, listener, FLC, and System proxy
+  status after managed operations refresh live Core configuration.
+- Recover safely from stale staged settings created by earlier TUI versions.
+
 ## FlClash TUI v0.5.3
 
 - Allow `rule`, `global`, and `direct` mode changes to persist while Core
