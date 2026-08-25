@@ -2079,6 +2079,345 @@ func TestTUIStoppedRefreshKeepsBackendModeAndTunState(t *testing.T) {
 	}
 }
 
+func TestSyncStoppedSettingsSeparatesBackendAndProfileState(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	profileSettings := tuiSettings{
+		Mode:       "global",
+		MixedPort:  12345,
+		LogLevel:   "info",
+		TunEnabled: true,
+	}
+	updated, err := applyTUISettingsToConfig(
+		[]byte(defaultTUIConfig),
+		profileSettings,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, updated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := tuiOperationState{
+		paths: cliPaths{homeDir: directory, configPath: configPath},
+		snapshot: tuiSnapshot{Settings: tuiSettings{
+			Mode:        tuiSilentMode,
+			SystemProxy: false,
+			TunEnabled:  false,
+			TunScope:    tuiTunScopeSystem,
+		}},
+	}
+
+	syncStoppedTUISettings(&state)
+	if state.stagedSettings == nil ||
+		state.stagedSettings.Mode != "global" ||
+		!state.stagedSettings.TunEnabled {
+		t.Fatalf("profile staged settings = %+v", state.stagedSettings)
+	}
+	if state.snapshot.Settings.Mode != tuiSilentMode ||
+		state.snapshot.Settings.TunEnabled ||
+		state.snapshot.Settings.TunScope != tuiTunScopeSystem {
+		t.Fatalf("Backend display state was overwritten: %+v", state.snapshot.Settings)
+	}
+}
+
+func TestTUISilentStopStartDoesNotCommitDisplayMode(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(defaultTUIConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen(
+		"unix",
+		filepath.Join(directory, tuiServiceSocketFilename),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requests := make(chan tuiServiceRequest, 2)
+	serverDone := make(chan error, 1)
+	go func() {
+		for index := 0; index < 2; index++ {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				serverDone <- acceptErr
+				return
+			}
+			var request tuiServiceRequest
+			decodeErr := json.NewDecoder(connection).Decode(&request)
+			if decodeErr == nil {
+				requests <- request
+				decodeErr = json.NewEncoder(connection).Encode(tuiServiceStatus{
+					OK:                  true,
+					Revision:            uint64(8 + index),
+					Running:             index == 1,
+					Mode:                tuiSilentMode,
+					ConfigPath:          configPath,
+					ConfiguredProxyPort: 12345,
+					TunState:            "off",
+					TunScope:            tuiTunScopeUser,
+					FLCEnabled:          index == 1,
+					FLCOutbound:         "PROXY",
+				})
+			}
+			_ = connection.Close()
+			if decodeErr != nil {
+				serverDone <- decodeErr
+				return
+			}
+		}
+		serverDone <- nil
+	}()
+
+	state := tuiOperationState{
+		paths:           cliPaths{homeDir: directory, configPath: configPath},
+		coreRunning:     true,
+		backendRevision: 7,
+		snapshot: tuiSnapshot{Settings: tuiSettings{
+			Mode:      tuiSilentMode,
+			MixedPort: 12345,
+		}},
+	}
+	service := newTUIServiceClientAt(directory)
+	if !stopTUIManagedCore(&state, service) {
+		t.Fatalf("silent Core stop failed: %s", state.snapshot.Status)
+	}
+	if state.stagedSettings == nil || state.stagedSettings.Mode != "rule" ||
+		state.settingsDirty || state.snapshot.Settings.Mode != tuiSilentMode {
+		t.Fatalf("stopped silent state = %+v", state)
+	}
+	if !startTUIManagedCore(&state, service) {
+		t.Fatalf("silent Core restart failed: %s", state.snapshot.Status)
+	}
+	first := <-requests
+	second := <-requests
+	if first.Action != "stop" || second.Action != "start" {
+		t.Fatalf("silent restart requests = %q, %q", first.Action, second.Action)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+	if !state.coreRunning || state.snapshot.Settings.Mode != tuiSilentMode ||
+		!state.snapshot.FLCEnabled {
+		t.Fatalf("restarted silent state = %+v", state)
+	}
+}
+
+func TestTUISilentDirtyStagedSettingsRecoverNativeProfileMode(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	profileSettings := tuiSettings{
+		Mode:       "global",
+		MixedPort:  12345,
+		LogLevel:   "info",
+		TunEnabled: true,
+	}
+	updated, err := applyTUISettingsToConfig(
+		[]byte(defaultTUIConfig),
+		profileSettings,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, updated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen(
+		"unix",
+		filepath.Join(directory, tuiServiceSocketFilename),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requests := make(chan tuiServiceRequest, 3)
+	serverDone := make(chan error, 1)
+	go func() {
+		for index := 0; index < 3; index++ {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				serverDone <- acceptErr
+				return
+			}
+			var request tuiServiceRequest
+			decodeErr := json.NewDecoder(connection).Decode(&request)
+			if decodeErr == nil {
+				requests <- request
+				decodeErr = json.NewEncoder(connection).Encode(tuiServiceStatus{
+					OK:                  true,
+					Revision:            uint64(20 + index),
+					Running:             index == 2,
+					Mode:                tuiSilentMode,
+					ConfigPath:          configPath,
+					ConfiguredProxyPort: 12346,
+					TunState:            "off",
+					TunScope:            tuiTunScopeUser,
+					FLCEnabled:          index == 2,
+					FLCOutbound:         "PROXY",
+				})
+			}
+			_ = connection.Close()
+			if decodeErr != nil {
+				serverDone <- decodeErr
+				return
+			}
+		}
+		serverDone <- nil
+	}()
+
+	state := tuiOperationState{
+		paths:         cliPaths{homeDir: directory, configPath: configPath},
+		settingsDirty: true,
+		stagedSettings: &tuiSettings{
+			Mode:       tuiSilentMode,
+			MixedPort:  12346,
+			LogLevel:   "debug",
+			TunEnabled: false,
+		},
+		snapshot: tuiSnapshot{Settings: tuiSettings{
+			Mode:      tuiSilentMode,
+			MixedPort: 12346,
+		}},
+	}
+	if !startTUIManagedCore(&state, newTUIServiceClientAt(directory)) {
+		t.Fatalf("dirty silent Core start failed: %s", state.snapshot.Status)
+	}
+	statusRequest := <-requests
+	applyRequest := <-requests
+	startRequest := <-requests
+	if statusRequest.Action != "status" || applyRequest.Action != "apply_settings" ||
+		startRequest.Action != "start" {
+		t.Fatalf(
+			"dirty silent start requests = %q, %q, %q",
+			statusRequest.Action,
+			applyRequest.Action,
+			startRequest.Action,
+		)
+	}
+	if applyRequest.Settings == nil ||
+		applyRequest.Settings.Mode != "global" ||
+		!applyRequest.Settings.TunEnabled ||
+		applyRequest.Settings.MixedPort != 12346 ||
+		applyRequest.Settings.LogLevel != "debug" {
+		t.Fatalf("recovered profile settings = %+v", applyRequest.Settings)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+	if !state.coreRunning || state.snapshot.Settings.Mode != tuiSilentMode ||
+		!state.snapshot.FLCEnabled {
+		t.Fatalf("recovered silent state = %+v", state)
+	}
+}
+
+func TestTUISilentSettingsCommitPreservesNativeModeAndTun(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	profileSettings := tuiSettings{
+		Mode:       "global",
+		MixedPort:  12345,
+		LogLevel:   "info",
+		TunEnabled: true,
+	}
+	updated, err := applyTUISettingsToConfig(
+		[]byte(defaultTUIConfig),
+		profileSettings,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, updated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen(
+		"unix",
+		filepath.Join(directory, tuiServiceSocketFilename),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requestReceived := make(chan tuiServiceRequest, 1)
+	serverDone := make(chan error, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			serverDone <- acceptErr
+			return
+		}
+		defer connection.Close()
+		var request tuiServiceRequest
+		if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr != nil {
+			serverDone <- decodeErr
+			return
+		}
+		requestReceived <- request
+		serverDone <- json.NewEncoder(connection).Encode(tuiServiceStatus{
+			OK:                  true,
+			Revision:            12,
+			Mode:                tuiSilentMode,
+			ConfigPath:          configPath,
+			ConfiguredProxyPort: 12346,
+			TunState:            "off",
+			TunScope:            tuiTunScopeUser,
+		})
+	}()
+
+	state := tuiOperationState{
+		paths:           cliPaths{homeDir: directory, configPath: configPath},
+		backendRevision: 11,
+		snapshot: tuiSnapshot{Settings: tuiSettings{
+			Mode:      tuiSilentMode,
+			MixedPort: 12345,
+		}},
+	}
+	desired := state.snapshot.Settings
+	desired.MixedPort = 12346
+	desired.AllowLAN = true
+	coreServer := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.URL.Path != "/configs" {
+			http.NotFound(w, request)
+			return
+		}
+		_, _ = io.WriteString(w, `{
+  "mode": "global",
+  "mixed-port": 55555,
+  "allow-lan": true,
+  "log-level": "info",
+  "tun": {"enable": true}
+}`)
+	}))
+	defer coreServer.Close()
+	commitTUIOperationSettings(
+		&state,
+		newTUIServiceClientAt(directory),
+		controllerClient{
+			options: controllerOptions{address: coreServer.URL},
+			client:  coreServer.Client(),
+		},
+		desired,
+	)
+	request := <-requestReceived
+	if request.Action != "apply_settings" || request.Settings == nil ||
+		request.Settings.Mode != "global" ||
+		!request.Settings.TunEnabled ||
+		request.Settings.MixedPort != 12346 {
+		t.Fatalf("profile settings request = %+v", request)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+	if state.snapshot.Settings.Mode != tuiSilentMode ||
+		state.snapshot.Settings.TunEnabled ||
+		state.snapshot.Settings.MixedPort != 12346 {
+		t.Fatalf("post-commit display state = %+v", state.snapshot.Settings)
+	}
+}
+
 func TestTUIRunningCoreUsesLiveSettingsInsteadOfStagedYAML(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.snapshot.Settings = tuiSettings{MixedPort: 12345}
