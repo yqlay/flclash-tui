@@ -625,6 +625,62 @@ func TestTUIServiceRuntimeRestoresTunRuntimeAfterSettingsFailure(t *testing.T) {
 	}
 }
 
+func TestTUIServiceRuntimeRemovesGeneratedConfigWhenProfileSwitchFails(
+	t *testing.T,
+) {
+	t.Cleanup(func() {
+		_ = handleShutdown()
+	})
+	directory := t.TempDir()
+	currentPath := filepath.Join(directory, "current.yaml")
+	targetPath := filepath.Join(directory, "target.yaml")
+	for _, path := range []string{currentPath, targetPath} {
+		if err := os.WriteFile(path, []byte(defaultTUIConfig), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime := newTUIServiceRuntime(
+		cliPaths{homeDir: directory, configPath: currentPath},
+		defaultCLITestURL,
+		filepath.Join(directory, "core.sock"),
+		nil,
+		nil,
+	)
+	runtime.configureManagedRuntimePolicy(
+		"rule",
+		7890,
+		7890,
+		currentPath,
+		tuiFLCListenerState{},
+		tuiTunScopeUser,
+		false,
+	)
+	if err := os.Mkdir(
+		filepath.Join(directory, tuiStateFilename),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := runtime.reload(targetPath)
+	if err == nil || changed || !strings.Contains(err.Error(), "remember active profile") {
+		t.Fatalf("profile switch with failed state save = %t, %v", changed, err)
+	}
+	matches, globErr := filepath.Glob(
+		filepath.Join(directory, tuiManagedRuntimeConfigPrefix+"*.yaml"),
+	)
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("failed profile switch leaked generated configs: %v", matches)
+	}
+	status := runtime.snapshot("")
+	if filepath.Clean(status.ConfigPath) != filepath.Clean(currentPath) {
+		t.Fatalf("failed profile switch changed active profile: %+v", status)
+	}
+}
+
 func TestTUIServiceRuntimeBacksUpNestedProfileThroughBackend(t *testing.T) {
 	runtime := newTestTUIServiceRuntime(t)
 	nested := filepath.Join(runtime.paths.homeDir, "profiles")

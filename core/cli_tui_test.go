@@ -138,6 +138,69 @@ func TestTUIRenderingFitsEveryPositiveTerminalSize(t *testing.T) {
 	}
 }
 
+func TestTUINotificationRenderingFitsEveryPositiveTerminalSize(t *testing.T) {
+	paths := cliPaths{configPath: "/tmp/flclash/config.yaml"}
+	notifications := []tuiNotification{
+		{
+			level:     tuiNotificationError,
+			title:     "Operation failed",
+			message:   strings.Repeat("Long notification 节点 error details ", 20),
+			updatedAt: time.Date(2026, 8, 29, 12, 34, 56, 0, time.UTC),
+		},
+		{
+			level:        tuiNotificationSuccess,
+			title:        "Operation complete",
+			message:      "Previous notification",
+			updatedAt:    time.Date(2026, 8, 29, 12, 30, 0, 0, time.UTC),
+			acknowledged: true,
+		},
+	}
+	for width := 1; width <= 160; width++ {
+		for height := 1; height <= 60; height++ {
+			for _, detailsOpen := range []bool{false, true} {
+				snapshot := populatedTUISnapshot(tuiPageDashboard)
+				snapshot.Notifications = notifications
+				snapshot.NotificationDetailOpen = detailsOpen
+				snapshot.NotificationScroll = 3
+				output := renderTUIAtSize(
+					snapshot,
+					paths,
+					"private Unix socket",
+					true,
+					true,
+					width,
+					height,
+				)
+				lines := strings.Split(output, "\n")
+				if len(lines) != height {
+					t.Fatalf(
+						"notification details=%t at %dx%d has %d lines, want %d",
+						detailsOpen,
+						width,
+						height,
+						len(lines),
+						height,
+					)
+				}
+				for lineNumber, line := range lines {
+					if got := tuiDisplayWidth(stripTUIANSI(line)); got != width {
+						t.Fatalf(
+							"notification details=%t at %dx%d line %d has width %d, want %d: %q",
+							detailsOpen,
+							width,
+							height,
+							lineNumber,
+							got,
+							width,
+							line,
+						)
+					}
+				}
+			}
+		}
+	}
+}
+
 type tuiImmediateQuitModel struct{}
 
 func (tuiImmediateQuitModel) Init() tea.Cmd {
@@ -447,6 +510,55 @@ func TestTUINotificationHistoryIsBoundedAndKeepsNewestUnread(t *testing.T) {
 	if model.notifications[0].message != "Notice 53" ||
 		model.notifications[0].acknowledged {
 		t.Fatalf("duplicate notification was not refreshed as unread: %+v", model.notifications[0])
+	}
+}
+
+func TestTUINotificationKeepsCompletedOperationsAndDetailScroll(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.enqueueNotification(tuiNotification{
+		id:       "operation",
+		level:    tuiNotificationInfo,
+		message:  "First operation working",
+		progress: true,
+	})
+	model.enqueueNotification(tuiNotification{
+		id:      "operation",
+		level:   tuiNotificationSuccess,
+		message: "First operation complete",
+	})
+	if len(model.notifications) != 1 || model.notifications[0].id != "" {
+		t.Fatalf("completed operation remained replaceable: %+v", model.notifications)
+	}
+	model.enqueueNotification(tuiNotification{
+		id:       "operation",
+		level:    tuiNotificationInfo,
+		message:  "Second operation working",
+		progress: true,
+	})
+	model.enqueueNotification(tuiNotification{
+		id:      "operation",
+		level:   tuiNotificationSuccess,
+		message: "Second operation complete",
+	})
+	if len(model.notifications) != 2 ||
+		model.notifications[0].message != "Second operation complete" ||
+		model.notifications[1].message != "First operation complete" {
+		t.Fatalf("successive operations did not keep separate history: %+v", model.notifications)
+	}
+
+	model.notificationDetailOpen = true
+	model.notificationSelected = 1
+	model.notificationScroll = 7
+	model.enqueueNotification(tuiNotification{
+		level:   tuiNotificationWarning,
+		message: "Unrelated background warning",
+	})
+	if model.notificationSelected != 2 || model.notificationScroll != 7 {
+		t.Fatalf(
+			"background notification disturbed selected details: selected=%d scroll=%d",
+			model.notificationSelected,
+			model.notificationScroll,
+		)
 	}
 }
 
@@ -2286,6 +2398,13 @@ func TestTUITrafficChartOverlaysUploadAndDownload(t *testing.T) {
 		tuiTrafficChartOverlap != tuiCyan ||
 		strings.Contains(rendered, "\x1b[97m") {
 		t.Fatalf("traffic chart colors are not blue/green/cyan: %q", rendered)
+	}
+	empty := buildTUITrafficChart(nil, 12, 3)
+	if strings.Contains(stripTUIANSI(empty.lines[0]), "·") ||
+		strings.Contains(stripTUIANSI(empty.lines[1]), "·") ||
+		stripTUIANSI(empty.lines[2]) != strings.Repeat("·", 12) ||
+		!strings.Contains(empty.lines[2], tuiTrafficChartBaseline) {
+		t.Fatalf("traffic chart baseline is not white dotted: %q", empty.lines)
 	}
 }
 

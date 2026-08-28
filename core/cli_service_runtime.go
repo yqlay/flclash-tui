@@ -49,6 +49,7 @@ type tuiServiceRuntime struct {
 	actualConfigPath        string
 	flc                     tuiFLCListenerState
 	history                 []tuiRequest
+	historyUpdateMu         sync.Mutex
 	historyVersion          uint64
 	persistedHistoryVersion uint64
 	historyPersistMu        sync.Mutex
@@ -1277,6 +1278,8 @@ func validateTUIFLCOutbound(controller controllerClient, outbound string) error 
 }
 
 func (r *tuiServiceRuntime) historyStatus(requestID string) tuiServiceStatus {
+	r.historyUpdateMu.Lock()
+	defer r.historyUpdateMu.Unlock()
 	status := r.snapshot(requestID)
 	if status.Running {
 		connections, err := loadTUIActiveConnections(r.coreController)
@@ -1704,7 +1707,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 				reloaded,
 				running,
 			)
-			if mode == tuiSilentMode {
+			if actualConfigPath != configPath {
 				_ = os.Remove(actualConfigPath)
 			}
 			if rollbackErr != nil {
@@ -2098,10 +2101,10 @@ func (r *tuiServiceRuntime) testRoute(
 		closeClient()
 	}
 	if !wasRunning {
-		if !handleStopListener() && err == nil {
-			err = errors.New("restore stopped Core state failed")
+		cleanupErr := r.restoreStoppedRouteTestState(handleStopListener())
+		if err == nil {
+			err = cleanupErr
 		}
-		r.setRunning(false)
 	}
 	status = r.snapshot(request.RequestID)
 	if err != nil {
@@ -2116,6 +2119,17 @@ func (r *tuiServiceRuntime) testRoute(
 		status.DelaySamples = delay.Samples
 	}
 	return status
+}
+
+func (r *tuiServiceRuntime) restoreStoppedRouteTestState(
+	listenerStopped bool,
+) error {
+	r.setRunning(false)
+	r.releaseTunLease()
+	if !listenerStopped {
+		return errors.New("restore stopped Core state failed")
+	}
+	return nil
 }
 
 func (r *tuiServiceRuntime) setRunning(running bool) {

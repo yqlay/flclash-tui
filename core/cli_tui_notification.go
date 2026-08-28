@@ -223,6 +223,9 @@ func (m *tuiModel) enqueueNotification(notification tuiNotification) {
 	} else if m.notificationDetailOpen && len(m.notifications) > 0 {
 		m.notificationSelected++
 	}
+	if notification.id == "operation" && !notification.progress {
+		notification.id = ""
+	}
 	m.notifications = append(
 		[]tuiNotification{notification},
 		m.notifications...,
@@ -236,7 +239,9 @@ func (m *tuiModel) enqueueNotification(notification tuiNotification) {
 	if m.notificationSelected >= len(m.notifications) {
 		m.notificationSelected = len(m.notifications) - 1
 	}
-	m.notificationScroll = 0
+	if !m.notificationDetailOpen || m.notificationSelected == 0 {
+		m.notificationScroll = 0
+	}
 }
 
 func (m *tuiModel) removeNotificationAt(index int) {

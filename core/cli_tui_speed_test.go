@@ -5,8 +5,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -243,6 +245,44 @@ func TestTUIRouteDelayUsesAuthenticatedSilentListener(t *testing.T) {
 	}
 	if usedProxyURL != flc.proxyURL() {
 		t.Fatalf("silent route proxy = %q, want authenticated FLC URL", usedProxyURL)
+	}
+}
+
+func TestTUIStoppedRouteTestCleanupReleasesTunLease(t *testing.T) {
+	runtime := newTestTUIServiceRuntime(t)
+	connection, peer := net.Pipe()
+	defer peer.Close()
+	leaseFile, err := os.CreateTemp(t.TempDir(), "tun-lease-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.mu.Lock()
+	runtime.running = true
+	runtime.activePort = 7890
+	runtime.tunLease = &tuiTunLease{
+		connection: connection,
+		file:       leaseFile,
+	}
+	runtime.mu.Unlock()
+
+	if err := runtime.restoreStoppedRouteTestState(true); err != nil {
+		t.Fatal(err)
+	}
+	status := runtime.snapshot("")
+	if status.Running || status.ActiveProxyPort != 0 {
+		t.Fatalf("temporary route test left Core active: %+v", status)
+	}
+	runtime.mu.RLock()
+	lease := runtime.tunLease
+	runtime.mu.RUnlock()
+	if lease != nil {
+		t.Fatal("temporary route test retained its TUN lease")
+	}
+	if _, err := leaseFile.Stat(); err == nil {
+		t.Fatal("temporary route test left the TUN file descriptor open")
+	}
+	if _, err := connection.Write([]byte{1}); err == nil {
+		t.Fatal("temporary route test left the TUN helper connection open")
 	}
 }
 

@@ -139,6 +139,8 @@ func (r *tuiServiceRuntime) persistHistory(force bool) error {
 }
 
 func (r *tuiServiceRuntime) clearPersistentHistory() (bool, error) {
+	r.historyUpdateMu.Lock()
+	defer r.historyUpdateMu.Unlock()
 	r.mu.Lock()
 	previous := append([]tuiRequest(nil), r.history...)
 	changed := len(previous) > 0

@@ -1,3 +1,18 @@
+## FlClash TUI v0.5.10
+
+- Add a white dotted baseline to the live traffic chart, while preserving blue
+  upload, green download, and cyan overlap where curves meet the baseline.
+- Serialize Backend History refresh and clear operations so an in-flight poll
+  cannot restore entries after History was cleared, and drain the collector
+  before the final shutdown save.
+- Release temporary TUN leases after stopped-Core route tests and remove
+  generated managed runtime YAML when a profile switch rolls back.
+- Preserve completed operations as separate notification-history entries and
+  keep the selected detail message's scroll position when background notices
+  arrive.
+- Extend terminal-size, notification, lifecycle, History, and release-path
+  regression coverage.
+
 ## FlClash TUI v0.5.9
 
 - Restore non-blocking, color-coded notification summaries in the lower-right

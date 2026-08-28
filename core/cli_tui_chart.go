@@ -8,6 +8,7 @@ const (
 	tuiTrafficChartUpload   = "\x1b[38;5;33m"
 	tuiTrafficChartDownload = "\x1b[32m"
 	tuiTrafficChartOverlap  = "\x1b[36m"
+	tuiTrafficChartBaseline = "\x1b[37m"
 )
 
 var tuiBrailleDots = [4][2]uint8{
@@ -52,20 +53,24 @@ func buildTUITrafficChart(
 	for index := 1; index < len(samples); index++ {
 		x0 := (index - 1) * (pixelWidth - 1) / (len(samples) - 1)
 		x1 := index * (pixelWidth - 1) / (len(samples) - 1)
-		drawTUIBrailleLine(
-			up,
-			x0,
-			tuiTrafficChartY(samples[index-1].Up, scale, pixelHeight),
-			x1,
-			tuiTrafficChartY(samples[index].Up, scale, pixelHeight),
-		)
-		drawTUIBrailleLine(
-			down,
-			x0,
-			tuiTrafficChartY(samples[index-1].Down, scale, pixelHeight),
-			x1,
-			tuiTrafficChartY(samples[index].Down, scale, pixelHeight),
-		)
+		if samples[index-1].Up > 0 || samples[index].Up > 0 {
+			drawTUIBrailleLine(
+				up,
+				x0,
+				tuiTrafficChartY(samples[index-1].Up, scale, pixelHeight),
+				x1,
+				tuiTrafficChartY(samples[index].Up, scale, pixelHeight),
+			)
+		}
+		if samples[index-1].Down > 0 || samples[index].Down > 0 {
+			drawTUIBrailleLine(
+				down,
+				x0,
+				tuiTrafficChartY(samples[index-1].Down, scale, pixelHeight),
+				x1,
+				tuiTrafficChartY(samples[index].Down, scale, pixelHeight),
+			)
+		}
 	}
 
 	lines := make([]string, height)
@@ -84,6 +89,8 @@ func buildTUITrafficChart(
 				color = tuiTrafficChartUpload
 			case downDots != 0:
 				color = tuiTrafficChartDownload
+			case row == height-1:
+				color = tuiTrafficChartBaseline
 			}
 			if color != activeColor {
 				line.WriteString(tuiReset)
@@ -91,7 +98,11 @@ func buildTUITrafficChart(
 				activeColor = color
 			}
 			if dots == 0 {
-				line.WriteByte(' ')
+				if row == height-1 {
+					line.WriteRune('·')
+				} else {
+					line.WriteByte(' ')
+				}
 			} else {
 				line.WriteRune(rune(0x2800 + int(dots)))
 			}

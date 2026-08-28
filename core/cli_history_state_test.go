@@ -85,3 +85,61 @@ func TestLoadTUIHistoryRejectsCorruptState(t *testing.T) {
 		t.Fatal("corrupt History was accepted")
 	}
 }
+
+func TestTUIHistoryRefreshAndClearAreSerialized(t *testing.T) {
+	runtime := newTestTUIServiceRuntime(t)
+	runtime.mu.Lock()
+	runtime.history = []tuiRequest{{
+		tuiConnection: tuiConnection{
+			ID:   "old",
+			Host: "old.example",
+		},
+		FirstSeen: time.Now(),
+		LastSeen:  time.Now(),
+	}}
+	runtime.mu.Unlock()
+
+	runtime.historyUpdateMu.Lock()
+	refreshDone := make(chan struct{})
+	go func() {
+		_ = runtime.historyStatus("")
+		close(refreshDone)
+	}()
+	select {
+	case <-refreshDone:
+		t.Fatal("History refresh bypassed the update serialization lock")
+	case <-time.After(25 * time.Millisecond):
+	}
+	runtime.historyUpdateMu.Unlock()
+	select {
+	case <-refreshDone:
+	case <-time.After(time.Second):
+		t.Fatal("History refresh did not resume after the lock was released")
+	}
+
+	runtime.historyUpdateMu.Lock()
+	clearDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.clearPersistentHistory()
+		clearDone <- err
+	}()
+	select {
+	case err := <-clearDone:
+		t.Fatalf("History clear bypassed the update serialization lock: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	runtime.historyUpdateMu.Unlock()
+	select {
+	case err := <-clearDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("History clear did not resume after the lock was released")
+	}
+	runtime.mu.RLock()
+	defer runtime.mu.RUnlock()
+	if len(runtime.history) != 0 {
+		t.Fatalf("History was repopulated after clear: %+v", runtime.history)
+	}
+}

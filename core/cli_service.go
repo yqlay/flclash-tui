@@ -1225,7 +1225,11 @@ func runTUIService(
 			err.Error()+"; starting with empty History",
 		)
 	}
-	go collectTUIServiceHistory(runtime, shutdown)
+	historyCollectorDone := make(chan struct{})
+	go func() {
+		defer close(historyCollectorDone)
+		collectTUIServiceHistory(runtime, shutdown)
+	}()
 	if settings := loadTUIConfiguredSettings(paths.configPath, true); settings != nil {
 		if trafficMode != tuiSilentMode {
 			runtime.setSystemProxyState(
@@ -1237,17 +1241,24 @@ func runTUIService(
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(interrupt)
+	serviceCleanupDone := make(chan struct{})
 	go func() {
+		defer close(serviceCleanupDone)
 		select {
 		case <-interrupt:
 			runtime.handle(tuiServiceRequest{Action: "shutdown"})
 			runtime.signalShutdown()
 		case <-shutdown:
 		}
+		<-historyCollectorDone
 		if err := runtime.persistHistory(true); err != nil {
 			appendCLIApplicationLog(paths.homeDir, "ERROR", "history_save", err.Error())
 		}
 		_ = listener.Close()
+	}()
+	defer func() {
+		shutdownOnce.Do(func() { close(shutdown) })
+		<-serviceCleanupDone
 	}()
 
 	var handlers sync.WaitGroup
