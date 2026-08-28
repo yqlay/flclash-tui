@@ -116,44 +116,46 @@ var tuiTrafficModes = []string{
 }
 
 type tuiModel struct {
-	snapshot              tuiSnapshot
-	client                controllerClient
-	service               *tuiServiceClient
-	paths                 cliPaths
-	setupParams           []byte
-	ownsCore              bool
-	coreRunning           bool
-	systemProxyManaged    bool
-	width                 int
-	height                int
-	refreshSequence       uint64
-	refreshInFlight       bool
-	busy                  bool
-	inputMode             tuiInputMode
-	inputValue            []rune
-	inputCursor           int
-	inputSelectAll        bool
-	modeSelectionOpen     bool
-	selectedMode          int
-	renameProfilePath     string
-	editorPath            string
-	editorTempPath        string
-	editorBackup          tuiProfileBackup
-	pendingMixedPort      *int
-	stagedSettings        *tuiSettings
-	settingsDirty         bool
-	backendRevision       uint64
-	networkCheckActive    bool
-	memoryRefreshActive   bool
-	coreMemoryUpdates     <-chan tuiCoreMemoryUpdate
-	stopCoreMemory        func()
-	trafficUpdates        <-chan tuiTrafficUpdate
-	stopTraffic           func()
-	stopServiceOnExit     bool // Legacy test visibility; managed frontends always leave this false.
-	frontendExitRequested bool
-	shutdownRequested     bool
-	notifications         []tuiNotification
-	notificationScroll    int
+	snapshot               tuiSnapshot
+	client                 controllerClient
+	service                *tuiServiceClient
+	paths                  cliPaths
+	setupParams            []byte
+	ownsCore               bool
+	coreRunning            bool
+	systemProxyManaged     bool
+	width                  int
+	height                 int
+	refreshSequence        uint64
+	refreshInFlight        bool
+	busy                   bool
+	inputMode              tuiInputMode
+	inputValue             []rune
+	inputCursor            int
+	inputSelectAll         bool
+	modeSelectionOpen      bool
+	selectedMode           int
+	renameProfilePath      string
+	editorPath             string
+	editorTempPath         string
+	editorBackup           tuiProfileBackup
+	pendingMixedPort       *int
+	stagedSettings         *tuiSettings
+	settingsDirty          bool
+	backendRevision        uint64
+	networkCheckActive     bool
+	memoryRefreshActive    bool
+	coreMemoryUpdates      <-chan tuiCoreMemoryUpdate
+	stopCoreMemory         func()
+	trafficUpdates         <-chan tuiTrafficUpdate
+	stopTraffic            func()
+	stopServiceOnExit      bool // Legacy test visibility; managed frontends always leave this false.
+	frontendExitRequested  bool
+	shutdownRequested      bool
+	notifications          []tuiNotification
+	notificationDetailOpen bool
+	notificationSelected   int
+	notificationScroll     int
 }
 
 func newTUIModel(
@@ -577,6 +579,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			refreshTUIProfiles(&state.snapshot, state.paths)
 		})
 	case tea.KeyMsg:
+		if message.String() == "ctrl+n" || m.notificationDetailOpen {
+			return m, m.handleTeaKey(message)
+		}
 		if m.inputMode != tuiInputNone {
 			return m, m.handleInput(message)
 		}
@@ -612,10 +617,14 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 			m.snapshot.Page == tuiPageProxies) {
 		key = tuiKeySpeedTest
 	}
-	if len(m.notifications) > 0 &&
+	if key == tuiKeyNotifications {
+		m.toggleNotificationDetails()
+		return nil
+	}
+	if m.notificationDetailOpen &&
 		key != tuiKeyQuit &&
 		key != tuiKeyInterrupt {
-		m.handleNotificationKey(key)
+		m.handleNotificationDetailKey(key)
 		return nil
 	}
 	if m.snapshot.ShowHelp &&
@@ -639,6 +648,7 @@ func tuiKeyAllowedWhileBusy(key tuiKey) bool {
 	switch key {
 	case tuiKeyQuit,
 		tuiKeyInterrupt,
+		tuiKeyNotifications,
 		tuiKeyHelp,
 		tuiKeyBack,
 		tuiKeyUp,
@@ -657,13 +667,15 @@ func tuiKeyAllowedWhileBusy(key tuiKey) bool {
 
 func (m *tuiModel) View() string {
 	snapshot := m.snapshot
-	if len(m.notifications) > 0 {
-		notification := m.notifications[0]
-		snapshot.NotificationTitle = notification.title
-		snapshot.NotificationMessage = notification.message
-		snapshot.NotificationLevel = string(notification.level)
-		snapshot.NotificationProgress = notification.progress
-		snapshot.NotificationScroll = m.notificationScroll
+	snapshot.Notifications = append(
+		[]tuiNotification(nil),
+		m.notifications...,
+	)
+	snapshot.NotificationDetailOpen = m.notificationDetailOpen
+	snapshot.NotificationSelected = m.notificationSelected
+	snapshot.NotificationScroll = m.notificationScroll
+	if m.notificationDetailOpen {
+		snapshot.Status = "Notifications · ↑↓ select · PgUp/PgDn scroll · Enter confirm · Esc close"
 	} else if m.modeSelectionOpen {
 		snapshot.SelectionTitle = "Select outbound mode"
 		snapshot.SelectionOptions = append(
@@ -3746,6 +3758,8 @@ func tuiKeyFromTea(message tea.KeyMsg) (tuiKey, bool) {
 		return tuiKeyQuit, true
 	case "ctrl+c":
 		return tuiKeyInterrupt, true
+	case "ctrl+n":
+		return tuiKeyNotifications, true
 	case "r":
 		return tuiKeyRefresh, true
 	case "R":

@@ -339,28 +339,44 @@ func TestTUIEscFollowsProxyNavigationHierarchy(t *testing.T) {
 	}
 }
 
-func TestTUIExistingFrontendNoticeIsVisibleAndDismissible(t *testing.T) {
+func TestTUIExistingFrontendNoticeIsNonBlockingAndOpensDetails(t *testing.T) {
 	model := newTUIModel(
 		controllerClient{},
 		cliPaths{},
 		nil,
 		true,
 	)
-	model.width = 44
-	model.height = 10
+	model.width = 100
+	model.height = 30
 	model.enqueueNotification(tuiNotification{
 		level:   tuiNotificationInfo,
 		title:   "Shared backend",
 		message: "Attached to shared backend · 1 other TUI frontend: PID 123 /dev/pts/2",
 	})
 	output := stripTUIANSI(model.View())
-	if !strings.Contains(output, "Shared backend") ||
-		!strings.Contains(output, "PID 123") {
-		t.Fatalf("frontend startup notice is not visible:\n%s", output)
+	if !strings.Contains(output, "Ctrl+N details") ||
+		!strings.Contains(output, "INFO") {
+		t.Fatalf("frontend startup notice summary is not visible:\n%s", output)
 	}
-	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if len(model.notifications) != 0 {
-		t.Fatal("frontend startup notice was not dismissed")
+	_, _ = model.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune{'2'},
+	})
+	if model.snapshot.Page != tuiPageProxies || len(model.notifications) != 1 {
+		t.Fatalf("notification blocked normal navigation: %+v", model.snapshot)
+	}
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	details := stripTUIANSI(model.View())
+	for _, expected := range []string{
+		"FlClash  ·  terminal proxy manager",
+		"Dashboard",
+		"Notifications",
+		"Shared backend",
+		"PID 123",
+	} {
+		if !strings.Contains(details, expected) {
+			t.Fatalf("framed notification details do not contain %q:\n%s", expected, details)
+		}
 	}
 }
 
@@ -384,15 +400,121 @@ func TestTUINotificationReplacesProgressAndPreservesPage(t *testing.T) {
 		t.Fatalf("progress notification was not replaced: %+v", model.notifications)
 	}
 	plain := stripTUIANSI(model.View())
+	if !strings.Contains(plain, "Ctrl+N details") ||
+		!strings.Contains(plain, "Configuration saved") {
+		t.Fatalf("notification footer summary is incomplete:\n%s", plain)
+	}
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	plain = stripTUIANSI(model.View())
 	if !strings.Contains(plain, "Operation complete") ||
-		!strings.Contains(plain, "Enter confirm · Esc close") {
-		t.Fatalf("notification page is incomplete:\n%s", plain)
+		!strings.Contains(plain, "Enter confirm · Esc close") ||
+		!strings.Contains(plain, "Profiles") {
+		t.Fatalf("notification details are incomplete:\n%s", plain)
 	}
 	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if len(model.notifications) != 0 ||
+	if !model.notifications[0].acknowledged {
+		t.Fatal("Enter did not confirm the selected notification")
+	}
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if len(model.notifications) != 1 || model.notificationDetailOpen ||
 		model.snapshot.Page != tuiPageProfiles ||
 		model.snapshot.FocusSidebar {
-		t.Fatalf("notification dismissal changed the underlying page: %+v", model.snapshot)
+		t.Fatalf("notification details changed the underlying page: %+v", model.snapshot)
+	}
+	if strings.Contains(stripTUIANSI(model.View()), "Ctrl+N details") {
+		t.Fatal("confirmed notification remained in the footer")
+	}
+}
+
+func TestTUINotificationHistoryIsBoundedAndKeepsNewestUnread(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	for index := 0; index < tuiNotificationHistoryLimit+5; index++ {
+		model.enqueueNotification(tuiNotification{
+			level:   tuiNotificationInfo,
+			message: fmt.Sprintf("Notice %02d", index),
+		})
+	}
+	if len(model.notifications) != tuiNotificationHistoryLimit ||
+		model.notifications[0].message != "Notice 54" ||
+		model.notifications[len(model.notifications)-1].message != "Notice 05" {
+		t.Fatalf("notification history was not bounded newest-first: %+v", model.notifications)
+	}
+	model.notifications[0].acknowledged = true
+	model.enqueueNotification(tuiNotification{
+		level:   tuiNotificationWarning,
+		message: "Notice 53",
+	})
+	if model.notifications[0].message != "Notice 53" ||
+		model.notifications[0].acknowledged {
+		t.Fatalf("duplicate notification was not refreshed as unread: %+v", model.notifications[0])
+	}
+}
+
+func TestTUINotificationFooterAdaptsWithoutColorBleed(t *testing.T) {
+	snapshot := tuiSnapshot{
+		Notifications: []tuiNotification{{
+			level:   tuiNotificationError,
+			message: "A deliberately long notification message that must be truncated safely",
+		}},
+	}
+	for _, width := range []int{40, 72, 120} {
+		line := tuiNotificationFooter(
+			snapshot,
+			"  ←→ panel  ↑↓ move  Enter apply  q exit",
+			width,
+		)
+		plain := stripTUIANSI(line)
+		if !strings.Contains(plain, "ERROR") ||
+			!strings.Contains(plain, "Ctrl+N details") {
+			t.Fatalf("width %d footer notification is incomplete: %q", width, plain)
+		}
+		if got := tuiDisplayWidth(plain); got != width {
+			t.Fatalf("width %d footer rendered at %d cells: %q", width, got, plain)
+		}
+		if !strings.HasSuffix(line, tuiReset) {
+			t.Fatalf("width %d footer did not reset ANSI color: %q", width, line)
+		}
+	}
+}
+
+func TestTUINotificationDetailsSelectScrollAndRestoreInput(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.width = 70
+	model.height = 16
+	model.snapshot.Page = tuiPageProfiles
+	model.snapshot.FocusSidebar = false
+	model.inputMode = tuiInputSubscription
+	model.inputValue = []rune("https://example.test/subscription")
+	model.enqueueNotification(tuiNotification{
+		level:   tuiNotificationWarning,
+		message: strings.Repeat("older message section ", 40),
+	})
+	model.enqueueNotification(tuiNotification{
+		level:   tuiNotificationSuccess,
+		message: "newest message",
+	})
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if !model.notificationDetailOpen || model.notificationSelected != 0 {
+		t.Fatalf("Ctrl+N did not select newest unread notification: %+v", model)
+	}
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if model.notificationSelected != 1 || model.notificationScroll == 0 {
+		t.Fatalf("notification selection or detail scrolling failed: %+v", model)
+	}
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if model.notificationDetailOpen || model.inputMode != tuiInputSubscription {
+		t.Fatalf("closing details did not restore input state: %+v", model)
+	}
+	plain := stripTUIANSI(model.View())
+	if !strings.Contains(plain, "Import subscription") ||
+		!strings.Contains(plain, "example.test") {
+		t.Fatalf("input view was not restored after notification details:\n%s", plain)
+	}
+	key, ok := tuiKeyFromTea(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if !ok || key != tuiKeyNotifications {
+		t.Fatalf("Ctrl+N key = (%v, %v)", key, ok)
 	}
 }
 
@@ -422,18 +544,19 @@ func TestTUINotificationLogsRedactSensitiveURLs(t *testing.T) {
 	}
 }
 
-func TestTUIQuitClosesFrontendFromNotificationPage(t *testing.T) {
+func TestTUIQuitClosesFrontendFromNotificationDetails(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.enqueueNotification(tuiNotification{
 		level:   tuiNotificationInfo,
 		message: "A notification is open",
 	})
+	model.toggleNotificationDetails()
 	command := model.handleTeaKey(tea.KeyMsg{
 		Type:  tea.KeyRunes,
 		Runes: []rune{'q'},
 	})
 	if command == nil || !model.frontendExitRequested {
-		t.Fatal("q did not request frontend exit from the notification page")
+		t.Fatal("q did not request frontend exit from notification details")
 	}
 	if _, ok := command().(tea.QuitMsg); !ok {
 		t.Fatal("q did not return Bubble Tea's quit message")
@@ -2177,6 +2300,19 @@ func TestTUITrafficLegendMatchesSeriesColorsAndResetsBorder(t *testing.T) {
 		tuiTrafficChartDownload+"↓ 2.0 KB/s"+tuiReset,
 	) {
 		t.Fatalf("traffic legend does not match series colors: %q", legend)
+	}
+	example := formatTUITrafficLegend(
+		trafficSnapshot{Up: 1021, Down: 18},
+		2048,
+	)
+	if !strings.Contains(
+		example,
+		tuiTrafficChartUpload+"↑ 1021.0 B/s"+tuiReset,
+	) || !strings.Contains(
+		example,
+		tuiTrafficChartDownload+"↓ 18.0 B/s"+tuiReset,
+	) {
+		t.Fatalf("live traffic values do not match chart colors: %q", example)
 	}
 
 	var output strings.Builder
@@ -4334,13 +4470,14 @@ func TestWrapTUIIndexNormalizesStaleSelections(t *testing.T) {
 }
 
 func TestReadTUIKeys(t *testing.T) {
-	keys := make(chan tuiKey, 7)
-	go readTUIKeys(bytes.NewBufferString("rsp\t\x1b[Z\x1b[1;5Aq"), keys)
+	keys := make(chan tuiKey, 8)
+	go readTUIKeys(bytes.NewBufferString("rsp\t\x0e\x1b[Z\x1b[1;5Aq"), keys)
 	want := []tuiKey{
 		tuiKeyRefresh,
 		tuiKeyDown,
 		tuiKeySetPort,
 		tuiKeyFocusNext,
+		tuiKeyNotifications,
 		tuiKeyFocusPrevious,
 		tuiKeyUp,
 		tuiKeyQuit,

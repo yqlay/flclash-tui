@@ -210,61 +210,60 @@ const (
 )
 
 type tuiSnapshot struct {
-	Page                 tuiPage
-	Groups               []tuiGroup
-	GroupOrder           []string
-	Traffic              trafficSnapshot
-	TrafficHistory       []trafficSnapshot
-	TotalTraffic         trafficSnapshot
-	Connections          []tuiConnection
-	Requests             []tuiRequest
-	Logs                 []string
-	Profiles             []tuiProfile
-	Providers            []tuiProvider
-	Settings             tuiSettings
-	Network              tuiNetworkInfo
-	Memory               tuiMemoryInfo
-	DashboardDelay       tuiDelayResult
-	DashboardSpeed       tuiSpeedResult
-	Update               tuiUpdateInfo
-	UpdatedAt            time.Time
-	Status               string
-	SelectedGroup        int
-	SelectedNode         int
-	SelectedRow          int
-	SelectedProvider     int
-	SelectedConnection   int
-	SelectedRequest      int
-	SelectedMenu         int
-	SelectedDashboard    int
-	SelectedSetting      int
-	SelectedTool         int
-	SelectedMaintenance  int
-	DashboardScroll      int
-	ProxyView            int
-	ProxyNodeFocus       bool
-	FocusSidebar         bool
-	ShowHelp             bool
-	ServiceRunning       bool
-	ExternalCore         bool
-	ManagedService       bool
-	FLCEnabled           bool
-	FLCOutbound          string
-	ConfiguredProxyPort  int
-	ActiveProxyPort      int
-	Frontends            []cliProcessOwner
-	InputTitle           string
-	InputValue           string
-	InputHint            string
-	SelectionTitle       string
-	SelectionOptions     []string
-	SelectedOption       int
-	SelectionHint        string
-	NotificationTitle    string
-	NotificationMessage  string
-	NotificationLevel    string
-	NotificationProgress bool
-	NotificationScroll   int
+	Page                   tuiPage
+	Groups                 []tuiGroup
+	GroupOrder             []string
+	Traffic                trafficSnapshot
+	TrafficHistory         []trafficSnapshot
+	TotalTraffic           trafficSnapshot
+	Connections            []tuiConnection
+	Requests               []tuiRequest
+	Logs                   []string
+	Profiles               []tuiProfile
+	Providers              []tuiProvider
+	Settings               tuiSettings
+	Network                tuiNetworkInfo
+	Memory                 tuiMemoryInfo
+	DashboardDelay         tuiDelayResult
+	DashboardSpeed         tuiSpeedResult
+	Update                 tuiUpdateInfo
+	UpdatedAt              time.Time
+	Status                 string
+	SelectedGroup          int
+	SelectedNode           int
+	SelectedRow            int
+	SelectedProvider       int
+	SelectedConnection     int
+	SelectedRequest        int
+	SelectedMenu           int
+	SelectedDashboard      int
+	SelectedSetting        int
+	SelectedTool           int
+	SelectedMaintenance    int
+	DashboardScroll        int
+	ProxyView              int
+	ProxyNodeFocus         bool
+	FocusSidebar           bool
+	ShowHelp               bool
+	ServiceRunning         bool
+	ExternalCore           bool
+	ManagedService         bool
+	FLCEnabled             bool
+	FLCOutbound            string
+	ConfiguredProxyPort    int
+	ActiveProxyPort        int
+	Frontends              []cliProcessOwner
+	InputTitle             string
+	InputValue             string
+	InputHint              string
+	SelectionTitle         string
+	SelectionOptions       []string
+	SelectedOption         int
+	SelectionHint          string
+	Notifications          []tuiNotification
+	NotificationDetailOpen bool
+	NotificationSelected   int
+	NotificationScroll     int
 }
 
 type trafficSnapshot struct {
@@ -2168,6 +2167,7 @@ const (
 	tuiKeySpeedTest
 	tuiKeyPageUp
 	tuiKeyPageDown
+	tuiKeyNotifications
 )
 
 func readTUIKeys(reader io.Reader, keys chan<- tuiKey) {
@@ -2187,6 +2187,8 @@ func readTUIKeysSynchronized(reader io.Reader, keys chan<- tuiKey, handled <-cha
 			key = tuiKeyQuit
 		case 3:
 			key = tuiKeyInterrupt
+		case 14:
+			key = tuiKeyNotifications
 		case 'r':
 			key = tuiKeyRefresh
 		case 'R':
@@ -2407,9 +2409,6 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	if width <= 0 || height <= 0 {
 		return ""
 	}
-	if snapshot.NotificationMessage != "" {
-		return renderTUINotification(snapshot, width, height)
-	}
 	if width < 40 || height < 10 {
 		return renderTUITiny(snapshot, ownsCore, coreRunning, width, height)
 	}
@@ -2475,7 +2474,7 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	if snapshot.Page == tuiPageDashboard && bodyHeight < 33 {
 		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  q exit TUI  ^C shutdown"
 	}
-	b.WriteString(tuiClampAnsiLine(footer, width))
+	b.WriteString(tuiNotificationFooter(snapshot, footer, width))
 	return b.String()
 }
 
@@ -2508,7 +2507,9 @@ func renderTUICompact(
 	contentWidth := width - 2
 	var page string
 	switch {
-	case snapshot.SelectionTitle != "" || snapshot.InputTitle != "":
+	case snapshot.NotificationDetailOpen ||
+		snapshot.SelectionTitle != "" ||
+		snapshot.InputTitle != "":
 		page = tuiRenderPage(
 			snapshot,
 			paths,
@@ -2555,7 +2556,7 @@ func renderTUICompact(
 	} else if snapshot.Page == tuiPageDashboard {
 		footer = "  ↑↓/ws select · PgUp/PgDn scroll · Esc nav · q"
 	}
-	b.WriteString(tuiClampAnsiLine(footer, width))
+	b.WriteString(tuiNotificationFooter(snapshot, footer, width))
 	return b.String()
 }
 
@@ -2707,6 +2708,14 @@ func renderTUITiny(
 		"FlClash " + tuiCoreStatus(ownsCore, coreRunning),
 		fmt.Sprintf("%d %s", int(snapshot.Page)+1, tuiPageName(snapshot.Page)),
 	}
+	if snapshot.NotificationDetailOpen {
+		lines = append(lines, tuiNotificationTinyDetail(snapshot, width)...)
+	} else if notification, ok := tuiLatestUnreadNotification(snapshot.Notifications); ok {
+		lines = append(lines, tuiNotificationTinySummary(notification, width))
+	}
+	if height > 0 && len(lines) >= height {
+		lines = lines[:height-1]
+	}
 	lines = append(lines, "q exit TUI · ^C shutdown")
 	var b strings.Builder
 	for row := 0; row < height; row++ {
@@ -2754,7 +2763,9 @@ func (w *tuiFrameWriter) invalidate() {
 
 func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) string {
 	var b strings.Builder
-	if snapshot.SelectionTitle != "" {
+	if snapshot.NotificationDetailOpen {
+		drawTUINotificationDetails(&b, snapshot, width, height)
+	} else if snapshot.SelectionTitle != "" {
 		drawTUISelection(&b, snapshot, width)
 	} else if snapshot.InputTitle != "" {
 		drawTUIInput(&b, snapshot, width)
@@ -2828,6 +2839,8 @@ const (
 	tuiDim    = "\x1b[2m"
 	tuiCyan   = "\x1b[36m"
 	tuiGreen  = "\x1b[32m"
+	tuiYellow = "\x1b[33m"
+	tuiRed    = "\x1b[31m"
 	tuiSelect = "\x1b[48;5;24m\x1b[97m"
 )
 
@@ -3311,6 +3324,7 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
 		"Settings       Enter applies row · a LAN · v IPv6 · p port",
 		"Maintenance    Edit, backup, restore, Geo, traffic reset, and updates",
+		"Notifications  Ctrl+N opens history/details · Enter confirms · Esc closes",
 		"Exit           q exits this TUI · Ctrl+C shuts down Backend and Core",
 	}
 	if height < 28 {

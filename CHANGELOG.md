@@ -1,3 +1,12 @@
+## FlClash TUI v0.5.9
+
+- Restore non-blocking, color-coded notification summaries in the lower-right
+  footer and keep normal TUI navigation available while feedback is pending.
+- Add `Ctrl+N` notification history and full-message details inside the existing
+  TUI header, sidebar, and panel frame, with confirmation and scrolling.
+- Keep the live upload/download speed legend matched to the chart's blue and
+  green series colors without bleeding into surrounding borders.
+
 ## FlClash TUI v0.5.8
 
 - Restore the original line-only 30-sample traffic chart without area fills or

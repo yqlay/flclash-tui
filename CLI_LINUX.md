@@ -181,6 +181,7 @@ Enter           open/apply selected row        Esc           back
 r / R           refresh / reload config         ?             help
 [/]             Groups/Providers                PgUp/PgDn     Dashboard scroll
 d / v           page-scoped delay / speed       n             network/import
+Ctrl+N          notification history/details
 S / c / t / m   System proxy/Core/TUN/mode list p, +, -       Proxy port
 U, F2/u, e      update/rename/edit Profile      x             clear/close all
 q               exit only this TUI               Ctrl+C        shutdown Backend + Core
@@ -197,11 +198,12 @@ Long-running tests run outside the input loop; group speed tests are serial and
 each node uses four download streams for at most 100 MB or five seconds. Delay
 tests use five samples and show median/jitter when space permits.
 
-Operation progress, results, warnings, and errors open on a dedicated
-notification page instead of being appended to the footer. Enter confirms and
-closes the current notification, Esc closes it without changing the underlying
-page, and ↑/↓ or PgUp/PgDn scroll long messages. Notifications are also written
-to Logs; repeated progress for one operation replaces its previous entry.
+Operation progress, results, warnings, and errors appear as non-blocking,
+color-coded summaries at the lower right. `Ctrl+N` opens the latest 50 entries
+inside the existing TUI frame: ↑/↓ selects an entry, PgUp/PgDn scrolls its full
+message, Enter confirms it, and Esc returns to the unchanged underlying page.
+Notifications are also written to Logs; repeated progress for one operation
+updates and moves its existing history entry instead of creating duplicates.
 
 Application events use timestamped INFO/WARN/ERROR records. The TUI keeps the latest 500 entries; `flclash logs` reads the persistent Backend log, which rotates at 5 MiB and keeps one backup. Subscription URLs, YAML contents, and FLC credentials are not logged.
 
