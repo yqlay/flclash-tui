@@ -282,8 +282,8 @@ rules:
 	if !status.Running || !status.FLCEnabled || status.SystemProxy {
 		t.Fatalf("started default silent status = %+v", status)
 	}
-	if waitForTUIProxyPortState(proxyPort, true, 150*time.Millisecond) {
-		t.Fatal("normal proxy port opened after starting default silent mode")
+	if !waitForTUIProxyPortState(proxyPort, true, 2*time.Second) {
+		t.Fatal("unified proxy port did not open after starting default silent mode")
 	}
 	privateStatus, err := service.flcProxy()
 	if err != nil {
@@ -292,6 +292,9 @@ rules:
 	privateURL, err := url.Parse(privateStatus.FLCProxyURL)
 	if err != nil || privateURL.User == nil || privateURL.Hostname() != "127.0.0.1" {
 		t.Fatalf("private FLC URL = %q, %v", privateStatus.FLCProxyURL, err)
+	}
+	if privateURL.Port() != strconv.Itoa(proxyPort) {
+		t.Fatalf("private FLC port = %s, want unified port %d", privateURL.Port(), proxyPort)
 	}
 
 	after, err := os.ReadFile(configPath)
@@ -648,8 +651,8 @@ rules:
 		status.SystemProxy || status.FLCOutbound != "PROXY" {
 		t.Fatalf("silent status = %+v", status)
 	}
-	if !waitForTUITestPort(proxyPort, false, 2*time.Second) {
-		t.Fatal("normal Proxy port remained open in silent mode")
+	if !waitForTUITestPort(proxyPort, true, 2*time.Second) {
+		t.Fatal("unified Proxy port closed in silent mode")
 	}
 	privateStatus, err := service.flcProxy()
 	if err != nil {
@@ -658,6 +661,9 @@ rules:
 	privateURL, err := url.Parse(privateStatus.FLCProxyURL)
 	if err != nil || privateURL.User == nil || privateURL.Hostname() != "127.0.0.1" {
 		t.Fatalf("private FLC URL = %q, %v", privateStatus.FLCProxyURL, err)
+	}
+	if privateURL.Port() != strconv.Itoa(proxyPort) {
+		t.Fatalf("private FLC port = %s, want unified port %d", privateURL.Port(), proxyPort)
 	}
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -723,8 +729,8 @@ rules:
 		failedStatus.Revision != status.Revision {
 		t.Fatalf("failed mode transaction status = %+v", failedStatus)
 	}
-	if !waitForTUITestPort(proxyPort, false, 2*time.Second) {
-		t.Fatal("normal Proxy port opened after a failed silent-mode transaction")
+	if !waitForTUITestPort(proxyPort, true, 2*time.Second) {
+		t.Fatal("unified Proxy port closed after a failed silent-mode transaction")
 	}
 	afterRollback, readErr := os.ReadFile(configPath)
 	if readErr != nil {

@@ -60,6 +60,11 @@ jobs:
           CGO_ENABLED=0 GOOS=linux go test -tags cli ./...
           CGO_ENABLED=0 GOOS=linux go vet -tags cli ./...
 
+      - name: Test installer
+        run: |
+          bash -n install.sh packaging/install-script-test.sh
+          bash packaging/install-script-test.sh
+
       - name: Test Windows helper
         working-directory: services/helper
         run: |
@@ -177,6 +182,14 @@ jobs:
           path: ./dist/
           pattern: artifact-*
           merge-multiple: true
+
+      - name: Add installer and checksums
+        run: |
+          install -m 0755 install.sh ./dist/install.sh
+          (
+            cd ./dist
+            sha256sum flclash-tui_*.deb flclash-tui_*.tar.gz > SHA256SUMS
+          )
 
       - name: Generate release.md
         env:

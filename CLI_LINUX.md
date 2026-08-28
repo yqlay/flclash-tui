@@ -1,6 +1,6 @@
 # FlClash Linux CLI/TUI quick reference
 
-This file is a compact installed-manual companion. The complete English guide is [README.md](README.md); the complete Chinese guide is [README_zh_CN.md](README_zh_CN.md). Runtime help is available through `flclash --help`, `flclash COMMAND --help`, and `flc --help`.
+This is the complete Linux CLI/TUI reference. The concise Chinese landing page is [README.md](README.md), with an English version in [README_EN.md](README_EN.md). Runtime help is available through `flclash --help`, `flclash COMMAND --help`, and `flc --help`.
 
 ## Build and install
 
@@ -83,6 +83,7 @@ Profiles and configuration:
 flclash profile list [--json]
 flclash profile current
 flclash profile import URL
+flclash profile import-file /path/to/config.yaml
 flclash profile use NAME
 flclash profile update [NAME]
 flclash profile rename NAME NEW_NAME
@@ -103,14 +104,16 @@ flclash proxy select GROUP NODE
 flclash proxy delay NODE [--test-url URL]
 flclash proxy speed NODE
 
-flclash history show [--follow] [--json]
+flclash history show [--follow] [--json] [--state all|active|done] [--search TEXT] [--limit N]
 flclash history clear
 flclash connections show [--json]
 flclash connections close ID
 flclash connections close all
 ```
 
-History is Backend's shared, up-to-500-entry record derived from active Mihomo connections. It contains active and recently completed flows, not HTTP bodies. `history clear` does not close connections; `connections close all` does not erase History.
+History is Backend's shared, persistent, up-to-500-entry record derived from active Mihomo connections. It contains active and recently completed flows, not HTTP bodies. Backend reloads it after restart; restored entries begin as completed until Mihomo reports them active again. `history clear` clears both memory and disk without closing connections, while `connections close all` does not erase History.
+
+`profile import-file` validates and copies a regular `.yaml`/`.yml` file into the FlClash data directory without modifying the source. It preserves the basename and adds `-2`, `-3`, and so on when needed. Internal `.flclash-silent-runtime-*` and `.flclash-managed-runtime-*` YAML files are never shown as Profiles.
 
 TUN scope is explicit:
 
@@ -140,7 +143,7 @@ Compatibility aliases include `service`, `system-proxy`, `outbound-mode`, `mixed
 
 ## Silent mode and `flc`
 
-`silent` is the default. It does not proactively take over user network connections: ordinary applications remain direct and only `flc`-prefixed commands use FlClash. Backend disables normal ports, System proxy, TUN, LAN/DNS/controller/user listeners in a temporary runtime overlay. Once an FLC outbound is selected it exposes one authenticated loopback listener; before that it exposes no traffic entry, and Backend remains available with Core stopped. The shared YAML is not modified.
+`silent` is the default. It does not proactively take over user network connections: ordinary applications remain direct and only `flc`-prefixed commands use FlClash. Backend disables System proxy, TUN, LAN/DNS/controller/user listeners in a temporary runtime overlay. Once an FLC outbound is selected it exposes one authenticated loopback listener on the same runtime Proxy port used by native modes; before that it exposes no traffic entry, and Backend remains available with Core stopped. The shared YAML is not modified.
 
 ```bash
 flclash flc select PROXY
@@ -161,10 +164,10 @@ Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availa
 ```text
 1 Dashboard     Core/System proxy/TUN/Mode/Proxy port/network/memory/traffic
 2 Proxies       groups/nodes/Providers, selection, delay and speed tests
-3 Profiles      import/activate/update/rename/edit
-4 History       shared active and recent connection history
+3 Profiles      import URL/local YAML, activate, update, rename, edit
+4 History       persistent shared active and recent connection history
 5 Connections   current Core connections and close actions
-6 Logs          captured Core events, export and clear
+6 Logs          Core and application events, export and clear
 7 Settings      complete traffic/Core/System proxy settings
 8 Maintenance   YAML edit, backup/restore, Geo, traffic reset, update check
 ```
@@ -181,6 +184,8 @@ q               detach this TUI                 Ctrl+C        shutdown Backend +
 ```
 
 The layout remains operable down to `40x10`. Long-running tests run outside the input loop; group speed tests are serial and each node uses four download streams for at most 100 MB or five seconds. Delay tests use five samples and show median/jitter when space permits.
+
+Application events use timestamped INFO/WARN/ERROR records. The TUI keeps the latest 500 entries; `flclash logs` reads the persistent Backend log, which rotates at 5 MiB and keeps one backup. Subscription URLs, YAML contents, and FLC credentials are not logged.
 
 Selecting Mode, or pressing `m` on Dashboard/Settings, opens the `rule`, `silent`, `global`, and `direct` list before making any change. Use ↑/↓ or `w`/`s` and press Enter to confirm.
 

@@ -104,6 +104,7 @@ const (
 	tuiInputMixedPort
 	tuiInputFLCOutbound
 	tuiInputSubscription
+	tuiInputProfileFile
 	tuiInputProfileName
 )
 
@@ -174,7 +175,7 @@ func newTUIModel(
 			Settings:          settings,
 			SelectedGroup:     0,
 			SelectedNode:      0,
-			SelectedRow:       -1,
+			SelectedRow:       tuiProfileImportSubscriptionRow,
 			SelectedMenu:      int(tuiPageDashboard),
 			SelectedDashboard: tuiDashboardSystemProxyRow,
 			FocusSidebar:      true,
@@ -472,6 +473,13 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				message.state.profileSelection,
 			)
 		}
+		level := "INFO"
+		if strings.Contains(strings.ToLower(m.snapshot.Status), "failed") ||
+			strings.Contains(strings.ToLower(m.snapshot.Status), "error") {
+			level = "ERROR"
+		}
+		appendTUILogEvent(level, m.snapshot.Status)
+		m.snapshot.Logs = cliLogSnapshot()
 		commands := []tea.Cmd{m.startRefresh()}
 		if m.networkCheckRoute() != previousRoute {
 			commands = append(commands, m.startNetworkCheck(true))
@@ -685,6 +693,8 @@ func (m *tuiModel) inputPresentation() (string, string) {
 		return "Select FLC outbound", "Type an exact proxy or proxy-group name"
 	case tuiInputSubscription:
 		return "Import subscription", "Paste a Clash/Mihomo subscription URL"
+	case tuiInputProfileFile:
+		return "Import local YAML", "Type an absolute, relative, or ~/ path"
 	case tuiInputProfileName:
 		return "Rename profile", "Type a file name; .yaml is added automatically"
 	default:
@@ -972,7 +982,7 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 		)
 	}
 	if importSelected {
-		updated.SelectedRow = -1
+		updated.SelectedRow = current.SelectedRow
 	} else {
 		updated.SelectedRow = findTUIProfile(updated.Profiles, selectedProfilePath)
 	}
@@ -1424,8 +1434,10 @@ func (m *tuiModel) moveSelection(delta int) {
 	switch m.snapshot.Page {
 	case tuiPageProfiles:
 		moveTUIProfile(&m.snapshot, delta)
-		if m.snapshot.SelectedRow < 0 {
+		if m.snapshot.SelectedRow == tuiProfileImportSubscriptionRow {
 			m.snapshot.Status = "Enter to import a subscription URL"
+		} else if m.snapshot.SelectedRow == tuiProfileImportFileRow {
+			m.snapshot.Status = "Enter to copy and import a local YAML file"
 		} else if m.snapshot.SelectedRow < len(m.snapshot.Profiles) {
 			profile := m.snapshot.Profiles[m.snapshot.SelectedRow]
 			if profile.Current {
@@ -2171,8 +2183,12 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			}
 		})
 	case tuiPageProfiles:
-		if m.snapshot.SelectedRow < 0 {
+		if m.snapshot.SelectedRow == tuiProfileImportSubscriptionRow {
 			m.beginInput(tuiInputSubscription)
+			return nil
+		}
+		if m.snapshot.SelectedRow == tuiProfileImportFileRow {
+			m.beginInput(tuiInputProfileFile)
 			return nil
 		}
 		if m.service == nil {
@@ -3234,6 +3250,49 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			state.snapshot.SelectedRow = findTUIProfile(state.snapshot.Profiles, path)
 			state.profileSelection = path
 		})
+	case tuiInputProfileFile:
+		if value == "" {
+			m.snapshot.Status = "Local profile import cancelled"
+			return nil
+		}
+		if m.service == nil {
+			m.snapshot.Status = "Local profile import requires the managed backend"
+			return nil
+		}
+		data, name, err := readTUILocalProfile(value)
+		if err != nil {
+			m.snapshot.Status = "Import local profile failed: " + err.Error()
+			appendTUILogEvent("ERROR", m.snapshot.Status)
+			return nil
+		}
+		return m.startOperation(func(state *tuiOperationState) {
+			if !prepareTUIBackendRevision(state, m.service) {
+				return
+			}
+			path, err := nextTUIImportedProfilePath(state.paths.homeDir, name)
+			if err != nil {
+				state.snapshot.Status = "Import local profile failed: " + err.Error()
+				return
+			}
+			status, err := m.service.putProfile(
+				path,
+				data,
+				"",
+				true,
+				nil,
+				state.backendRevision,
+			)
+			if err != nil {
+				state.snapshot.Status = "Import local profile failed: " + err.Error()
+				return
+			}
+			state.backendRevision = status.Revision
+			path = status.ResultPath
+			state.snapshot.Status = "Local profile imported: " + filepath.Base(path)
+			refreshTUIProfiles(&state.snapshot, state.paths)
+			state.snapshot.SelectedRow = findTUIProfile(state.snapshot.Profiles, path)
+			state.profileSelection = path
+		})
 	case tuiInputProfileName:
 		if value == "" {
 			m.snapshot.Status = "Profile rename cancelled"
@@ -3368,6 +3427,81 @@ func downloadTUIProfile(homeDir, value string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func readTUILocalProfile(value string) ([]byte, string, error) {
+	path := strings.TrimSpace(value)
+	if path == "" {
+		return nil, "", errors.New("profile path must not be empty")
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		if path == "~" {
+			path = homeDir
+		} else {
+			path = filepath.Join(homeDir, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, "", err
+	}
+	info, err := os.Lstat(absolutePath)
+	if err != nil {
+		return nil, "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, "", errors.New("profile must be a regular file, not a symlink")
+	}
+	name := filepath.Base(absolutePath)
+	extension := strings.ToLower(filepath.Ext(name))
+	if extension != ".yaml" && extension != ".yml" {
+		return nil, "", errors.New("profile file must end in .yaml or .yml")
+	}
+	if info.Size() > tuiSubscriptionMaxBytes {
+		return nil, "", fmt.Errorf(
+			"profile content exceeds %d MiB",
+			tuiSubscriptionMaxBytes>>20,
+		)
+	}
+	data, err := os.ReadFile(absolutePath)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(data) == 0 {
+		return nil, "", errors.New("profile content must not be empty")
+	}
+	if message := validateConfigBytes(data); message != "" {
+		return nil, "", errors.New("profile is invalid: " + message)
+	}
+	return data, name, nil
+}
+
+func nextTUIImportedProfilePath(homeDir, sourceName string) (string, error) {
+	extension := strings.ToLower(filepath.Ext(sourceName))
+	stem := strings.TrimSuffix(filepath.Base(sourceName), filepath.Ext(sourceName))
+	if extension != ".yaml" && extension != ".yml" || stem == "" {
+		return "", errors.New("profile file must end in .yaml or .yml")
+	}
+	if isTUIRuntimeProfileName(sourceName) {
+		stem = "imported-" + strings.TrimLeft(stem, ".")
+	}
+	for suffix := 1; suffix <= 10000; suffix++ {
+		name := stem + extension
+		if suffix > 1 {
+			name = fmt.Sprintf("%s-%d%s", stem, suffix, extension)
+		}
+		path := filepath.Join(homeDir, name)
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			return path, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
+	return "", errors.New("could not allocate a unique profile name")
 }
 
 func fetchTUISubscription(value string) ([]byte, error) {

@@ -1,3 +1,16 @@
+## FlClash TUI v0.5.5
+
+- Hide generated silent/managed runtime YAML files from Profile lists and add
+  explicit local YAML import in both TUI and CLI.
+- Reuse one runtime Proxy port across native and authenticated silent/FLC
+  listeners, with readiness shown separately from the port value.
+- Persist the shared 500-entry connection History across Backend restarts and
+  add state, text, and count filters to `history show`.
+- Add structured application events, sensitive-value redaction, bounded TUI
+  logs, and Backend log rotation.
+- Add a unified architecture-aware installer and simplify the Chinese and
+  English GitHub landing pages.
+
 ## FlClash TUI v0.5.4
 
 - Separate Backend-only `silent` and effective TUN state from the native mode

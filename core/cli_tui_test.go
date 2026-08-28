@@ -529,7 +529,7 @@ func TestTUIProfilesExposeSubscriptionImportAsSelectableRow(t *testing.T) {
 		{Name: "config.yaml", Path: "/tmp/config.yaml"},
 	}
 
-	if model.snapshot.SelectedRow != -1 {
+	if model.snapshot.SelectedRow != tuiProfileImportSubscriptionRow {
 		t.Fatalf("initial profile selection = %d, want import row", model.snapshot.SelectedRow)
 	}
 	if command := model.selectCurrent(); command != nil {
@@ -542,12 +542,116 @@ func TestTUIProfilesExposeSubscriptionImportAsSelectableRow(t *testing.T) {
 	model.inputMode = tuiInputNone
 	model.inputValue = nil
 	moveTUIProfile(&model.snapshot, 1)
+	if model.snapshot.SelectedRow != tuiProfileImportFileRow {
+		t.Fatalf("down from URL import selected row %d, want file import", model.snapshot.SelectedRow)
+	}
+	if command := model.selectCurrent(); command != nil {
+		t.Fatal("opening the local file input unexpectedly returned a command")
+	}
+	if model.inputMode != tuiInputProfileFile {
+		t.Fatalf("input mode = %d, want local file input", model.inputMode)
+	}
+	model.inputMode = tuiInputNone
+	moveTUIProfile(&model.snapshot, 1)
 	if model.snapshot.SelectedRow != 0 {
 		t.Fatalf("down from import selected row %d, want first profile", model.snapshot.SelectedRow)
 	}
 	moveTUIProfile(&model.snapshot, -1)
-	if model.snapshot.SelectedRow != -1 {
-		t.Fatalf("up from first profile selected row %d, want import", model.snapshot.SelectedRow)
+	if model.snapshot.SelectedRow != tuiProfileImportFileRow {
+		t.Fatalf("up from first profile selected row %d, want file import", model.snapshot.SelectedRow)
+	}
+}
+
+func TestTUIProfilesHideManagedRuntimeFiles(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	for _, name := range []string{
+		"config.yaml",
+		"work.yml",
+		tuiSilentRuntimeConfigPrefix + "0123456789abcdef01234567.yaml",
+		tuiManagedRuntimeConfigPrefix + "89abcdef0123456789abcdef.yaml",
+	} {
+		if err := os.WriteFile(
+			filepath.Join(directory, name),
+			[]byte(defaultTUIConfig),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths := cliPaths{homeDir: directory, configPath: configPath}
+	snapshot := tuiSnapshot{SelectedRow: tuiProfileImportSubscriptionRow}
+	refreshTUIProfiles(&snapshot, paths)
+	if len(snapshot.Profiles) != 2 {
+		t.Fatalf("TUI profiles = %+v, want only user profiles", snapshot.Profiles)
+	}
+	profiles, err := listCLIProfiles(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("CLI profiles = %+v, want only user profiles", profiles)
+	}
+	for _, profile := range append(snapshot.Profiles, profiles...) {
+		if isTUIRuntimeProfileName(profile.Name) {
+			t.Fatalf("runtime profile remained visible: %s", profile.Name)
+		}
+	}
+}
+
+func TestTUILocalProfileImportReadsAndAllocatesSafeName(t *testing.T) {
+	sourceDirectory := t.TempDir()
+	homeDir := t.TempDir()
+	sourcePath := filepath.Join(sourceDirectory, "office.yaml")
+	if err := os.WriteFile(sourcePath, []byte(defaultTUIConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(homeDir, "office.yaml"),
+		[]byte(defaultTUIConfig),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	data, name, err := readTUILocalProfile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "office.yaml" || string(data) != defaultTUIConfig {
+		t.Fatalf("local import = %q %q", name, data)
+	}
+	destination, err := nextTUIImportedProfilePath(homeDir, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(destination) != "office-2.yaml" {
+		t.Fatalf("collision destination = %s", destination)
+	}
+	if _, err := os.Stat(sourcePath); err != nil {
+		t.Fatalf("reading local profile changed its source: %v", err)
+	}
+}
+
+func TestTUIProxyPortShowsOneCurrentValue(t *testing.T) {
+	snapshot := tuiSnapshot{
+		Settings:        tuiSettings{Mode: tuiSilentMode, MixedPort: 7891},
+		ActiveProxyPort: 45678,
+		FLCEnabled:      true,
+		FLCOutbound:     "PROXY",
+	}
+	if label := tuiProxyPortLabel(snapshot); label != "45678" {
+		t.Fatalf("active unified port label = %q", label)
+	}
+	if label := tuiFLCOutboundLabel(snapshot); label != "PROXY · READY" {
+		t.Fatalf("ready FLC label = %q", label)
+	}
+	snapshot.ActiveProxyPort = 0
+	snapshot.FLCEnabled = false
+	if label := tuiProxyPortLabel(snapshot); label != "7891" {
+		t.Fatalf("stopped unified port label = %q", label)
+	}
+	if label := tuiFLCOutboundLabel(snapshot); label != "PROXY · WAITING FOR CORE" {
+		t.Fatalf("waiting FLC label = %q", label)
 	}
 }
 
@@ -1220,6 +1324,28 @@ func TestTUILogExportAndClear(t *testing.T) {
 	if len(model.snapshot.Logs) != 0 || len(cliLogSnapshot()) != 0 {
 		t.Fatal("clearing logs left captured entries behind")
 	}
+}
+
+func TestCLIApplicationLogRedactsURLsAndDataDirectory(t *testing.T) {
+	directory := t.TempDir()
+	appendCLIApplicationLog(
+		directory,
+		"WARN",
+		"profile_import",
+		"source https://secret.example/token in "+directory,
+	)
+	data, err := os.ReadFile(filepath.Join(directory, tuiServiceLogFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := string(data)
+	if strings.Contains(line, "secret.example") || strings.Contains(line, directory) {
+		t.Fatalf("application log leaked sensitive detail: %q", line)
+	}
+	if !strings.Contains(line, "[redacted-url]") || !strings.Contains(line, "$DATA") {
+		t.Fatalf("application log did not mark redaction: %q", line)
+	}
+	clearTUILogs()
 }
 
 func TestTUIEditKeyIsPageScoped(t *testing.T) {

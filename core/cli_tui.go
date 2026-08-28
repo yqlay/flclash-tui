@@ -201,6 +201,12 @@ type tuiProfile struct {
 	SubscriptionURL string
 }
 
+const (
+	tuiProfileImportSubscriptionRow = -2
+	tuiProfileImportFileRow         = -1
+	tuiProfileImportRowCount        = 2
+)
+
 type tuiSnapshot struct {
 	Page                tuiPage
 	Groups              []tuiGroup
@@ -527,7 +533,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 		GroupOrder:        loadTUIProxyGroupOrder(paths.configPath),
 		SelectedGroup:     0,
 		SelectedNode:      0,
-		SelectedRow:       -1,
+		SelectedRow:       tuiProfileImportSubscriptionRow,
 		SelectedMenu:      int(tuiPageDashboard),
 		SelectedDashboard: tuiDashboardSystemProxyRow,
 		FocusSidebar:      true,
@@ -1353,7 +1359,8 @@ func updateTUIRequestHistory(
 }
 
 func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
-	importSelected := snapshot.SelectedRow < 0
+	selectedImportRow := snapshot.SelectedRow
+	importSelected := selectedImportRow < 0
 	selectedProfilePath := ""
 	if snapshot.SelectedRow >= 0 && snapshot.SelectedRow < len(snapshot.Profiles) {
 		selectedProfilePath = snapshot.Profiles[snapshot.SelectedRow].Path
@@ -1368,6 +1375,9 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 	currentFound := false
 	for _, entry := range entries {
 		if entry.IsDir() {
+			continue
+		}
+		if isTUIRuntimeProfileName(entry.Name()) {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(entry.Name()))
@@ -1406,7 +1416,11 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 	sort.Slice(profiles, func(i, j int) bool { return profiles[i].Name < profiles[j].Name })
 	snapshot.Profiles = profiles
 	if importSelected {
-		snapshot.SelectedRow = -1
+		snapshot.SelectedRow = selectedImportRow
+		if snapshot.SelectedRow < tuiProfileImportSubscriptionRow ||
+			snapshot.SelectedRow > tuiProfileImportFileRow {
+			snapshot.SelectedRow = tuiProfileImportSubscriptionRow
+		}
 		return
 	}
 	snapshot.SelectedRow = 0
@@ -1656,9 +1670,13 @@ func moveTUIProvider(snapshot *tuiSnapshot, delta int) {
 }
 
 func moveTUIProfile(snapshot *tuiSnapshot, delta int) {
-	position := snapshot.SelectedRow + 1
-	position = wrapTUIIndex(position, delta, len(snapshot.Profiles)+1)
-	snapshot.SelectedRow = position - 1
+	position := snapshot.SelectedRow + tuiProfileImportRowCount
+	position = wrapTUIIndex(
+		position,
+		delta,
+		len(snapshot.Profiles)+tuiProfileImportRowCount,
+	)
+	snapshot.SelectedRow = position - tuiProfileImportRowCount
 }
 
 func moveTUIConnection(snapshot *tuiSnapshot, delta int) {
@@ -3843,7 +3861,7 @@ func drawTUISettings(b *strings.Builder, snapshot tuiSnapshot, width, height int
 func tuiSettingsRows(snapshot tuiSnapshot) []string {
 	return []string{
 		fmt.Sprintf("Mode          %s", snapshot.Settings.Mode),
-		fmt.Sprintf("FLC outbound  %s", cliDisplayValue(snapshot.FLCOutbound)),
+		fmt.Sprintf("FLC outbound  %s", tuiFLCOutboundLabel(snapshot)),
 		fmt.Sprintf("Proxy port    %s", tuiProxyPortLabel(snapshot)),
 		fmt.Sprintf("Allow LAN     %s", tuiOnOff(snapshot.Settings.AllowLAN)),
 		fmt.Sprintf("IPv6          %s", tuiOnOff(snapshot.Settings.IPv6)),
@@ -3861,6 +3879,17 @@ func tuiSettingsRows(snapshot tuiSnapshot) []string {
 		fmt.Sprintf("Core          %s", tuiServiceLabel(snapshot)),
 		fmt.Sprintf("System proxy  %s", tuiSystemProxyLabel(snapshot)),
 	}
+}
+
+func tuiFLCOutboundLabel(snapshot tuiSnapshot) string {
+	value := cliDisplayValue(snapshot.FLCOutbound)
+	if snapshot.Settings.Mode != tuiSilentMode || snapshot.FLCOutbound == "" {
+		return value
+	}
+	if snapshot.FLCEnabled {
+		return value + " · READY"
+	}
+	return value + " · WAITING FOR CORE"
 }
 
 func tuiServiceLabel(snapshot tuiSnapshot) string {
@@ -3908,24 +3937,13 @@ func tuiEffectiveTunScope(scope string) string {
 }
 
 func tuiProxyPortLabel(snapshot tuiSnapshot) string {
-	if snapshot.Settings.Mode == tuiSilentMode {
-		state := "FLC NOT READY"
-		if snapshot.FLCEnabled {
-			state = "FLC private listener ready"
-		}
-		return fmt.Sprintf(
-			"OFF · configured %d · %s",
-			snapshot.Settings.MixedPort,
-			state,
-		)
+	if snapshot.ActiveProxyPort > 0 {
+		return strconv.Itoa(snapshot.ActiveProxyPort)
 	}
-	if snapshot.Settings.MixedPort <= 0 {
-		return "OFF"
+	if snapshot.Settings.MixedPort > 0 {
+		return strconv.Itoa(snapshot.Settings.MixedPort)
 	}
-	if snapshot.ActiveProxyPort > 0 && snapshot.ActiveProxyPort != snapshot.Settings.MixedPort {
-		return fmt.Sprintf("%d active · configured %d", snapshot.ActiveProxyPort, snapshot.Settings.MixedPort)
-	}
-	return strconv.Itoa(snapshot.Settings.MixedPort)
+	return "NOT READY"
 }
 
 func tuiOnOff(enabled bool) string {
@@ -3946,20 +3964,36 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 		width,
 	)
 	limit := maxTUIWidth(height-3, 1)
-	selectedPosition := snapshot.SelectedRow + 1
-	start, end := tuiVisibleRange(len(snapshot.Profiles)+1, selectedPosition, limit)
+	selectedPosition := snapshot.SelectedRow + tuiProfileImportRowCount
+	start, end := tuiVisibleRange(
+		len(snapshot.Profiles)+tuiProfileImportRowCount,
+		selectedPosition,
+		limit,
+	)
 	for position := start; position < end; position++ {
 		if position == 0 {
 			tuiRow(
 				b,
 				"+ Import subscription URL",
 				width,
-				snapshot.SelectedRow < 0 && !snapshot.FocusSidebar,
+				snapshot.SelectedRow == tuiProfileImportSubscriptionRow &&
+					!snapshot.FocusSidebar,
 				tuiCyan,
 			)
 			continue
 		}
-		index := position - 1
+		if position == 1 {
+			tuiRow(
+				b,
+				"+ Import local YAML file",
+				width,
+				snapshot.SelectedRow == tuiProfileImportFileRow &&
+					!snapshot.FocusSidebar,
+				tuiCyan,
+			)
+			continue
+		}
+		index := position - tuiProfileImportRowCount
 		profile := snapshot.Profiles[index]
 		label := truncateTUI(profile.Name, width-42)
 		if profile.Current {

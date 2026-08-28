@@ -28,35 +28,38 @@ const (
 )
 
 type tuiServiceRuntime struct {
-	mu               sync.RWMutex
-	mutationMu       sync.Mutex
-	paths            cliPaths
-	testURL          string
-	coreSocket       string
-	coreController   controllerClient
-	setupParams      []byte
-	running          bool
-	shuttingDown     bool
-	systemProxy      bool
-	proxyPort        int
-	trafficMode      string
-	configuredPort   int
-	runtimePort      int
-	activePort       int
-	tunScope         string
-	tunEnabled       bool
-	tunLease         *tuiTunLease
-	actualConfigPath string
-	flc              tuiFLCListenerState
-	history          []tuiRequest
-	revision         uint64
-	changed          chan struct{}
-	dedup            map[string]tuiServiceStatus
-	dedupOrder       []string
-	shutdown         func()
-	routeClient      func(int) (*http.Client, func(), error)
-	routeSpeedTest   func(context.Context, *http.Client) (tuiSpeedResult, error)
-	routeDelayTest   func(context.Context, *http.Client, string) (tuiDelayResult, error)
+	mu                      sync.RWMutex
+	mutationMu              sync.Mutex
+	paths                   cliPaths
+	testURL                 string
+	coreSocket              string
+	coreController          controllerClient
+	setupParams             []byte
+	running                 bool
+	shuttingDown            bool
+	systemProxy             bool
+	proxyPort               int
+	trafficMode             string
+	configuredPort          int
+	runtimePort             int
+	activePort              int
+	tunScope                string
+	tunEnabled              bool
+	tunLease                *tuiTunLease
+	actualConfigPath        string
+	flc                     tuiFLCListenerState
+	history                 []tuiRequest
+	historyVersion          uint64
+	persistedHistoryVersion uint64
+	historyPersistMu        sync.Mutex
+	revision                uint64
+	changed                 chan struct{}
+	dedup                   map[string]tuiServiceStatus
+	dedupOrder              []string
+	shutdown                func()
+	routeClient             func(int) (*http.Client, func(), error)
+	routeSpeedTest          func(context.Context, *http.Client) (tuiSpeedResult, error)
+	routeDelayTest          func(context.Context, *http.Client, string) (tuiDelayResult, error)
 }
 
 func newTUIServiceRuntime(
@@ -289,10 +292,7 @@ func (r *tuiServiceRuntime) mutate(
 	case "select_proxy":
 		changed, err = r.selectProxy(request.ProxyGroup, request.ProxyName)
 	case "clear_history":
-		r.mu.Lock()
-		changed = len(r.history) > 0
-		r.history = nil
-		r.mu.Unlock()
+		changed, err = r.clearPersistentHistory()
 	case "close_connection":
 		if strings.TrimSpace(request.ConnectionID) == "" {
 			err = errors.New("connection ID is required")
@@ -322,6 +322,7 @@ func (r *tuiServiceRuntime) mutate(
 		changed = true
 	}
 	if err != nil {
+		r.logMutation(request, false, err)
 		return r.completeMutation(request, failTUIServiceStatus(
 			r.snapshot(request.RequestID),
 			tuiServiceErrorOperation,
@@ -338,7 +339,38 @@ func (r *tuiServiceRuntime) mutate(
 		r.mu.RUnlock()
 	}
 	status.ResultPath = resultPath
+	r.logMutation(request, true, nil)
 	return r.completeMutation(request, status)
+}
+
+func (r *tuiServiceRuntime) logMutation(
+	request tuiServiceRequest,
+	succeeded bool,
+	err error,
+) {
+	r.mu.RLock()
+	homeDir := r.paths.homeDir
+	r.mu.RUnlock()
+	level := "INFO"
+	result := "succeeded"
+	if !succeeded {
+		level = "ERROR"
+		result = "failed"
+	}
+	detail := result
+	if request.ConfigPath != "" {
+		detail += " profile=" + filepath.Base(request.ConfigPath)
+	}
+	if request.Mode != "" {
+		detail += " mode=" + request.Mode
+	}
+	if request.NewName != "" {
+		detail += " name=" + filepath.Base(request.NewName)
+	}
+	if err != nil {
+		detail += " error=" + err.Error()
+	}
+	appendCLIApplicationLog(homeDir, level, request.Action, detail)
 }
 
 func (r *tuiServiceRuntime) signalShutdown() {
@@ -873,6 +905,8 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	oldTunScope := r.tunScope
 	oldTunLease := r.tunLease
 	running := r.running
+	runtimePort := r.runtimePort
+	activePort := r.activePort
 	r.mu.RUnlock()
 	if mode == currentMode {
 		return false, nil
@@ -886,7 +920,14 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 		flc := tuiFLCListenerState{Outbound: outbound}
 		if outbound != "" {
 			var err error
-			flc, err = newTUIFLCListenerState(outbound)
+			port := activePort
+			if port <= 0 {
+				port = runtimePort
+			}
+			if port <= 0 {
+				port = oldSettings.MixedPort
+			}
+			flc, err = newTUIFLCListenerStateAtPort(outbound, port)
 			if err != nil {
 				return false, err
 			}
@@ -1122,6 +1163,8 @@ func (r *tuiServiceRuntime) applyFLCOutbound(outbound string) (bool, error) {
 	paths := r.paths
 	mode := r.trafficMode
 	previous := r.flc
+	runtimePort := r.runtimePort
+	activePort := r.activePort
 	r.mu.RUnlock()
 	if outbound == previous.Outbound {
 		return false, nil
@@ -1132,7 +1175,11 @@ func (r *tuiServiceRuntime) applyFLCOutbound(outbound string) (bool, error) {
 	next := tuiFLCListenerState{Outbound: outbound}
 	if mode == tuiSilentMode {
 		var err error
-		next, err = newTUIFLCListenerState(outbound)
+		port := activePort
+		if port <= 0 {
+			port = runtimePort
+		}
+		next, err = newTUIFLCListenerStateAtPort(outbound, port)
 		if err != nil {
 			return false, err
 		}
@@ -1245,10 +1292,12 @@ func (r *tuiServiceRuntime) historyStatus(requestID string) tuiServiceStatus {
 			uint32(os.Getuid()),
 			status.TunState == "on" && status.TunScope == tuiTunScopeSystem,
 		)
-		r.mu.Lock()
-		r.history = updateTUIRequestHistory(r.history, connections, time.Now())
-		status.History = append([]tuiRequest(nil), r.history...)
-		r.mu.Unlock()
+		r.mu.RLock()
+		previous := append([]tuiRequest(nil), r.history...)
+		r.mu.RUnlock()
+		updated := updateTUIRequestHistory(previous, connections, time.Now())
+		r.recordHistoryUpdate(updated)
+		status.History = append([]tuiRequest(nil), updated...)
 	} else {
 		r.mu.RLock()
 		status.History = append([]tuiRequest(nil), r.history...)

@@ -20,6 +20,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	logrus "github.com/sirupsen/logrus"
 )
 
 const (
@@ -28,6 +30,7 @@ const (
 	tuiCoreSocketFilename     = ".flclash-cli-core.sock"
 	tuiServiceLogFilename     = "flclash-cli-service.log"
 	tuiServiceReloadTimeout   = 2 * time.Minute
+	tuiServiceLogMaxBytes     = 5 << 20
 	// ProfileData is JSON base64, so a 32 MiB subscription needs more than
 	// 42 MiB on the wire. Keep the IPC bounded while accepting the documented
 	// profile limit plus request metadata.
@@ -861,6 +864,7 @@ func spawnTUIService(paths cliPaths, testURL string, allowCreate bool) error {
 		return err
 	}
 	logPath := filepath.Join(paths.homeDir, tuiServiceLogFilename)
+	rotateTUIServiceLog(logPath)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
@@ -901,6 +905,96 @@ func spawnTUIService(paths cliPaths, testURL string, allowCreate bool) error {
 	_ = logFile.Close()
 	reapTUIServiceProcess(command)
 	return nil
+}
+
+func rotateTUIServiceLog(path string) {
+	cliPersistentLogMu.Lock()
+	defer cliPersistentLogMu.Unlock()
+	rotateTUIServiceLogUnlocked(path)
+}
+
+func rotateTUIServiceLogUnlocked(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= tuiServiceLogMaxBytes {
+		return
+	}
+	backupPath := path + ".1"
+	_ = os.Remove(backupPath)
+	_ = os.Rename(path, backupPath)
+}
+
+type tuiRotatingLogWriter struct {
+	path string
+	file *os.File
+	size int64
+}
+
+func newTUIRotatingLogWriter(path string) (*tuiRotatingLogWriter, error) {
+	rotateTUIServiceLog(path)
+	writer := &tuiRotatingLogWriter{path: path}
+	if err := writer.reopen(); err != nil {
+		return nil, err
+	}
+	return writer, nil
+}
+
+func (w *tuiRotatingLogWriter) reopen() error {
+	if w.file != nil {
+		_ = w.file.Close()
+	}
+	file, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return err
+	}
+	w.file = file
+	w.size = info.Size()
+	return nil
+}
+
+func (w *tuiRotatingLogWriter) Write(data []byte) (int, error) {
+	cliPersistentLogMu.Lock()
+	defer cliPersistentLogMu.Unlock()
+	if w.file == nil {
+		if err := w.reopen(); err != nil {
+			return 0, err
+		}
+	}
+	pathInfo, pathErr := os.Stat(w.path)
+	fileInfo, fileErr := w.file.Stat()
+	if pathErr != nil || fileErr != nil || !os.SameFile(pathInfo, fileInfo) {
+		if err := w.reopen(); err != nil {
+			return 0, err
+		}
+	} else {
+		w.size = pathInfo.Size()
+	}
+	if w.size+int64(len(data)) > tuiServiceLogMaxBytes {
+		_ = w.file.Close()
+		w.file = nil
+		rotateTUIServiceLogUnlocked(w.path)
+		if err := w.reopen(); err != nil {
+			return 0, err
+		}
+	}
+	written, err := w.file.Write(data)
+	w.size += int64(written)
+	return written, err
+}
+
+func (w *tuiRotatingLogWriter) Close() error {
+	cliPersistentLogMu.Lock()
+	defer cliPersistentLogMu.Unlock()
+	if w.file == nil {
+		return nil
+	}
+	err := w.file.Close()
+	w.file = nil
+	return err
 }
 
 func reapTUIServiceProcess(command *exec.Cmd) <-chan error {
@@ -960,6 +1054,17 @@ func runTUIService(
 ) error {
 	if err := os.MkdirAll(paths.homeDir, 0o700); err != nil {
 		return err
+	}
+	logWriter, logErr := newTUIRotatingLogWriter(
+		filepath.Join(paths.homeDir, tuiServiceLogFilename),
+	)
+	if logErr == nil {
+		originalLogOutput := logrus.StandardLogger().Out
+		logrus.SetOutput(logWriter)
+		defer func() {
+			logrus.SetOutput(originalLogOutput)
+			_ = logWriter.Close()
+		}()
 	}
 	if err := ensureTUIConfig(paths, allowCreate); err != nil {
 		return err
@@ -1023,8 +1128,15 @@ func runTUIService(
 	cleanupTUISilentRuntimeConfigs(paths.homeDir, "")
 	if trafficMode == tuiSilentMode {
 		tunEnabled = false
+		runtimePort, err = chooseTUIProxyPort(configuredPort)
+		if err != nil {
+			return err
+		}
 		if flcState.Outbound != "" {
-			flcState, err = newTUIFLCListenerState(flcState.Outbound)
+			flcState, err = newTUIFLCListenerStateAtPort(
+				flcState.Outbound,
+				runtimePort,
+			)
 			if err != nil {
 				return err
 			}
@@ -1105,6 +1217,14 @@ func runTUIService(
 		tunScope,
 		tunEnabled,
 	)
+	if err := runtime.restoreHistory(); err != nil {
+		appendCLIApplicationLog(
+			paths.homeDir,
+			"WARN",
+			"history_restore",
+			err.Error()+"; starting with empty History",
+		)
+	}
 	go collectTUIServiceHistory(runtime, shutdown)
 	if settings := loadTUIConfiguredSettings(paths.configPath, true); settings != nil {
 		if trafficMode != tuiSilentMode {
@@ -1123,6 +1243,9 @@ func runTUIService(
 			runtime.handle(tuiServiceRequest{Action: "shutdown"})
 			runtime.signalShutdown()
 		case <-shutdown:
+		}
+		if err := runtime.persistHistory(true); err != nil {
+			appendCLIApplicationLog(paths.homeDir, "ERROR", "history_save", err.Error())
 		}
 		_ = listener.Close()
 	}()
@@ -1151,12 +1274,21 @@ func collectTUIServiceHistory(
 	runtime *tuiServiceRuntime,
 	shutdown <-chan struct{},
 ) {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	historyTicker := time.NewTicker(500 * time.Millisecond)
+	persistTicker := time.NewTicker(historyPersistenceInterval())
+	defer historyTicker.Stop()
+	defer persistTicker.Stop()
 	for {
 		select {
-		case <-ticker.C:
+		case <-historyTicker.C:
 			_ = runtime.historyStatus("")
+		case <-persistTicker.C:
+			if err := runtime.persistHistory(false); err != nil {
+				runtime.mu.RLock()
+				homeDir := runtime.paths.homeDir
+				runtime.mu.RUnlock()
+				appendCLIApplicationLog(homeDir, "ERROR", "history_save", err.Error())
+			}
 		case <-shutdown:
 			return
 		}

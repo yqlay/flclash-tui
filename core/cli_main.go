@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.5.4"
+const cliVersion = "0.5.5"
 
 type cliPaths struct {
 	homeDir    string
@@ -366,7 +366,7 @@ func (c controllerClient) listProxyNodes(group string, jsonOutput bool) error {
 
 func profileCommand(args []string) error {
 	if len(args) == 0 || cliSubcommandHelp(args) {
-		fmt.Println("Usage: flclash profile list|import|current|use|update|rename|edit|delete|link")
+		fmt.Println("Usage: flclash profile list|import|import-file|current|use|update|rename|edit|delete|link")
 		fmt.Println("Profile names resolve inside the active FlClash data directory.")
 		return nil
 	}
@@ -439,6 +439,36 @@ func profileCommand(args []string) error {
 			"",
 			true,
 			&positional[0],
+			status.Revision,
+		)
+		if err != nil {
+			return err
+		}
+		fmt.Println(status.ResultPath)
+		return nil
+	case "import-file":
+		if len(positional) != 1 {
+			return errors.New("usage: flclash profile import-file PATH")
+		}
+		data, name, err := readTUILocalProfile(positional[0])
+		if err != nil {
+			appendCLIApplicationLog(paths.homeDir, "ERROR", "profile_import_file", "local profile validation failed")
+			return err
+		}
+		client, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
+		path, err := nextTUIImportedProfilePath(status.HomeDir, name)
+		if err != nil {
+			return err
+		}
+		status, err = client.putProfile(
+			path,
+			data,
+			"",
+			true,
+			nil,
 			status.Revision,
 		)
 		if err != nil {
@@ -588,6 +618,9 @@ func listCLIProfiles(paths cliPaths) ([]tuiProfile, error) {
 	profiles := make([]tuiProfile, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
+			continue
+		}
+		if isTUIRuntimeProfileName(entry.Name()) {
 			continue
 		}
 		extension := strings.ToLower(filepath.Ext(entry.Name()))

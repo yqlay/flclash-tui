@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -462,5 +464,28 @@ func TestValidateTUIServiceUpgradeCandidateRejectsDowngrade(t *testing.T) {
 		ProtocolVersion: tuiServiceProtocolVersion - 1,
 	}); err != nil {
 		t.Fatalf("older backend was rejected: %v", err)
+	}
+}
+
+func TestTUIServiceLogRotationKeepsOneBoundedBackup(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, tuiServiceLogFilename)
+	if err := os.WriteFile(
+		path,
+		[]byte(strings.Repeat("x", tuiServiceLogMaxBytes+1)),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	rotateTUIServiceLog(path)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("oversized active log was not rotated: %v", err)
+	}
+	backupInfo, err := os.Stat(path + ".1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backupInfo.Size() != tuiServiceLogMaxBytes+1 {
+		t.Fatalf("rotated log size = %d", backupInfo.Size())
 	}
 }

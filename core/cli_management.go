@@ -191,14 +191,8 @@ func printManagedStatus(status tuiServiceStatus, jsonOutput bool) error {
 	fmt.Printf("Version:      %s (protocol %d)\n", status.Version, status.ProtocolVersion)
 	fmt.Printf("Core:         %s\n", cliOnOff(status.Running))
 	fmt.Printf("Profile:      %s\n", status.ConfigPath)
-	if mode == tuiSilentMode {
-		fmt.Printf("Proxy port:   off (configured %d)\n", proxyPort)
-	} else if proxyPort > 0 {
-		if status.ActiveProxyPort > 0 && status.ActiveProxyPort != status.ConfiguredProxyPort {
-			fmt.Printf("Proxy port:   %d active (configured %d)\n", status.ActiveProxyPort, status.ConfiguredProxyPort)
-		} else {
-			fmt.Printf("Proxy port:   %d (Mihomo mixed-port)\n", proxyPort)
-		}
+	if proxyPort > 0 {
+		fmt.Printf("Proxy port:   %d\n", proxyPort)
 	}
 	if mode != "" {
 		fmt.Printf("Mode:         %s\n", mode)
@@ -581,12 +575,14 @@ func portCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		if status.Mode == tuiSilentMode {
-			fmt.Printf("OFF (configured %d)\n", status.ConfiguredProxyPort)
-		} else if status.ConfiguredProxyPort <= 0 {
+		proxyPort := status.ActiveProxyPort
+		if proxyPort <= 0 {
+			proxyPort = status.ConfiguredProxyPort
+		}
+		if proxyPort <= 0 {
 			fmt.Println("OFF")
 		} else {
-			fmt.Println(status.ConfiguredProxyPort)
+			fmt.Println(proxyPort)
 		}
 		return nil
 	}
@@ -700,7 +696,7 @@ func cliDisplayValue(value string) string {
 
 func historyCommand(args []string) error {
 	if cliSubcommandHelp(args) {
-		fmt.Println("Usage: flclash history show [--follow] [--json] | clear")
+		fmt.Println("Usage: flclash history show [--follow] [--json] [--state all|active|done] [--search TEXT] [--limit N] | clear")
 		fmt.Println("History is the shared recent connection history shown by the TUI.")
 		fmt.Println("Compatibility alias: flclash requests")
 		return nil
@@ -717,11 +713,21 @@ func historyCommand(args []string) error {
 		fs := newCLIFlagSet("history show")
 		follow := fs.Bool("follow", args[0] == "watch", "follow new history entries")
 		jsonOutput := fs.Bool("json", false, "print JSON")
+		stateFilter := fs.String("state", "all", "filter by all, active, or done")
+		search := fs.String("search", "", "match host, process, network, or proxy chain")
+		limit := fs.Int("limit", 0, "maximum matching entries; 0 shows all")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if len(fs.Args()) != 0 {
-			return errors.New("usage: flclash history show [--follow] [--json]")
+			return errors.New("usage: flclash history show [--follow] [--json] [--state all|active|done] [--search TEXT] [--limit N]")
+		}
+		*stateFilter = strings.ToLower(strings.TrimSpace(*stateFilter))
+		if *stateFilter != "all" && *stateFilter != "active" && *stateFilter != "done" {
+			return errors.New("history state must be all, active, or done")
+		}
+		if *limit < 0 || *limit > tuiRequestHistoryLimit {
+			return fmt.Errorf("history limit must be between 0 and %d", tuiRequestHistoryLimit)
 		}
 		seen := map[string]bool{}
 		interrupt := make(chan os.Signal, 1)
@@ -734,12 +740,18 @@ func historyCommand(args []string) error {
 			if err != nil {
 				return err
 			}
+			filtered := filterCLIHistory(
+				status.History,
+				*stateFilter,
+				*search,
+				*limit,
+			)
 			if *jsonOutput {
-				if err := writeCLIJSON(os.Stdout, status.History); err != nil {
+				if err := writeCLIJSON(os.Stdout, filtered); err != nil {
 					return err
 				}
 			} else {
-				printCLIHistory(status.History, seen, *follow)
+				printCLIHistory(filtered, seen, *follow)
 			}
 			if !*follow {
 				return nil
@@ -763,6 +775,39 @@ func historyCommand(args []string) error {
 	default:
 		return fmt.Errorf("unknown history command %q; use `flclash history -help`", args[0])
 	}
+}
+
+func filterCLIHistory(
+	history []tuiRequest,
+	stateFilter,
+	search string,
+	limit int,
+) []tuiRequest {
+	needle := strings.ToLower(strings.TrimSpace(search))
+	filtered := make([]tuiRequest, 0, len(history))
+	for _, request := range history {
+		if stateFilter == "active" && !request.Active ||
+			stateFilter == "done" && request.Active {
+			continue
+		}
+		if needle != "" {
+			haystack := strings.ToLower(strings.Join([]string{
+				request.Host,
+				request.Process,
+				request.ProcessPath,
+				request.Network,
+				request.Chain,
+			}, " "))
+			if !strings.Contains(haystack, needle) {
+				continue
+			}
+		}
+		filtered = append(filtered, request)
+		if limit > 0 && len(filtered) == limit {
+			break
+		}
+	}
+	return filtered
 }
 
 func printCLIHistory(history []tuiRequest, seen map[string]bool, onlyNew bool) {
@@ -1039,7 +1084,7 @@ func completionCommand(args []string) error {
 		{"net", "show refresh delay speed"},
 		{"status", "--json --watch"},
 		{"backend", "start stop restart status logs clients"},
-		{"profile", "list import current use update rename edit delete link"},
+		{"profile", "list import import-file current use update rename edit delete link"},
 		{"proxy", "groups nodes select delay speed"},
 		{"history", "show clear"},
 		{"connections", "show close"},

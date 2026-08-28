@@ -158,19 +158,30 @@ type tuiFLCListenerState struct {
 }
 
 func newTUIFLCListenerState(outbound string) (tuiFLCListenerState, error) {
+	return newTUIFLCListenerStateAtPort(outbound, 0)
+}
+
+func newTUIFLCListenerStateAtPort(
+	outbound string,
+	port int,
+) (tuiFLCListenerState, error) {
 	outbound = strings.TrimSpace(outbound)
 	if outbound == "" {
 		return tuiFLCListenerState{}, errors.New(
 			"silent mode requires an FLC outbound; run `flclash flc select NAME` first",
 		)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return tuiFLCListenerState{}, fmt.Errorf("allocate private FLC port: %w", err)
+	if port <= 0 {
+		var err error
+		port, err = chooseTUIProxyPort(port)
+		if err != nil {
+			return tuiFLCListenerState{}, fmt.Errorf("allocate private FLC port: %w", err)
+		}
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		return tuiFLCListenerState{}, fmt.Errorf("release private FLC port reservation: %w", err)
+	if port > 65535 {
+		return tuiFLCListenerState{}, errors.New(
+			"private FLC port must be between 1 and 65535",
+		)
 	}
 	password := make([]byte, 24)
 	if _, err := rand.Read(password); err != nil {
@@ -182,6 +193,16 @@ func newTUIFLCListenerState(outbound string) (tuiFLCListenerState, error) {
 		Username: "flc",
 		Password: hex.EncodeToString(password),
 	}, nil
+}
+
+func isTUIRuntimeProfileName(name string) bool {
+	extension := strings.ToLower(filepath.Ext(name))
+	if extension != ".yaml" && extension != ".yml" {
+		return false
+	}
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	return strings.HasPrefix(base, tuiSilentRuntimeConfigPrefix) ||
+		strings.HasPrefix(base, tuiManagedRuntimeConfigPrefix)
 }
 
 func (state tuiFLCListenerState) proxyURL() string {
