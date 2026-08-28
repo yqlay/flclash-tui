@@ -1,3 +1,10 @@
+## FlClash TUI v0.5.8
+
+- Restore the original line-only 30-sample traffic chart without area fills or
+  a separate baseline.
+- Render upload in blue, download in green, and overlapping curve cells in cyan,
+  with matching colored upload/download values in the chart legend.
+
 ## FlClash TUI v0.5.7
 
 - Restyle the adaptive traffic chart with a gray baseline, blue upload, red

@@ -186,8 +186,9 @@ U, F2/u, e      update/rename/edit Profile      x             clear/close all
 q               exit only this TUI               Ctrl+C        shutdown Backend + Core
 ```
 
-The Dashboard overlays upload (blue), download (red), and overlap (purple) with
-matching light fills above a gray baseline on one shared-scale, 30-sample chart.
+The Dashboard overlays upload (blue), download (green), and overlap (cyan) as
+line-only curves on one shared-scale, 30-sample chart. The colored `↑` and `↓`
+speed values above the chart act as its legend.
 `Rule route`/`Silent route` and `Cloudflare DL` are selectable with ↑/↓ or
 `w`/`s`; Enter runs the selected test, while `d` and `v` remain direct shortcuts.
 Compact terminals expose the chart and selected rows through automatic

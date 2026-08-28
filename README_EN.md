@@ -12,7 +12,7 @@ This is an unofficial terminal-focused derivative of [FlClash](https://github.co
 
 ## Highlights
 
-- Eight TUI pages, including a Dashboard with blue upload, red download, and purple-overlap live traffic curves.
+- Eight TUI pages, including a Dashboard with blue upload, green download, and cyan-overlap live traffic curves.
 - Selectable route tests and a scrollable notification page whose operation feedback is also written to Logs.
 - One Backend per Linux user, safely shared by multiple TUI/CLI frontends.
 - Default `silent` mode keeps ordinary programs direct while `flc COMMAND` uses an authenticated local proxy.

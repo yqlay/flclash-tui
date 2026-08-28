@@ -3037,6 +3037,35 @@ func tuiTitle(b *strings.Builder, title, subtitle string, width int) {
 	b.WriteString(tuiBoxRow(left, "", width, tuiBold+tuiCyan, ""))
 }
 
+func tuiTrafficTitle(
+	b *strings.Builder,
+	traffic trafficSnapshot,
+	peak int64,
+	width int,
+) {
+	b.WriteString(tuiBoxTop(width))
+	line := "  " + tuiBold + tuiCyan + "Live traffic" + tuiReset +
+		"  ·  " + formatTUITrafficLegend(traffic, peak)
+	b.WriteString("│")
+	b.WriteString(tuiClampAnsiLine(line, width))
+	b.WriteString("│\n")
+}
+
+func formatTUITrafficLegend(traffic trafficSnapshot, peak int64) string {
+	return fmt.Sprintf(
+		"%s↑ %s/s%s · %s↓ %s/s%s%s · peak %s/s · 30 samples%s",
+		tuiTrafficChartUpload,
+		formatBytes(traffic.Up),
+		tuiReset,
+		tuiTrafficChartDownload,
+		formatBytes(traffic.Down),
+		tuiReset,
+		tuiDim,
+		formatBytes(peak),
+		tuiReset,
+	)
+}
+
 func tuiEndPanel(b *strings.Builder, width int) {
 	b.WriteString(tuiBoxBottom(width))
 }
@@ -3380,17 +3409,7 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 			maxTUIWidth(width-4, 1),
 			plotHeight,
 		)
-		tuiTitle(
-			b,
-			"Live traffic",
-			fmt.Sprintf(
-				"↑ %s/s · ↓ %s/s · peak %s/s · 30 samples",
-				formatBytes(snapshot.Traffic.Up),
-				formatBytes(snapshot.Traffic.Down),
-				formatBytes(chart.peak),
-			),
-			width,
-		)
+		tuiTrafficTitle(b, snapshot.Traffic, chart.peak, width)
 		for _, line := range chart.lines {
 			writeTUIAnsiRow(b, line, width)
 		}
@@ -3509,13 +3528,9 @@ func tuiCompactDashboardRows(
 		tuiCompactTrafficChartHeight(height),
 	)
 	rows = append(rows, tuiDashboardCompactRow{
-		value: fmt.Sprintf(
-			"── Live traffic · ↑ %s/s · ↓ %s/s · peak %s/s · 30 samples",
-			formatBytes(snapshot.Traffic.Up),
-			formatBytes(snapshot.Traffic.Down),
-			formatBytes(chart.peak),
-		),
-		color: tuiCyan,
+		value: tuiCyan + "── Live traffic" + tuiReset + " · " +
+			formatTUITrafficLegend(snapshot.Traffic, chart.peak),
+		ansi: true,
 	})
 	for _, line := range chart.lines {
 		rows = append(rows, tuiDashboardCompactRow{value: line, ansi: true})
@@ -3621,11 +3636,11 @@ func tuiDashboardRouteName(snapshot tuiSnapshot) string {
 func tuiCompactTrafficChartHeight(height int) int {
 	switch {
 	case height <= 10:
-		return 2
+		return 1
 	case height <= 14:
-		return 3
+		return 2
 	default:
-		return 4
+		return 3
 	}
 }
 
