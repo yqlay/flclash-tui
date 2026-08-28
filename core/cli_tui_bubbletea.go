@@ -152,6 +152,8 @@ type tuiModel struct {
 	stopServiceOnExit     bool // Legacy test visibility; managed frontends always leave this false.
 	frontendExitRequested bool
 	shutdownRequested     bool
+	notifications         []tuiNotification
+	notificationScroll    int
 }
 
 func newTUIModel(
@@ -257,7 +259,11 @@ func runTUI(
 	model.snapshot.ManagedService = service != nil
 	model.snapshot.Frontends, _ = listCLIFrontends()
 	if startupNotice != "" {
-		model.snapshot.StartupNotice = startupNotice
+		model.enqueueNotification(tuiNotification{
+			level:   tuiNotificationInfo,
+			title:   "Shared backend",
+			message: startupNotice,
+		})
 	}
 	model.startCoreMemoryMonitor()
 	model.startTrafficMonitor()
@@ -320,7 +326,7 @@ func (m *tuiModel) Init() tea.Cmd {
 	)
 }
 
-func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width = message.Width
@@ -380,6 +386,11 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.startNetworkCheck(true)
 		}
 		m.snapshot.Network = message.info
+		if message.info.Error != "" {
+			m.snapshot.Status = "Network detection failed: " + message.info.Error
+		} else if strings.HasPrefix(m.snapshot.Status, "Network detection failed: ") {
+			m.snapshot.Status = "Connected"
+		}
 		return m, nil
 	case tuiMemoryResultMsg:
 		m.memoryRefreshActive = false
@@ -478,13 +489,6 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				message.state.profileSelection,
 			)
 		}
-		level := "INFO"
-		if strings.Contains(strings.ToLower(m.snapshot.Status), "failed") ||
-			strings.Contains(strings.ToLower(m.snapshot.Status), "error") {
-			level = "ERROR"
-		}
-		appendTUILogEvent(level, m.snapshot.Status)
-		m.snapshot.Logs = cliLogSnapshot()
 		commands := []tea.Cmd{m.startRefresh()}
 		if m.networkCheckRoute() != previousRoute {
 			commands = append(commands, m.startNetworkCheck(true))
@@ -608,11 +612,10 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 			m.snapshot.Page == tuiPageProxies) {
 		key = tuiKeySpeedTest
 	}
-	if m.snapshot.StartupNotice != "" &&
+	if len(m.notifications) > 0 &&
 		key != tuiKeyQuit &&
 		key != tuiKeyInterrupt {
-		m.snapshot.StartupNotice = ""
-		m.snapshot.Status = "Connected to shared per-user backend"
+		m.handleNotificationKey(key)
 		return nil
 	}
 	if m.snapshot.ShowHelp &&
@@ -654,7 +657,14 @@ func tuiKeyAllowedWhileBusy(key tuiKey) bool {
 
 func (m *tuiModel) View() string {
 	snapshot := m.snapshot
-	if m.modeSelectionOpen {
+	if len(m.notifications) > 0 {
+		notification := m.notifications[0]
+		snapshot.NotificationTitle = notification.title
+		snapshot.NotificationMessage = notification.message
+		snapshot.NotificationLevel = string(notification.level)
+		snapshot.NotificationProgress = notification.progress
+		snapshot.NotificationScroll = m.notificationScroll
+	} else if m.modeSelectionOpen {
 		snapshot.SelectionTitle = "Select outbound mode"
 		snapshot.SelectionOptions = append(
 			[]string(nil),
@@ -944,7 +954,6 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	updated.ManagedService = current.ManagedService
 	updated.FocusSidebar = current.FocusSidebar
 	updated.ShowHelp = current.ShowHelp
-	updated.StartupNotice = current.StartupNotice
 	if len(current.GroupOrder) > 0 {
 		updated.GroupOrder = append([]string(nil), current.GroupOrder...)
 		orderTUIGroups(updated.Groups, updated.GroupOrder)
@@ -1463,6 +1472,32 @@ func (m *tuiModel) dashboardPageHeight() int {
 	return maxTUIWidth(pageHeight, 1)
 }
 
+func (m *tuiModel) revealDashboardSelection() {
+	rows := tuiCompactDashboardRows(
+		m.snapshot,
+		m.paths,
+		maxTUIWidth(m.width-2, 1),
+		m.dashboardPageHeight(),
+	)
+	selectedRow := -1
+	for index, row := range rows {
+		if row.selected {
+			selectedRow = index
+			break
+		}
+	}
+	if selectedRow < 0 {
+		return
+	}
+	limit := m.dashboardViewportLimit()
+	switch {
+	case selectedRow < m.snapshot.DashboardScroll:
+		m.snapshot.DashboardScroll = selectedRow
+	case selectedRow >= m.snapshot.DashboardScroll+limit:
+		m.snapshot.DashboardScroll = maxTUIIndex(selectedRow - limit + 1)
+	}
+}
+
 func (m *tuiModel) moveSelection(delta int) {
 	switch m.snapshot.Page {
 	case tuiPageProfiles:
@@ -1509,7 +1544,7 @@ func (m *tuiModel) moveSelection(delta int) {
 			delta,
 			tuiDashboardRowCount,
 		)
-		m.snapshot.DashboardScroll = 0
+		m.revealDashboardSelection()
 	case tuiPageTools:
 		m.snapshot.SelectedTool = wrapTUIIndex(
 			m.snapshot.SelectedTool,
@@ -2188,6 +2223,10 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			return m.handleKey(tuiKeyMode)
 		case tuiDashboardMixedPortRow:
 			m.beginInput(tuiInputMixedPort)
+		case tuiDashboardDelayRow:
+			return m.testDashboardDelay()
+		case tuiDashboardSpeedRow:
+			return m.testDashboardSpeed()
 		}
 	case tuiPageProxies:
 		if m.snapshot.ProxyView == tuiProxyViewProviders {
@@ -2491,10 +2530,6 @@ func (m *tuiModel) testDashboardDelay() tea.Cmd {
 		m.snapshot.Status = "Dashboard delay test requires the managed backend"
 		return nil
 	}
-	if strings.EqualFold(m.snapshot.Settings.Mode, tuiSilentMode) {
-		m.snapshot.Status = "Silent mode has no public route; use flclash flc test"
-		return nil
-	}
 	m.snapshot.DashboardDelay = tuiDelayResult{Testing: true}
 	mixedPort := m.snapshot.ActiveProxyPort
 	testURL := m.tuiDelayTestURL()
@@ -2513,10 +2548,6 @@ func (m *tuiModel) testDashboardDelay() tea.Cmd {
 func (m *tuiModel) testDashboardSpeed() tea.Cmd {
 	if m.service == nil {
 		m.snapshot.Status = "Dashboard speed test requires the managed backend"
-		return nil
-	}
-	if strings.EqualFold(m.snapshot.Settings.Mode, tuiSilentMode) {
-		m.snapshot.Status = "Silent mode has no public route; use flclash flc test"
 		return nil
 	}
 	m.snapshot.DashboardSpeed = tuiSpeedResult{Testing: true}

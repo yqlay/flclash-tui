@@ -57,7 +57,7 @@ type tuiServiceRuntime struct {
 	dedup                   map[string]tuiServiceStatus
 	dedupOrder              []string
 	shutdown                func()
-	routeClient             func(int) (*http.Client, func(), error)
+	routeClient             func(string) (*http.Client, func(), error)
 	routeSpeedTest          func(context.Context, *http.Client) (tuiSpeedResult, error)
 	routeDelayTest          func(context.Context, *http.Client, string) (tuiDelayResult, error)
 }
@@ -2072,9 +2072,15 @@ func (r *tuiServiceRuntime) testRoute(
 	if activePort <= 0 {
 		activePort = activeStatus.ProxyPort
 	}
+	proxyURL := tuiLoopbackProxyURL(activePort)
+	if activeStatus.Mode == tuiSilentMode {
+		r.mu.RLock()
+		proxyURL = r.flc.proxyURL()
+		r.mu.RUnlock()
+	}
 	var speed *tuiSpeedResult
 	var delay tuiDelayResult
-	client, closeClient, err := r.routeClient(activePort)
+	client, closeClient, err := r.routeClient(proxyURL)
 	if err == nil {
 		if request.Action == "speed_route" {
 			var result tuiSpeedResult

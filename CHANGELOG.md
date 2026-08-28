@@ -1,3 +1,16 @@
+## FlClash TUI v0.5.7
+
+- Restyle the adaptive traffic chart with a gray baseline, blue upload, red
+  download, purple overlap, and matching light area fills.
+- Make Dashboard route latency and Cloudflare throughput selectable with the
+  arrow keys and Enter while retaining the `d` and `v` shortcuts.
+- Route Dashboard public-IP detection, latency, and speed tests through the
+  authenticated private FLC listener in silent mode.
+- Move operation progress, success, warnings, and errors into a FIFO notification
+  page with Enter/Esc dismissal, scrolling, deduplication, and Logs integration.
+- Keep panel borders unstyled so selected and colored row content cannot bleed
+  into the Network detection frame.
+
 ## FlClash TUI v0.5.6
 
 - Add an adaptive 30-sample Dashboard chart that overlays live upload and

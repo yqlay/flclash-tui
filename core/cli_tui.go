@@ -157,6 +157,8 @@ const (
 	tuiDashboardTunRow
 	tuiDashboardModeRow
 	tuiDashboardMixedPortRow
+	tuiDashboardDelayRow
+	tuiDashboardSpeedRow
 	tuiDashboardRowCount
 )
 
@@ -208,57 +210,61 @@ const (
 )
 
 type tuiSnapshot struct {
-	Page                tuiPage
-	Groups              []tuiGroup
-	GroupOrder          []string
-	Traffic             trafficSnapshot
-	TrafficHistory      []trafficSnapshot
-	TotalTraffic        trafficSnapshot
-	Connections         []tuiConnection
-	Requests            []tuiRequest
-	Logs                []string
-	Profiles            []tuiProfile
-	Providers           []tuiProvider
-	Settings            tuiSettings
-	Network             tuiNetworkInfo
-	Memory              tuiMemoryInfo
-	DashboardDelay      tuiDelayResult
-	DashboardSpeed      tuiSpeedResult
-	Update              tuiUpdateInfo
-	UpdatedAt           time.Time
-	Status              string
-	SelectedGroup       int
-	SelectedNode        int
-	SelectedRow         int
-	SelectedProvider    int
-	SelectedConnection  int
-	SelectedRequest     int
-	SelectedMenu        int
-	SelectedDashboard   int
-	SelectedSetting     int
-	SelectedTool        int
-	SelectedMaintenance int
-	DashboardScroll     int
-	ProxyView           int
-	ProxyNodeFocus      bool
-	FocusSidebar        bool
-	ShowHelp            bool
-	ServiceRunning      bool
-	ExternalCore        bool
-	ManagedService      bool
-	FLCEnabled          bool
-	FLCOutbound         string
-	ConfiguredProxyPort int
-	ActiveProxyPort     int
-	Frontends           []cliProcessOwner
-	InputTitle          string
-	InputValue          string
-	InputHint           string
-	SelectionTitle      string
-	SelectionOptions    []string
-	SelectedOption      int
-	SelectionHint       string
-	StartupNotice       string
+	Page                 tuiPage
+	Groups               []tuiGroup
+	GroupOrder           []string
+	Traffic              trafficSnapshot
+	TrafficHistory       []trafficSnapshot
+	TotalTraffic         trafficSnapshot
+	Connections          []tuiConnection
+	Requests             []tuiRequest
+	Logs                 []string
+	Profiles             []tuiProfile
+	Providers            []tuiProvider
+	Settings             tuiSettings
+	Network              tuiNetworkInfo
+	Memory               tuiMemoryInfo
+	DashboardDelay       tuiDelayResult
+	DashboardSpeed       tuiSpeedResult
+	Update               tuiUpdateInfo
+	UpdatedAt            time.Time
+	Status               string
+	SelectedGroup        int
+	SelectedNode         int
+	SelectedRow          int
+	SelectedProvider     int
+	SelectedConnection   int
+	SelectedRequest      int
+	SelectedMenu         int
+	SelectedDashboard    int
+	SelectedSetting      int
+	SelectedTool         int
+	SelectedMaintenance  int
+	DashboardScroll      int
+	ProxyView            int
+	ProxyNodeFocus       bool
+	FocusSidebar         bool
+	ShowHelp             bool
+	ServiceRunning       bool
+	ExternalCore         bool
+	ManagedService       bool
+	FLCEnabled           bool
+	FLCOutbound          string
+	ConfiguredProxyPort  int
+	ActiveProxyPort      int
+	Frontends            []cliProcessOwner
+	InputTitle           string
+	InputValue           string
+	InputHint            string
+	SelectionTitle       string
+	SelectionOptions     []string
+	SelectedOption       int
+	SelectionHint        string
+	NotificationTitle    string
+	NotificationMessage  string
+	NotificationLevel    string
+	NotificationProgress bool
+	NotificationScroll   int
 }
 
 type trafficSnapshot struct {
@@ -863,6 +869,10 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 					case tuiDashboardMixedPortRow:
 						screen.invalidate()
 						setTUIMixedPort(&snapshot, client, &oldState)
+					case tuiDashboardDelayRow:
+						snapshot.Status = "Dashboard route delay testing requires the managed TUI"
+					case tuiDashboardSpeedRow:
+						snapshot.Status = "Dashboard route speed testing requires the managed TUI"
 					}
 				} else if snapshot.Page == tuiPageProxies {
 					if snapshot.ProxyView == tuiProxyViewProviders {
@@ -2397,6 +2407,9 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	if width <= 0 || height <= 0 {
 		return ""
 	}
+	if snapshot.NotificationMessage != "" {
+		return renderTUINotification(snapshot, width, height)
+	}
 	if width < 40 || height < 10 {
 		return renderTUITiny(snapshot, ownsCore, coreRunning, width, height)
 	}
@@ -2462,12 +2475,6 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	if snapshot.Page == tuiPageDashboard && bodyHeight < 33 {
 		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  q exit TUI  ^C shutdown"
 	}
-	if snapshot.Status != "" && snapshot.Status != "Connected" {
-		statusWidth := maxTUIWidth(width-tuiDisplayWidth(footer)-5, 0)
-		if statusWidth >= 8 {
-			footer += "  ·  " + truncateTUI(snapshot.Status, statusWidth)
-		}
-	}
 	b.WriteString(tuiClampAnsiLine(footer, width))
 	return b.String()
 }
@@ -2501,12 +2508,6 @@ func renderTUICompact(
 	contentWidth := width - 2
 	var page string
 	switch {
-	case snapshot.StartupNotice != "":
-		page = renderTUIStartupNotice(
-			snapshot.StartupNotice,
-			contentWidth,
-			bodyHeight,
-		)
 	case snapshot.SelectionTitle != "" || snapshot.InputTitle != "":
 		page = tuiRenderPage(
 			snapshot,
@@ -2553,15 +2554,6 @@ func renderTUICompact(
 		footer = "  ↑↓/ws page · →/Enter open · 1-8 direct · q"
 	} else if snapshot.Page == tuiPageDashboard {
 		footer = "  ↑↓/ws select · PgUp/PgDn scroll · Esc nav · q"
-	}
-	if snapshot.Status != "" && snapshot.Status != "Connected" && width >= 72 {
-		statusWidth := maxTUIWidth(
-			width-tuiDisplayWidth(footer)-5,
-			0,
-		)
-		if statusWidth >= 8 {
-			footer += " · " + truncateTUI(snapshot.Status, statusWidth)
-		}
 	}
 	b.WriteString(tuiClampAnsiLine(footer, width))
 	return b.String()
@@ -2611,31 +2603,6 @@ func renderTUICompactNavigation(
 			index == snapshot.SelectedMenu,
 			"",
 		)
-	}
-	tuiEndPanel(&b, width)
-	return b.String()
-}
-
-func renderTUIStartupNotice(notice string, width, height int) string {
-	var b strings.Builder
-	tuiTitle(
-		&b,
-		"Shared backend",
-		"another TUI frontend is already open",
-		width,
-	)
-	limit := maxTUIWidth(height-4, 1)
-	lines := tuiWrapText(notice, maxTUIWidth(width-4, 1))
-	lines = append(lines, "Press any key to continue")
-	if len(lines) > limit {
-		lines = lines[:limit]
-	}
-	for index, line := range lines {
-		color := tuiDim
-		if index == len(lines)-1 {
-			color = tuiCyan
-		}
-		tuiRow(&b, line, width, false, color)
 	}
 	tuiEndPanel(&b, width)
 	return b.String()
@@ -2740,9 +2707,6 @@ func renderTUITiny(
 		"FlClash " + tuiCoreStatus(ownsCore, coreRunning),
 		fmt.Sprintf("%d %s", int(snapshot.Page)+1, tuiPageName(snapshot.Page)),
 	}
-	if snapshot.Status != "" {
-		lines = append(lines, snapshot.Status)
-	}
 	lines = append(lines, "q exit TUI · ^C shutdown")
 	var b strings.Builder
 	for row := 0; row < height; row++ {
@@ -2790,13 +2754,7 @@ func (w *tuiFrameWriter) invalidate() {
 
 func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) string {
 	var b strings.Builder
-	if snapshot.StartupNotice != "" {
-		return renderTUIStartupNotice(
-			snapshot.StartupNotice,
-			width,
-			height,
-		)
-	} else if snapshot.SelectionTitle != "" {
+	if snapshot.SelectionTitle != "" {
 		drawTUISelection(&b, snapshot, width)
 	} else if snapshot.InputTitle != "" {
 		drawTUIInput(&b, snapshot, width)
@@ -3058,14 +3016,16 @@ func tuiClampAnsiLine(line string, width int) string {
 
 func tuiRow(b *strings.Builder, value string, width int, selected bool, color string) {
 	value = tuiPadRight(value, width-4)
+	b.WriteString("│")
 	if selected {
 		b.WriteString(tuiSelect)
 	}
 	if color != "" {
 		b.WriteString(color)
 	}
-	b.WriteString("│  " + value + "  │\n")
+	b.WriteString("  " + value + "  ")
 	b.WriteString(tuiReset)
+	b.WriteString("│\n")
 }
 
 func tuiTitle(b *strings.Builder, title, subtitle string, width int) {
@@ -3382,10 +3342,12 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 			intranetIP = "No active LAN address"
 		}
 	}
-	networkSubtitle := "d rule RTT×5 · v CF 4-stream 100 MB/5s · n refresh"
+	networkSubtitle := ""
 	if snapshot.Network.Route != "" {
-		networkSubtitle += " · " + snapshot.Network.Route
+		networkSubtitle = snapshot.Network.Route + " · "
 	}
+	networkSubtitle += "d " + strings.ToLower(tuiDashboardRouteName(snapshot)) +
+		" RTT×5 · v CF speed · n refresh"
 	if !snapshot.Network.CheckedAt.IsZero() {
 		networkSubtitle += " · checked " + snapshot.Network.CheckedAt.Format("15:04:05")
 	}
@@ -3394,16 +3356,19 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 	tuiRow(b, "Intranet IP   "+intranetIP, width, false, tuiGreen)
 	tuiRow(
 		b,
-		"Rule route     "+tuiDashboardDelayLabel(snapshot.DashboardDelay),
+		tuiPadRight(tuiDashboardRouteName(snapshot), 15)+
+			tuiDashboardDelayLabel(snapshot.DashboardDelay),
 		width,
-		false,
+		snapshot.SelectedDashboard == tuiDashboardDelayRow &&
+			!snapshot.FocusSidebar,
 		tuiCyan,
 	)
 	tuiRow(
 		b,
 		"Cloudflare DL  "+tuiSpeedResultLabel(snapshot.DashboardSpeed),
 		width,
-		false,
+		snapshot.SelectedDashboard == tuiDashboardSpeedRow &&
+			!snapshot.FocusSidebar,
 		tuiGreen,
 	)
 	tuiEndPanel(b, width)
@@ -3577,7 +3542,9 @@ func tuiCompactDashboardRows(
 	rows = append(
 		rows,
 		tuiDashboardCompactRow{
-			value: "── Network · d rule-route latency · v Cloudflare speed · n refresh",
+			value: "── Network · d " +
+				strings.ToLower(tuiDashboardRouteName(snapshot)) +
+				" latency · v Cloudflare speed · n refresh",
 			color: tuiCyan,
 		},
 		tuiDashboardCompactRow{
@@ -3589,14 +3556,18 @@ func tuiCompactDashboardRows(
 			color: tuiGreen,
 		},
 		tuiDashboardCompactRow{
-			value: "Rule route     " +
+			value: tuiPadRight(tuiDashboardRouteName(snapshot), 15) +
 				tuiDashboardDelayLabel(snapshot.DashboardDelay),
 			color: tuiCyan,
+			selected: snapshot.SelectedDashboard == tuiDashboardDelayRow &&
+				!snapshot.FocusSidebar,
 		},
 		tuiDashboardCompactRow{
 			value: "Cloudflare DL  " +
 				tuiSpeedResultLabel(snapshot.DashboardSpeed),
 			color: tuiGreen,
+			selected: snapshot.SelectedDashboard == tuiDashboardSpeedRow &&
+				!snapshot.FocusSidebar,
 		},
 		tuiDashboardCompactRow{
 			value: "── Overview · live status",
@@ -3640,14 +3611,21 @@ func tuiCompactDashboardRows(
 	return rows
 }
 
+func tuiDashboardRouteName(snapshot tuiSnapshot) string {
+	if strings.EqualFold(snapshot.Settings.Mode, tuiSilentMode) {
+		return "Silent route"
+	}
+	return "Rule route"
+}
+
 func tuiCompactTrafficChartHeight(height int) int {
 	switch {
 	case height <= 10:
-		return 1
-	case height <= 14:
 		return 2
-	default:
+	case height <= 14:
 		return 3
+	default:
+		return 4
 	}
 }
 

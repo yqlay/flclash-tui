@@ -359,18 +359,26 @@ func newTUIProxyNodeHTTPClient(proxyName string) (*http.Client, func(), error) {
 	return client, transport.CloseIdleConnections, nil
 }
 
-func newTUIRouteHTTPClient(mixedPort int) (*http.Client, func(), error) {
-	if mixedPort <= 0 || mixedPort > 65535 {
-		return nil, nil, errors.New("choose a valid Proxy port before testing")
+func newTUIRouteHTTPClient(proxyURL string) (*http.Client, func(), error) {
+	parsedProxyURL, err := url.Parse(proxyURL)
+	if err != nil || parsedProxyURL.Scheme != "http" || parsedProxyURL.Host == "" {
+		return nil, nil, errors.New("choose a valid Proxy route before testing")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = http.ProxyURL(&url.URL{
-		Scheme: "http",
-		Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(mixedPort)),
-	})
+	transport.Proxy = http.ProxyURL(parsedProxyURL)
 	configureTUIHTTP1Transport(transport)
 	client := &http.Client{Transport: transport}
 	return client, transport.CloseIdleConnections, nil
+}
+
+func tuiLoopbackProxyURL(port int) string {
+	if port <= 0 || port > 65535 {
+		return ""
+	}
+	return (&url.URL{
+		Scheme: "http",
+		Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+	}).String()
 }
 
 func configureTUIHTTP1Transport(transport *http.Transport) {

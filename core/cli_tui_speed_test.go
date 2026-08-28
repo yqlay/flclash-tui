@@ -160,9 +160,9 @@ func TestTUIRouteDelayUsesActiveFallbackPortAndReturnsSamples(t *testing.T) {
 	runtime.mu.Lock()
 	runtime.activePort = activePort
 	runtime.mu.Unlock()
-	usedPort := 0
-	runtime.routeClient = func(port int) (*http.Client, func(), error) {
-		usedPort = port
+	usedProxyURL := ""
+	runtime.routeClient = func(proxyURL string) (*http.Client, func(), error) {
+		usedProxyURL = proxyURL
 		return &http.Client{}, func() {}, nil
 	}
 	runtime.routeDelayTest = func(
@@ -186,13 +186,63 @@ func TestTUIRouteDelayUsesActiveFallbackPortAndReturnsSamples(t *testing.T) {
 	if !status.OK {
 		t.Fatalf("route delay failed: %+v", status)
 	}
-	if usedPort != activePort {
-		t.Fatalf("route test port = %d, want active port %d", usedPort, activePort)
+	if usedProxyURL != tuiLoopbackProxyURL(activePort) {
+		t.Fatalf(
+			"route test proxy = %q, want %q",
+			usedProxyURL,
+			tuiLoopbackProxyURL(activePort),
+		)
 	}
 	if status.Delay != 42 || status.DelayJitter != 3 ||
 		status.DelayMin != 38 || status.DelayMax != 47 ||
 		status.DelaySamples != tuiDelayTestSamples {
 		t.Fatalf("route delay status = %+v", status)
+	}
+}
+
+func TestTUIRouteDelayUsesAuthenticatedSilentListener(t *testing.T) {
+	flc := tuiFLCListenerState{
+		Outbound: "Auto",
+		Port:     39124,
+		Username: "flc",
+		Password: "private-secret",
+	}
+	runtime := newTestTUIServiceRuntime(t)
+	runtime.configureManagedRuntimePolicy(
+		tuiSilentMode,
+		7890,
+		flc.Port,
+		"config.yaml",
+		flc,
+		tuiTunScopeUser,
+		false,
+	)
+	runtime.setRunning(true)
+	runtime.mu.Lock()
+	runtime.activePort = flc.Port
+	runtime.mu.Unlock()
+	usedProxyURL := ""
+	runtime.routeClient = func(proxyURL string) (*http.Client, func(), error) {
+		usedProxyURL = proxyURL
+		return &http.Client{}, func() {}, nil
+	}
+	runtime.routeDelayTest = func(
+		context.Context,
+		*http.Client,
+		string,
+	) (tuiDelayResult, error) {
+		return tuiDelayResult{MedianMillis: 24, Samples: tuiDelayTestSamples}, nil
+	}
+
+	status := runtime.testRoute(tuiServiceRequest{
+		Action:  "delay_route",
+		TestURL: "https://example.com/generate_204",
+	})
+	if !status.OK || status.Delay != 24 {
+		t.Fatalf("silent route delay failed: %+v", status)
+	}
+	if usedProxyURL != flc.proxyURL() {
+		t.Fatalf("silent route proxy = %q, want authenticated FLC URL", usedProxyURL)
 	}
 }
 

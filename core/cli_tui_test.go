@@ -233,9 +233,9 @@ func TestTUICompactDashboardCanScrollEverySection(t *testing.T) {
 	}
 
 	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if model.snapshot.DashboardScroll != 0 {
+	if model.snapshot.DashboardScroll != 1 {
 		t.Fatalf(
-			"dashboard action selection did not return to controls: %d",
+			"dashboard selection was not revealed near the controls: %d",
 			model.snapshot.DashboardScroll,
 		)
 	}
@@ -348,16 +348,146 @@ func TestTUIExistingFrontendNoticeIsVisibleAndDismissible(t *testing.T) {
 	)
 	model.width = 44
 	model.height = 10
-	model.snapshot.StartupNotice =
-		"Attached to shared backend · 1 other TUI frontend: PID 123 /dev/pts/2"
+	model.enqueueNotification(tuiNotification{
+		level:   tuiNotificationInfo,
+		title:   "Shared backend",
+		message: "Attached to shared backend · 1 other TUI frontend: PID 123 /dev/pts/2",
+	})
 	output := stripTUIANSI(model.View())
 	if !strings.Contains(output, "Shared backend") ||
 		!strings.Contains(output, "PID 123") {
 		t.Fatalf("frontend startup notice is not visible:\n%s", output)
 	}
 	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if model.snapshot.StartupNotice != "" {
+	if len(model.notifications) != 0 {
 		t.Fatal("frontend startup notice was not dismissed")
+	}
+}
+
+func TestTUINotificationReplacesProgressAndPreservesPage(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageProfiles
+	model.snapshot.FocusSidebar = false
+	model.enqueueNotification(tuiNotification{
+		id:       "operation",
+		level:    tuiNotificationInfo,
+		message:  "Working...",
+		progress: true,
+	})
+	model.enqueueNotification(tuiNotification{
+		id:      "operation",
+		level:   tuiNotificationSuccess,
+		message: "Configuration saved and hot-reloaded",
+	})
+	if len(model.notifications) != 1 ||
+		model.notifications[0].message != "Configuration saved and hot-reloaded" {
+		t.Fatalf("progress notification was not replaced: %+v", model.notifications)
+	}
+	plain := stripTUIANSI(model.View())
+	if !strings.Contains(plain, "Operation complete") ||
+		!strings.Contains(plain, "Enter confirm · Esc close") {
+		t.Fatalf("notification page is incomplete:\n%s", plain)
+	}
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if len(model.notifications) != 0 ||
+		model.snapshot.Page != tuiPageProfiles ||
+		model.snapshot.FocusSidebar {
+		t.Fatalf("notification dismissal changed the underlying page: %+v", model.snapshot)
+	}
+}
+
+func TestTUINotificationLogsRedactSensitiveURLs(t *testing.T) {
+	clearTUILogs()
+	model := newTUIModel(
+		controllerClient{},
+		cliPaths{homeDir: "/tmp/private-flclash"},
+		nil,
+		true,
+	)
+	model.enqueueNotification(tuiNotification{
+		level: tuiNotificationError,
+		message: "Add profile failed: https://subscription.example/token " +
+			"/tmp/private-flclash/config.yaml",
+	})
+	logs := cliLogSnapshot()
+	if len(logs) == 0 {
+		t.Fatal("notification feedback was not written to Logs")
+	}
+	last := logs[len(logs)-1]
+	if strings.Contains(last, "subscription.example") ||
+		strings.Contains(last, "/tmp/private-flclash") ||
+		!strings.Contains(last, "[redacted-url]") ||
+		!strings.Contains(last, "$DATA") {
+		t.Fatalf("notification log was not redacted: %q", last)
+	}
+}
+
+func TestTUIQuitClosesFrontendFromNotificationPage(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.enqueueNotification(tuiNotification{
+		level:   tuiNotificationInfo,
+		message: "A notification is open",
+	})
+	command := model.handleTeaKey(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune{'q'},
+	})
+	if command == nil || !model.frontendExitRequested {
+		t.Fatal("q did not request frontend exit from the notification page")
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatal("q did not return Bubble Tea's quit message")
+	}
+}
+
+func TestTUIStatusDoesNotPolluteFooter(t *testing.T) {
+	snapshot := populatedTUISnapshot(tuiPageDashboard)
+	snapshot.Status = "This operation failed and must not appear in the footer"
+	plain := stripTUIANSI(renderTUIAtSize(
+		snapshot,
+		cliPaths{},
+		"unix:///tmp/core.sock",
+		true,
+		true,
+		120,
+		36,
+	))
+	if strings.Contains(plain, snapshot.Status) {
+		t.Fatalf("dynamic status leaked into the Dashboard footer:\n%s", plain)
+	}
+}
+
+func TestTUIDashboardRouteTestsAreSelectable(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageDashboard
+	model.snapshot.FocusSidebar = false
+	model.snapshot.SelectedDashboard = tuiDashboardMixedPortRow
+
+	model.moveSelection(1)
+	if model.snapshot.SelectedDashboard != tuiDashboardDelayRow {
+		t.Fatalf("Dashboard down selected %d, want route delay", model.snapshot.SelectedDashboard)
+	}
+	if command := model.selectCurrent(); command != nil ||
+		!strings.Contains(model.snapshot.Status, "delay test") {
+		t.Fatalf("Dashboard Enter did not invoke route delay: %q", model.snapshot.Status)
+	}
+	model.moveSelection(1)
+	if model.snapshot.SelectedDashboard != tuiDashboardSpeedRow {
+		t.Fatalf("Dashboard down selected %d, want route speed", model.snapshot.SelectedDashboard)
+	}
+	if command := model.selectCurrent(); command != nil ||
+		!strings.Contains(model.snapshot.Status, "speed test") {
+		t.Fatalf("Dashboard Enter did not invoke route speed: %q", model.snapshot.Status)
+	}
+}
+
+func TestTUIRowStylesDoNotColorPanelBorders(t *testing.T) {
+	var output strings.Builder
+	tuiRow(&output, "Network", 30, true, tuiCyan)
+	row := output.String()
+	if !strings.HasPrefix(row, "│"+tuiSelect) ||
+		!strings.HasSuffix(row, tuiReset+"│\n") {
+		t.Fatalf("row styling polluted its panel borders: %q", row)
 	}
 }
 
@@ -515,6 +645,7 @@ func TestBubbleTeaBlocksMutatingActionsWhileBusy(t *testing.T) {
 	if !strings.Contains(model.snapshot.Status, "Operation in progress") {
 		t.Fatalf("busy status = %q", model.snapshot.Status)
 	}
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
 
 	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
 	if model.snapshot.Page != tuiPageProfiles {
@@ -1628,10 +1759,8 @@ func TestTUINetworkDetectionUsesConfiguredMixedPortProxy(t *testing.T) {
 		_, _ = io.WriteString(w, `{"ip":"203.0.113.8","country_code":"SG"}`)
 	}))
 	defer proxy.Close()
-	proxyPort := proxy.Listener.Addr().(*net.TCPAddr).Port
-
 	result := detectTUIPublicIP(
-		newTUINetworkHTTPClient(proxyPort),
+		newTUINetworkHTTPClient(proxy.URL),
 		[]string{"http://public-ip.invalid/json"},
 	)
 	if result.Err != nil {
@@ -1639,6 +1768,33 @@ func TestTUINetworkDetectionUsesConfiguredMixedPortProxy(t *testing.T) {
 	}
 	if result.IP != "203.0.113.8" || result.Country != "SG" {
 		t.Fatalf("public IP result = %+v", result)
+	}
+}
+
+func TestTUINetworkDetectionAuthenticatesSilentProxy(t *testing.T) {
+	authenticated := false
+	proxy := httptest.NewServer(http.HandlerFunc(func(
+		w http.ResponseWriter,
+		request *http.Request,
+	) {
+		authenticated = strings.HasPrefix(
+			request.Header.Get("Proxy-Authorization"),
+			"Basic ",
+		)
+		_, _ = io.WriteString(w, `{"ip":"198.51.100.40","country_code":"JP"}`)
+	}))
+	defer proxy.Close()
+	proxyURL := strings.Replace(proxy.URL, "http://", "http://flc:secret@", 1)
+
+	result := detectTUIPublicIP(
+		newTUINetworkHTTPClient(proxyURL),
+		[]string{"http://public-ip.invalid/json"},
+	)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if !authenticated {
+		t.Fatal("silent network detection omitted proxy authentication")
 	}
 }
 
@@ -1659,6 +1815,9 @@ func TestTUINetworkDetectionUsesActiveFallbackPort(t *testing.T) {
 	model.snapshot.Settings.Mode = tuiSilentMode
 	if port := model.networkCheckProxyPort(); port != 0 {
 		t.Fatalf("silent network detection exposed private listener %d", port)
+	}
+	if route := model.networkCheckRoute(); !strings.HasPrefix(route, "silent:") {
+		t.Fatalf("silent network detection route = %q", route)
 	}
 }
 
@@ -1994,10 +2153,27 @@ func TestTUITrafficChartOverlaysUploadAndDownload(t *testing.T) {
 		t.Fatalf("traffic chart line count = %d", len(chart.lines))
 	}
 	rendered := strings.Join(chart.lines, "\n")
-	if !strings.Contains(rendered, tuiCyan) ||
-		!strings.Contains(rendered, tuiGreen) ||
+	if !strings.Contains(rendered, tuiTrafficChartUpload) ||
+		!strings.Contains(rendered, tuiTrafficChartDownload) ||
 		!strings.Contains(rendered, tuiTrafficChartOverlap) {
 		t.Fatalf("traffic chart does not contain both series and overlap: %q", rendered)
+	}
+	uploadOnly := buildTUITrafficChart(
+		[]trafficSnapshot{{Up: 4096}, {Up: 8192}},
+		16,
+		4,
+	)
+	downloadOnly := buildTUITrafficChart(
+		[]trafficSnapshot{{Down: 4096}, {Down: 8192}},
+		16,
+		4,
+	)
+	if !strings.Contains(strings.Join(uploadOnly.lines, "\n"), tuiTrafficChartUploadFill) ||
+		!strings.Contains(strings.Join(downloadOnly.lines, "\n"), tuiTrafficChartDownloadFill) ||
+		!strings.Contains(rendered, tuiTrafficChartOverlapFill) ||
+		!strings.Contains(chart.lines[len(chart.lines)-1], tuiTrafficChartBaseline) ||
+		!strings.Contains(chart.lines[len(chart.lines)-1], "─") {
+		t.Fatalf("traffic chart does not contain fills and a baseline: %q", rendered)
 	}
 }
 
@@ -2006,12 +2182,12 @@ func TestTUICompactTrafficChartAdaptsToViewportHeight(t *testing.T) {
 		height int
 		want   int
 	}{
-		{height: 8, want: 1},
-		{height: 10, want: 1},
-		{height: 11, want: 2},
-		{height: 14, want: 2},
-		{height: 15, want: 3},
-		{height: 30, want: 3},
+		{height: 8, want: 2},
+		{height: 10, want: 2},
+		{height: 11, want: 3},
+		{height: 14, want: 3},
+		{height: 15, want: 4},
+		{height: 30, want: 4},
 	} {
 		if got := tuiCompactTrafficChartHeight(test.height); got != test.want {
 			t.Fatalf(

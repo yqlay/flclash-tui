@@ -44,6 +44,15 @@ type tuiLocalIPCandidate struct {
 	Address   net.IP
 }
 
+type tuiNetworkRoute struct {
+	key      string
+	label    string
+	proxyURL string
+	silent   bool
+	outbound string
+	service  *tuiServiceClient
+}
+
 func (m *tuiModel) startNetworkCheck(force bool) tea.Cmd {
 	if m.networkCheckActive {
 		return nil
@@ -55,12 +64,40 @@ func (m *tuiModel) startNetworkCheck(force bool) tea.Cmd {
 	}
 	m.networkCheckActive = true
 	m.snapshot.Network.Loading = true
-	route := m.networkCheckRoute()
-	proxyPort := m.networkCheckProxyPort()
+	route := m.networkRoute()
 	return func() tea.Msg {
+		resolved := route
+		if resolved.silent {
+			if resolved.service == nil {
+				return tuiNetworkResultMsg{
+					info: tuiNetworkInfo{
+						IntranetIP: detectTUIIntranetIP(),
+						Route:      "SILENT unavailable",
+						Error:      "silent network detection requires the managed Backend",
+						CheckedAt:  time.Now(),
+					},
+					route: resolved.key,
+				}
+			}
+			status, err := resolved.service.flcProxy()
+			if err != nil {
+				return tuiNetworkResultMsg{
+					info: tuiNetworkInfo{
+						IntranetIP: detectTUIIntranetIP(),
+						Route:      "SILENT unavailable",
+						Error:      err.Error(),
+						CheckedAt:  time.Now(),
+					},
+					route: resolved.key,
+				}
+			}
+			resolved.proxyURL = status.FLCProxyURL
+			resolved.outbound = status.FLCOutbound
+			resolved.label = "SILENT · " + cliDisplayValue(status.FLCOutbound)
+		}
 		return tuiNetworkResultMsg{
-			info:  detectTUINetwork(proxyPort),
-			route: route,
+			info:  detectTUINetworkRoute(resolved.proxyURL, resolved.label),
+			route: resolved.key,
 		}
 	}
 }
@@ -79,23 +116,51 @@ func (m *tuiModel) networkCheckProxyPort() int {
 }
 
 func (m *tuiModel) networkCheckRoute() string {
-	if port := m.networkCheckProxyPort(); port > 0 {
-		return "proxy:" + strconv.Itoa(port)
+	return m.networkRoute().key
+}
+
+func (m *tuiModel) networkRoute() tuiNetworkRoute {
+	if strings.EqualFold(m.snapshot.Settings.Mode, tuiSilentMode) {
+		return tuiNetworkRoute{
+			key: fmt.Sprintf(
+				"silent:%d:%t:%s",
+				m.snapshot.ActiveProxyPort,
+				m.snapshot.FLCEnabled,
+				m.snapshot.FLCOutbound,
+			),
+			label:    "SILENT · " + cliDisplayValue(m.snapshot.FLCOutbound),
+			silent:   true,
+			outbound: m.snapshot.FLCOutbound,
+			service:  m.service,
+		}
 	}
-	return "direct"
+	if port := m.networkCheckProxyPort(); port > 0 {
+		return tuiNetworkRoute{
+			key:      "proxy:" + strconv.Itoa(port),
+			label:    fmt.Sprintf("PROXY 127.0.0.1:%d", port),
+			proxyURL: tuiLoopbackProxyURL(port),
+		}
+	}
+	return tuiNetworkRoute{key: "direct", label: "DIRECT"}
 }
 
 func detectTUINetwork(proxyPort int) tuiNetworkInfo {
+	proxyURL := tuiLoopbackProxyURL(proxyPort)
+	label := "DIRECT"
+	if proxyPort > 0 {
+		label = fmt.Sprintf("PROXY 127.0.0.1:%d", proxyPort)
+	}
+	return detectTUINetworkRoute(proxyURL, label)
+}
+
+func detectTUINetworkRoute(proxyURL, routeLabel string) tuiNetworkInfo {
 	info := tuiNetworkInfo{
 		IntranetIP: detectTUIIntranetIP(),
-		Route:      "DIRECT",
+		Route:      routeLabel,
 		CheckedAt:  time.Now(),
 	}
-	if proxyPort > 0 {
-		info.Route = fmt.Sprintf("PROXY 127.0.0.1:%d", proxyPort)
-	}
 	result := detectTUIPublicIP(
-		newTUINetworkHTTPClient(proxyPort),
+		newTUINetworkHTTPClient(proxyURL),
 		tuiPublicIPSources,
 	)
 	if result.Err != nil {
@@ -107,14 +172,12 @@ func detectTUINetwork(proxyPort int) tuiNetworkInfo {
 	return info
 }
 
-func newTUINetworkHTTPClient(proxyPort int) *http.Client {
+func newTUINetworkHTTPClient(proxyURL string) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	if proxyPort > 0 {
-		transport.Proxy = http.ProxyURL(&url.URL{
-			Scheme: "http",
-			Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(proxyPort)),
-		})
+	if parsedProxyURL, err := url.Parse(proxyURL); err == nil &&
+		parsedProxyURL.Scheme == "http" && parsedProxyURL.Host != "" {
+		transport.Proxy = http.ProxyURL(parsedProxyURL)
 	}
 	return &http.Client{
 		Transport: transport,

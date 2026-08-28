@@ -71,11 +71,14 @@ flclash flc env
 flclash net show|refresh|delay|speed
 ```
 
-`net delay` warms the active normal route, takes five RTT samples, and reports
+`net delay` warms the active route, takes five RTT samples, and reports
 the median and mean successive-sample jitter. `net speed` measures aggregate
 Cloudflare download throughput across four concurrent streams, stopping after
 99,999,999 bytes or five seconds. Both commands use the Backend's active runtime
-Proxy port, including an automatically selected fallback port.
+Proxy port, including an automatically selected fallback port. In `silent`
+mode they use the authenticated private FLC listener, so the reported public IP,
+latency, and throughput describe the selected FLC outbound rather than the
+machine's direct connection.
 
 Profiles and configuration:
 
@@ -183,7 +186,21 @@ U, F2/u, e      update/rename/edit Profile      x             clear/close all
 q               exit only this TUI               Ctrl+C        shutdown Backend + Core
 ```
 
-The Dashboard overlays upload (cyan) and download (green) from the existing live traffic stream on one shared-scale, 30-sample chart. Compact terminals expose the chart through Dashboard scrolling, and the layout remains operable down to `40x10`. Long-running tests run outside the input loop; group speed tests are serial and each node uses four download streams for at most 100 MB or five seconds. Delay tests use five samples and show median/jitter when space permits.
+The Dashboard overlays upload (blue), download (red), and overlap (purple) with
+matching light fills above a gray baseline on one shared-scale, 30-sample chart.
+`Rule route`/`Silent route` and `Cloudflare DL` are selectable with ↑/↓ or
+`w`/`s`; Enter runs the selected test, while `d` and `v` remain direct shortcuts.
+Compact terminals expose the chart and selected rows through automatic
+Dashboard scrolling, and the layout remains operable down to `40x10`.
+Long-running tests run outside the input loop; group speed tests are serial and
+each node uses four download streams for at most 100 MB or five seconds. Delay
+tests use five samples and show median/jitter when space permits.
+
+Operation progress, results, warnings, and errors open on a dedicated
+notification page instead of being appended to the footer. Enter confirms and
+closes the current notification, Esc closes it without changing the underlying
+page, and ↑/↓ or PgUp/PgDn scroll long messages. Notifications are also written
+to Logs; repeated progress for one operation replaces its previous entry.
 
 Application events use timestamped INFO/WARN/ERROR records. The TUI keeps the latest 500 entries; `flclash logs` reads the persistent Backend log, which rotates at 5 MiB and keeps one backup. Subscription URLs, YAML contents, and FLC credentials are not logged.
 
