@@ -116,41 +116,42 @@ var tuiTrafficModes = []string{
 }
 
 type tuiModel struct {
-	snapshot            tuiSnapshot
-	client              controllerClient
-	service             *tuiServiceClient
-	paths               cliPaths
-	setupParams         []byte
-	ownsCore            bool
-	coreRunning         bool
-	systemProxyManaged  bool
-	width               int
-	height              int
-	refreshSequence     uint64
-	refreshInFlight     bool
-	busy                bool
-	inputMode           tuiInputMode
-	inputValue          []rune
-	inputCursor         int
-	inputSelectAll      bool
-	modeSelectionOpen   bool
-	selectedMode        int
-	renameProfilePath   string
-	editorPath          string
-	editorTempPath      string
-	editorBackup        tuiProfileBackup
-	pendingMixedPort    *int
-	stagedSettings      *tuiSettings
-	settingsDirty       bool
-	backendRevision     uint64
-	networkCheckActive  bool
-	memoryRefreshActive bool
-	coreMemoryUpdates   <-chan tuiCoreMemoryUpdate
-	stopCoreMemory      func()
-	trafficUpdates      <-chan tuiTrafficUpdate
-	stopTraffic         func()
-	stopServiceOnExit   bool // Legacy test visibility; managed frontends always leave this false.
-	shutdownRequested   bool
+	snapshot              tuiSnapshot
+	client                controllerClient
+	service               *tuiServiceClient
+	paths                 cliPaths
+	setupParams           []byte
+	ownsCore              bool
+	coreRunning           bool
+	systemProxyManaged    bool
+	width                 int
+	height                int
+	refreshSequence       uint64
+	refreshInFlight       bool
+	busy                  bool
+	inputMode             tuiInputMode
+	inputValue            []rune
+	inputCursor           int
+	inputSelectAll        bool
+	modeSelectionOpen     bool
+	selectedMode          int
+	renameProfilePath     string
+	editorPath            string
+	editorTempPath        string
+	editorBackup          tuiProfileBackup
+	pendingMixedPort      *int
+	stagedSettings        *tuiSettings
+	settingsDirty         bool
+	backendRevision       uint64
+	networkCheckActive    bool
+	memoryRefreshActive   bool
+	coreMemoryUpdates     <-chan tuiCoreMemoryUpdate
+	stopCoreMemory        func()
+	trafficUpdates        <-chan tuiTrafficUpdate
+	stopTraffic           func()
+	stopServiceOnExit     bool // Legacy test visibility; managed frontends always leave this false.
+	frontendExitRequested bool
+	shutdownRequested     bool
 }
 
 func newTUIModel(
@@ -410,6 +411,10 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.snapshot.Traffic = message.update.Traffic
+		m.snapshot.TrafficHistory = appendTUITrafficHistory(
+			m.snapshot.TrafficHistory,
+			message.update.Traffic,
+		)
 		m.snapshot.TotalTraffic = trafficSnapshot{
 			Up:   message.update.Traffic.UpTotal,
 			Down: message.update.Traffic.DownTotal,
@@ -761,7 +766,7 @@ func (m *tuiModel) shutdown() {
 	if m.editorTempPath != "" {
 		_ = os.Remove(m.editorTempPath)
 	}
-	if !m.ownsCore {
+	if m.frontendExitRequested || !m.shutdownRequested || !m.ownsCore {
 		return
 	}
 	if m.service != nil {
@@ -863,6 +868,12 @@ func cloneTUISettings(value *tuiSettings) *tuiSettings {
 }
 
 func mergeTUIRefresh(current, refreshed tuiSnapshot) tuiSnapshot {
+	refreshed.Traffic = current.Traffic
+	refreshed.TrafficHistory = append(
+		[]trafficSnapshot(nil),
+		current.TrafficHistory...,
+	)
+	refreshed.TotalTraffic = current.TotalTraffic
 	refreshed = preserveTUIInteraction(current, refreshed)
 	if !current.UpdatedAt.IsZero() {
 		refreshed.Settings.SystemProxy = current.Settings.SystemProxy
@@ -886,6 +897,10 @@ func mergeTUIOperation(current, result tuiSnapshot) tuiSnapshot {
 	// operation snapshot was captured before those updates, so never replace the
 	// live counters with its stale copy when the result is applied.
 	result.Traffic = current.Traffic
+	result.TrafficHistory = append(
+		[]trafficSnapshot(nil),
+		current.TrafficHistory...,
+	)
 	result.TotalTraffic = current.TotalTraffic
 	return preserveTUIInteraction(current, result)
 }
@@ -1060,15 +1075,24 @@ func clampTUISelection(index, total int) int {
 func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	switch key {
 	case tuiKeyQuit:
+		m.frontendExitRequested = true
+		m.stopCoreMemoryMonitor()
+		m.stopTrafficMonitor()
 		return tea.Quit
 	case tuiKeyInterrupt:
-		if m.service == nil || !m.ownsCore {
+		if !m.ownsCore {
+			m.frontendExitRequested = true
+			m.stopCoreMemoryMonitor()
+			m.stopTrafficMonitor()
 			return tea.Quit
 		}
 		if m.shutdownRequested {
 			return nil
 		}
 		m.shutdownRequested = true
+		if m.service == nil {
+			return tea.Quit
+		}
 		m.snapshot.Status = "Shutting down Backend and Core..."
 		service := m.service
 		return func() tea.Msg {
@@ -1321,7 +1345,12 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		if m.snapshot.Page == tuiPageDashboard {
 			limit := m.dashboardViewportLimit()
 			maxScroll := maxTUIIndex(
-				len(tuiCompactDashboardRows(m.snapshot, m.paths)) -
+				len(tuiCompactDashboardRows(
+					m.snapshot,
+					m.paths,
+					maxTUIWidth(m.width-2, 1),
+					m.dashboardPageHeight(),
+				)) -
 					limit,
 			)
 			m.snapshot.DashboardScroll = minTUI(
@@ -1423,11 +1452,15 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 }
 
 func (m *tuiModel) dashboardViewportLimit() int {
+	return maxTUIWidth(m.dashboardPageHeight()-3, 1)
+}
+
+func (m *tuiModel) dashboardPageHeight() int {
 	pageHeight := m.height - 4
 	if m.width < 88 || m.height < 18 {
 		pageHeight = m.height - 2
 	}
-	return maxTUIWidth(pageHeight-3, 1)
+	return maxTUIWidth(pageHeight, 1)
 }
 
 func (m *tuiModel) moveSelection(delta int) {

@@ -12,7 +12,7 @@ FlClash TUI 是面向 Linux、SSH 和无头服务器的 Mihomo/Clash 终端代�
 
 ## 特点
 
-- Dashboard、Proxies、Profiles、History、Connections、Logs、Settings 和 Maintenance 八个 TUI 页面。
+- Dashboard（含上下行实时曲线）、Proxies、Profiles、History、Connections、Logs、Settings 和 Maintenance 八个 TUI 页面。
 - 每个 Linux 用户一个 Backend，多个 TUI/CLI 前端安全共享状态。
 - 默认 `silent` 模式：普通程序保持直连，只有 `flc COMMAND` 使用带认证的本地代理。
 - 订阅 URL 与本地 YAML 文件导入、Profile 原子写入、失败回滚。

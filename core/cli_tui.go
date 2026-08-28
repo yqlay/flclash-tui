@@ -212,6 +212,7 @@ type tuiSnapshot struct {
 	Groups              []tuiGroup
 	GroupOrder          []string
 	Traffic             trafficSnapshot
+	TrafficHistory      []trafficSnapshot
 	TotalTraffic        trafficSnapshot
 	Connections         []tuiConnection
 	Requests            []tuiRequest
@@ -408,7 +409,7 @@ func tuiCommand(args []string) error {
 		return fmt.Errorf("register TUI frontend: %w", err)
 	}
 	defer frontendSession.close()
-	return runTUI(
+	runErr := runTUI(
 		client,
 		paths,
 		nil,
@@ -417,6 +418,10 @@ func tuiCommand(args []string) error {
 		coreRunning,
 		formatCLIFrontendNotice(existingFrontends),
 	)
+	// Release the current frontend synchronously before tuiCommand returns.
+	// close is idempotent, so the defer remains as an error-path safeguard.
+	frontendSession.close()
+	return runErr
 }
 
 func ensureTUIConfig(paths cliPaths, allowCreate bool) error {
@@ -2450,12 +2455,12 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 		b.WriteByte('\n')
 	}
 
-	footer := "  ←→ panel  ↑↓/ws move  Enter apply  Esc nav  ? help  q detach  ^C shutdown"
+	footer := "  ←→ panel  ↑↓/ws move  Enter apply  Esc nav  ? help  q exit TUI  ^C shutdown"
 	if width >= 110 {
-		footer = "  ←→ panel  ↑↓/ws move  Enter open/apply  Esc back  d delay  ? help  q detach  ^C shutdown"
+		footer = "  ←→ panel  ↑↓/ws move  Enter open/apply  Esc back  d delay  ? help  q exit TUI  ^C shutdown"
 	}
-	if snapshot.Page == tuiPageDashboard && bodyHeight < 27 {
-		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  q detach  ^C shutdown"
+	if snapshot.Page == tuiPageDashboard && bodyHeight < 33 {
+		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  q exit TUI  ^C shutdown"
 	}
 	if snapshot.Status != "" && snapshot.Status != "Connected" {
 		statusWidth := maxTUIWidth(width-tuiDisplayWidth(footer)-5, 0)
@@ -2708,7 +2713,7 @@ func renderTUITooSmall(width, height int) string {
 		fmt.Sprintf("  Terminal: %dx%d", width, height),
 		"  Resize to at least 40x10",
 		"",
-		"  q detach · Ctrl+C shutdown",
+		"  q exit TUI · Ctrl+C shutdown",
 	}
 	var b strings.Builder
 	for row := 0; row < height; row++ {
@@ -2738,7 +2743,7 @@ func renderTUITiny(
 	if snapshot.Status != "" {
 		lines = append(lines, snapshot.Status)
 	}
-	lines = append(lines, "q detach · ^C shutdown")
+	lines = append(lines, "q exit TUI · ^C shutdown")
 	var b strings.Builder
 	for row := 0; row < height; row++ {
 		line := ""
@@ -2810,7 +2815,7 @@ func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) stri
 	} else if snapshot.Page == tuiPageMaintenance {
 		drawTUIMaintenance(&b, snapshot, width, height)
 	} else if snapshot.Page == tuiPageDashboard {
-		if height < 27 {
+		if height < 33 {
 			return renderTUICompactDashboard(
 				snapshot,
 				paths,
@@ -3317,7 +3322,7 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
 		"Settings       Enter applies row · a LAN · v IPv6 · p port",
 		"Maintenance    Edit, backup, restore, Geo, traffic reset, and updates",
-		"Exit           q detaches this TUI · Ctrl+C shuts down Backend and Core",
+		"Exit           q exits this TUI · Ctrl+C shuts down Backend and Core",
 	}
 	if height < 28 {
 		rows = rows[:minTUI(5, len(rows))]
@@ -3403,6 +3408,30 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 	)
 	tuiEndPanel(b, width)
 
+	if height >= 33 {
+		plotHeight := minTUI(maxTUIWidth(height-30, 3), 6)
+		chart := buildTUITrafficChart(
+			snapshot.TrafficHistory,
+			maxTUIWidth(width-4, 1),
+			plotHeight,
+		)
+		tuiTitle(
+			b,
+			"Live traffic",
+			fmt.Sprintf(
+				"↑ %s/s · ↓ %s/s · peak %s/s · 30 samples",
+				formatBytes(snapshot.Traffic.Up),
+				formatBytes(snapshot.Traffic.Down),
+				formatBytes(chart.peak),
+			),
+			width,
+		)
+		for _, line := range chart.lines {
+			writeTUIAnsiRow(b, line, width)
+		}
+		tuiEndPanel(b, width)
+	}
+
 	if height >= 17 {
 		overview := tuiMemoryRows(snapshot)
 		overview = append(overview,
@@ -3436,6 +3465,7 @@ type tuiDashboardCompactRow struct {
 	value    string
 	color    string
 	selected bool
+	ansi     bool
 }
 
 func renderTUICompactDashboard(
@@ -3444,7 +3474,7 @@ func renderTUICompactDashboard(
 	width,
 	height int,
 ) string {
-	rows := tuiCompactDashboardRows(snapshot, paths)
+	rows := tuiCompactDashboardRows(snapshot, paths, width, height)
 	limit := maxTUIWidth(height-3, 1)
 	maxStart := maxTUIIndex(len(rows) - limit)
 	start := snapshot.DashboardScroll
@@ -3468,6 +3498,10 @@ func renderTUICompactDashboard(
 		width,
 	)
 	for _, row := range rows[start:end] {
+		if row.ansi {
+			writeTUIAnsiRow(&b, row.value, width)
+			continue
+		}
 		tuiRow(
 			&b,
 			row.value,
@@ -3483,6 +3517,8 @@ func renderTUICompactDashboard(
 func tuiCompactDashboardRows(
 	snapshot tuiSnapshot,
 	paths cliPaths,
+	width int,
+	height int,
 ) []tuiDashboardCompactRow {
 	controls := []string{
 		fmt.Sprintf("Core          %s", tuiServiceLabel(snapshot)),
@@ -3494,13 +3530,30 @@ func tuiCompactDashboardRows(
 		fmt.Sprintf("Mode          %s", snapshot.Settings.Mode),
 		fmt.Sprintf("Proxy port    %s", tuiProxyPortLabel(snapshot)),
 	}
-	rows := make([]tuiDashboardCompactRow, 0, 24)
+	rows := make([]tuiDashboardCompactRow, 0, 28)
 	for index, control := range controls {
 		rows = append(rows, tuiDashboardCompactRow{
 			value: control,
 			selected: index == snapshot.SelectedDashboard &&
 				!snapshot.FocusSidebar,
 		})
+	}
+	chart := buildTUITrafficChart(
+		snapshot.TrafficHistory,
+		maxTUIWidth(width-4, 1),
+		tuiCompactTrafficChartHeight(height),
+	)
+	rows = append(rows, tuiDashboardCompactRow{
+		value: fmt.Sprintf(
+			"── Live traffic · ↑ %s/s · ↓ %s/s · peak %s/s · 30 samples",
+			formatBytes(snapshot.Traffic.Up),
+			formatBytes(snapshot.Traffic.Down),
+			formatBytes(chart.peak),
+		),
+		color: tuiCyan,
+	})
+	for _, line := range chart.lines {
+		rows = append(rows, tuiDashboardCompactRow{value: line, ansi: true})
 	}
 
 	publicIP := "Checking..."
@@ -3585,6 +3638,17 @@ func tuiCompactDashboardRows(
 		},
 	)
 	return rows
+}
+
+func tuiCompactTrafficChartHeight(height int) int {
+	switch {
+	case height <= 10:
+		return 1
+	case height <= 14:
+		return 2
+	default:
+		return 3
+	}
 }
 
 func tuiDashboardDelayLabel(delay tuiDelayResult) string {

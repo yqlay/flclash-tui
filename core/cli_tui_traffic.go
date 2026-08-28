@@ -21,6 +21,19 @@ type tuiTrafficUpdate struct {
 	Closed  bool
 }
 
+const tuiTrafficHistoryLimit = 30
+
+func appendTUITrafficHistory(
+	history []trafficSnapshot,
+	traffic trafficSnapshot,
+) []trafficSnapshot {
+	if len(history) >= tuiTrafficHistoryLimit {
+		copy(history, history[len(history)-tuiTrafficHistoryLimit+1:])
+		history = history[:tuiTrafficHistoryLimit-1]
+	}
+	return append(history, traffic)
+}
+
 func (m *tuiModel) startTrafficMonitor() {
 	if m.trafficUpdates != nil {
 		return

@@ -162,7 +162,7 @@ Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availa
 ## TUI pages and keys
 
 ```text
-1 Dashboard     Core/System proxy/TUN/Mode/Proxy port/network/memory/traffic
+1 Dashboard     Core/System proxy/TUN/Mode/Proxy port/network/memory/30-sample traffic chart
 2 Proxies       groups/nodes/Providers, selection, delay and speed tests
 3 Profiles      import URL/local YAML, activate, update, rename, edit
 4 History       persistent shared active and recent connection history
@@ -180,10 +180,10 @@ r / R           refresh / reload config         ?             help
 d / v           page-scoped delay / speed       n             network/import
 S / c / t / m   System proxy/Core/TUN/mode list p, +, -       Proxy port
 U, F2/u, e      update/rename/edit Profile      x             clear/close all
-q               detach this TUI                 Ctrl+C        shutdown Backend + Core
+q               exit only this TUI               Ctrl+C        shutdown Backend + Core
 ```
 
-The layout remains operable down to `40x10`. Long-running tests run outside the input loop; group speed tests are serial and each node uses four download streams for at most 100 MB or five seconds. Delay tests use five samples and show median/jitter when space permits.
+The Dashboard overlays upload (cyan) and download (green) from the existing live traffic stream on one shared-scale, 30-sample chart. Compact terminals expose the chart through Dashboard scrolling, and the layout remains operable down to `40x10`. Long-running tests run outside the input loop; group speed tests are serial and each node uses four download streams for at most 100 MB or five seconds. Delay tests use five samples and show median/jitter when space permits.
 
 Application events use timestamped INFO/WARN/ERROR records. The TUI keeps the latest 500 entries; `flclash logs` reads the persistent Backend log, which rotates at 5 MiB and keeps one backup. Subscription URLs, YAML contents, and FLC credentials are not logged.
 

@@ -200,25 +200,31 @@ func TestTUICompactDashboardCanScrollEverySection(t *testing.T) {
 
 	first := stripTUIANSI(model.View())
 	if !strings.Contains(first, "Core") ||
+		!strings.Contains(first, "Live traffic") ||
 		strings.Contains(first, "TUI frontends") {
 		t.Fatalf("first compact viewport is wrong:\n%s", first)
 	}
 	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	network := stripTUIANSI(model.View())
 	if !strings.Contains(network, "Public IP") ||
-		!strings.Contains(network, "Rule route") ||
-		(!strings.Contains(network, "Overview") &&
-			!strings.Contains(network, "System memory")) {
+		!strings.Contains(network, "Rule route") {
 		t.Fatalf("PageDown did not reveal network section:\n%s", network)
 	}
-	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
-	overview := stripTUIANSI(model.View())
-	if !strings.Contains(overview, "Go heap") ||
-		!strings.Contains(overview, "Network speed") {
-		t.Fatalf("second PageDown did not reveal overview:\n%s", overview)
-	}
-	for count := 0; count < 4; count++ {
+	viewports := []string{first, network}
+	for count := 0; count < 6; count++ {
 		_, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		viewports = append(viewports, stripTUIANSI(model.View()))
+	}
+	all := strings.Join(viewports, "\n")
+	for _, expected := range []string{
+		"Go heap",
+		"Network speed",
+		"TUI frontends",
+		"Config",
+	} {
+		if !strings.Contains(all, expected) {
+			t.Fatalf("compact Dashboard never revealed %q:\n%s", expected, all)
+		}
 	}
 	last := stripTUIANSI(model.View())
 	if !strings.Contains(last, "TUI frontends") ||
@@ -780,7 +786,7 @@ func TestTUIQuitKeysUseGracefulShutdownPath(t *testing.T) {
 		stopServiceOnExit bool
 	}{
 		{
-			name:     "q detaches TUI",
+			name:     "q exits current TUI",
 			key:      tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}},
 			expected: tuiKeyQuit,
 		},
@@ -821,7 +827,58 @@ func TestTUIQuitKeysUseGracefulShutdownPath(t *testing.T) {
 					test.stopServiceOnExit,
 				)
 			}
+			if model.frontendExitRequested != !test.stopServiceOnExit {
+				t.Fatalf(
+					"frontendExitRequested = %t, want %t",
+					model.frontendExitRequested,
+					!test.stopServiceOnExit,
+				)
+			}
 		})
+	}
+}
+
+func TestTUIQuitCancelsOnlyFrontendMonitors(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	coreMemoryStopped := false
+	trafficStopped := false
+	model.stopCoreMemory = func() { coreMemoryStopped = true }
+	model.stopTraffic = func() { trafficStopped = true }
+
+	command := model.handleKey(tuiKeyQuit)
+	if command == nil {
+		t.Fatal("q did not return a quit command")
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatal("q did not terminate the TUI event loop")
+	}
+	if !coreMemoryStopped || !trafficStopped {
+		t.Fatalf(
+			"q left frontend monitors running: memory=%t traffic=%t",
+			coreMemoryStopped,
+			trafficStopped,
+		)
+	}
+	if model.shutdownRequested {
+		t.Fatal("q requested an owned Core shutdown")
+	}
+}
+
+func TestTUIInterruptMarksOwnedLocalCoreForShutdown(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	command := model.handleKey(tuiKeyInterrupt)
+	if command == nil {
+		t.Fatal("Ctrl+C did not return a quit command for an owned local Core")
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatal("Ctrl+C did not terminate the local TUI event loop")
+	}
+	if !model.shutdownRequested || model.frontendExitRequested {
+		t.Fatalf(
+			"Ctrl+C lifecycle state is wrong: shutdown=%t frontendExit=%t",
+			model.shutdownRequested,
+			model.frontendExitRequested,
+		)
 	}
 }
 
@@ -1898,6 +1955,95 @@ func TestTUITrafficUpdateAppliesLiveAndTotalCounters(t *testing.T) {
 		model.snapshot.TotalTraffic.Down != 8192 {
 		t.Fatalf("traffic update was not applied: %+v", model.snapshot)
 	}
+	if len(model.snapshot.TrafficHistory) != 1 ||
+		model.snapshot.TrafficHistory[0].Up != 1024 ||
+		model.snapshot.TrafficHistory[0].Down != 2048 {
+		t.Fatalf("traffic history was not updated: %+v", model.snapshot.TrafficHistory)
+	}
+}
+
+func TestTUITrafficHistoryKeepsLatestThirtySamples(t *testing.T) {
+	history := []trafficSnapshot{}
+	for index := 0; index < tuiTrafficHistoryLimit+7; index++ {
+		history = appendTUITrafficHistory(history, trafficSnapshot{
+			Up:   int64(index),
+			Down: int64(index * 2),
+		})
+	}
+	if len(history) != tuiTrafficHistoryLimit {
+		t.Fatalf("traffic history length = %d", len(history))
+	}
+	if history[0].Up != 7 || history[len(history)-1].Up != 36 {
+		t.Fatalf("traffic history retained the wrong range: %+v", history)
+	}
+}
+
+func TestTUITrafficChartOverlaysUploadAndDownload(t *testing.T) {
+	history := make([]trafficSnapshot, tuiTrafficHistoryLimit)
+	for index := range history {
+		history[index] = trafficSnapshot{
+			Up:   int64(index * 1024),
+			Down: int64((tuiTrafficHistoryLimit - index) * 2048),
+		}
+	}
+	chart := buildTUITrafficChart(history, 32, 4)
+	if chart.peak != int64(tuiTrafficHistoryLimit*2048) {
+		t.Fatalf("traffic chart peak = %d", chart.peak)
+	}
+	if len(chart.lines) != 4 {
+		t.Fatalf("traffic chart line count = %d", len(chart.lines))
+	}
+	rendered := strings.Join(chart.lines, "\n")
+	if !strings.Contains(rendered, tuiCyan) ||
+		!strings.Contains(rendered, tuiGreen) ||
+		!strings.Contains(rendered, tuiTrafficChartOverlap) {
+		t.Fatalf("traffic chart does not contain both series and overlap: %q", rendered)
+	}
+}
+
+func TestTUICompactTrafficChartAdaptsToViewportHeight(t *testing.T) {
+	for _, test := range []struct {
+		height int
+		want   int
+	}{
+		{height: 8, want: 1},
+		{height: 10, want: 1},
+		{height: 11, want: 2},
+		{height: 14, want: 2},
+		{height: 15, want: 3},
+		{height: 30, want: 3},
+	} {
+		if got := tuiCompactTrafficChartHeight(test.height); got != test.want {
+			t.Fatalf(
+				"compact chart height at %d = %d, want %d",
+				test.height,
+				got,
+				test.want,
+			)
+		}
+	}
+}
+
+func TestTUIRefreshKeepsNewerTrafficHistory(t *testing.T) {
+	current := tuiSnapshot{
+		Traffic: trafficSnapshot{Up: 30, Down: 40},
+		TrafficHistory: []trafficSnapshot{
+			{Up: 10, Down: 20},
+			{Up: 30, Down: 40},
+		},
+		TotalTraffic: trafficSnapshot{Up: 50, Down: 60},
+	}
+	refreshed := tuiSnapshot{
+		Traffic:        trafficSnapshot{Up: 1, Down: 2},
+		TrafficHistory: []trafficSnapshot{{Up: 1, Down: 2}},
+		TotalTraffic:   trafficSnapshot{Up: 3, Down: 4},
+	}
+	merged := mergeTUIRefresh(current, refreshed)
+	if merged.Traffic != current.Traffic ||
+		merged.TotalTraffic != current.TotalTraffic ||
+		!slices.Equal(merged.TrafficHistory, current.TrafficHistory) {
+		t.Fatalf("refresh restored stale traffic: %+v", merged)
+	}
 }
 
 func TestTUITrafficStreamOutlivesControllerRequestTimeout(t *testing.T) {
@@ -2013,6 +2159,39 @@ func TestTUIDashboardRendersEmbeddedAndExternalMemory(t *testing.T) {
 		if !strings.Contains(externalPlain, expected) {
 			t.Fatalf("external Dashboard does not contain %q:\n%s", expected, externalPlain)
 		}
+	}
+}
+
+func TestTUIDashboardRendersAdaptiveLiveTrafficChart(t *testing.T) {
+	snapshot := populatedTUISnapshot(tuiPageDashboard)
+	for index := 0; index < tuiTrafficHistoryLimit; index++ {
+		snapshot.TrafficHistory = append(snapshot.TrafficHistory, trafficSnapshot{
+			Up:   int64((index + 1) * 1024),
+			Down: int64((tuiTrafficHistoryLimit - index) * 2048),
+		})
+	}
+	snapshot.Traffic = snapshot.TrafficHistory[len(snapshot.TrafficHistory)-1]
+	output := renderTUIAtSize(
+		snapshot,
+		cliPaths{configPath: "/tmp/config.yaml"},
+		"private Unix socket",
+		true,
+		true,
+		120,
+		40,
+	)
+	plain := stripTUIANSI(output)
+	for _, expected := range []string{
+		"Live traffic",
+		"30 samples",
+		"Traffic total",
+	} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("Dashboard traffic chart does not contain %q:\n%s", expected, plain)
+		}
+	}
+	if !strings.Contains(output, tuiCyan) || !strings.Contains(output, tuiGreen) {
+		t.Fatalf("Dashboard traffic chart is missing series colors: %q", output)
 	}
 }
 
@@ -2582,17 +2761,20 @@ func TestTUIRunningCoreUsesLiveSettingsInsteadOfStagedYAML(t *testing.T) {
 
 func TestTUIOperationResultKeepsLiveTrafficUpdates(t *testing.T) {
 	current := tuiSnapshot{
-		Traffic:      trafficSnapshot{Up: 11, Down: 22},
-		TotalTraffic: trafficSnapshot{Up: 33, Down: 44},
+		Traffic:        trafficSnapshot{Up: 11, Down: 22},
+		TrafficHistory: []trafficSnapshot{{Up: 11, Down: 22}},
+		TotalTraffic:   trafficSnapshot{Up: 33, Down: 44},
 	}
 	staleResult := tuiSnapshot{
-		Traffic:      trafficSnapshot{Up: 1, Down: 2},
-		TotalTraffic: trafficSnapshot{Up: 3, Down: 4},
+		Traffic:        trafficSnapshot{Up: 1, Down: 2},
+		TrafficHistory: []trafficSnapshot{{Up: 1, Down: 2}},
+		TotalTraffic:   trafficSnapshot{Up: 3, Down: 4},
 	}
 
 	merged := mergeTUIOperation(current, staleResult)
 	if merged.Traffic != current.Traffic ||
-		merged.TotalTraffic != current.TotalTraffic {
+		merged.TotalTraffic != current.TotalTraffic ||
+		!slices.Equal(merged.TrafficHistory, current.TrafficHistory) {
 		t.Fatalf(
 			"operation result restored stale traffic: current=%+v/%+v merged=%+v/%+v",
 			current.Traffic,

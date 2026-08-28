@@ -12,7 +12,7 @@ This is an unofficial terminal-focused derivative of [FlClash](https://github.co
 
 ## Highlights
 
-- Eight TUI pages: Dashboard, Proxies, Profiles, History, Connections, Logs, Settings, and Maintenance.
+- Eight TUI pages, including a Dashboard with overlaid live upload/download curves.
 - One Backend per Linux user, safely shared by multiple TUI/CLI frontends.
 - Default `silent` mode keeps ordinary programs direct while `flc COMMAND` uses an authenticated local proxy.
 - Subscription URL and local YAML imports, atomic Profile writes, and rollback on failure.

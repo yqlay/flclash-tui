@@ -59,10 +59,13 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux go test -tags cli ./...
           CGO_ENABLED=0 GOOS=linux go vet -tags cli ./...
+          cli_test_dir="$(mktemp -d)"
+          CGO_ENABLED=0 GOOS=linux go build -tags cli -trimpath -o "$cli_test_dir/flclash" .
+          bash ../packaging/tui-exit-test.sh "$cli_test_dir/flclash"
 
       - name: Test installer
         run: |
-          bash -n install.sh packaging/install-script-test.sh
+          bash -n install.sh packaging/install-script-test.sh packaging/tui-exit-test.sh
           bash packaging/install-script-test.sh
 
       - name: Test Windows helper

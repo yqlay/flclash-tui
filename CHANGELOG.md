@@ -1,3 +1,10 @@
+## FlClash TUI v0.5.6
+
+- Add an adaptive 30-sample Dashboard chart that overlays live upload and
+  download traffic from the existing Mihomo traffic stream.
+- Make `q` explicitly cancel and exit only the current TUI frontend while
+  reserving Backend and Core shutdown for `Ctrl+C`.
+
 ## FlClash TUI v0.5.5
 
 - Hide generated silent/managed runtime YAML files from Profile lists and add
