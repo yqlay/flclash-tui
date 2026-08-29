@@ -1,3 +1,14 @@
+## FlClash TUI v0.5.11
+
+- Keep `q` scoped to the current TUI frontend, including synchronous frontend
+  monitor and session-lock cleanup, without stopping the shared Backend.
+- Route `Ctrl+C` through managed Backend and Core shutdown from normal,
+  notification, selection, busy, input-editor, and process-signal paths.
+- Wait for the Backend PID and Unix socket to disappear after the shutdown ACK;
+  keep the frontend open with an error instead of reporting a false clean exit.
+- Extend the real pseudo-terminal CI test to verify frontend registration,
+  Backend/Core state, process liveness, and socket cleanup for both exit keys.
+
 ## FlClash TUI v0.5.10
 
 - Add a white dotted baseline to the live traffic chart, while preserving blue

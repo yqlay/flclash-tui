@@ -20,7 +20,20 @@ else
 fi
 frontend_dir="${runtime_root}/.flclash-frontends"
 test_dir=$(mktemp -d)
-trap 'rm -rf -- "$test_dir"' EXIT
+backend_started=false
+cleanup() {
+  if [[ "$backend_started" == true ]]; then
+    "$binary" backend stop >/dev/null 2>&1 || true
+  fi
+  rm -rf -- "$test_dir"
+}
+trap cleanup EXIT
+
+initial_status=$("$binary" status --json)
+if grep -q '"backend": "running"' <<<"$initial_status"; then
+  printf 'TUI exit test requires no pre-existing FlClash backend\n' >&2
+  exit 1
+fi
 if [[ -d "$frontend_dir" ]]; then
   find "$frontend_dir" -maxdepth 1 -type f -printf '%f\n' | sort >"$test_dir/before"
 else
@@ -45,4 +58,66 @@ if comm -13 "$test_dir/before" "$test_dir/after" | grep -q .; then
   exit 1
 fi
 
-printf 'TUI q exit test passed\n'
+managed_dir="${test_dir}/managed-home"
+mkdir -p "$managed_dir"
+backend_started=true
+
+# q must terminate only the current frontend. The managed Backend and Core stay
+# alive, while the frontend session lock is released synchronously.
+timeout 15s bash -c '
+  (sleep 0.2; printf "\033]11;rgb:0000/0000/0000\007\033[1;1R"; sleep 0.8; printf q) |
+    script -qfec "$1 tui --directory $2" /dev/null >/dev/null
+' bash "$binary" "$managed_dir"
+
+after_q_status=$("$binary" status --json)
+backend_pid=$(sed -n 's/.*"backend_pid": \([0-9][0-9]*\).*/\1/p' <<<"$after_q_status")
+frontends=$(sed -n 's/.*"frontends": \([0-9][0-9]*\).*/\1/p' <<<"$after_q_status")
+if [[ -z "$backend_pid" ]] || ! kill -0 "$backend_pid" 2>/dev/null; then
+  printf 'q stopped the managed Backend instead of only the TUI frontend\n' >&2
+  exit 1
+fi
+if [[ "$frontends" != 0 ]]; then
+  printf 'q left %s TUI frontend session(s) registered\n' "$frontends" >&2
+  exit 1
+fi
+
+# Ctrl+C must use the same shutdown path even while an input editor owns the
+# keyboard. It may return only after both frontend and Backend processes exit.
+timeout 15s bash -c '
+  (sleep 0.2; printf "\033]11;rgb:0000/0000/0000\007\033[1;1R"; sleep 0.8; printf p; sleep 0.3; printf "\003") |
+    script -qfec "$1 tui --directory $2" /dev/null >/dev/null
+' bash "$binary" "$managed_dir"
+
+for _ in $(seq 1 100); do
+  if ! kill -0 "$backend_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+if kill -0 "$backend_pid" 2>/dev/null; then
+  printf 'Ctrl+C left Backend PID %s running\n' "$backend_pid" >&2
+  exit 1
+fi
+backend_started=false
+
+after_interrupt_status=$("$binary" status --json)
+if ! grep -q '"backend": "stopped"' <<<"$after_interrupt_status" ||
+  ! grep -q '"core": "stopped"' <<<"$after_interrupt_status"; then
+  printf 'Ctrl+C left Backend or Core running:\n%s\n' "$after_interrupt_status" >&2
+  exit 1
+fi
+if [[ -e "${runtime_root}/.flclash-cli-service.sock" ]]; then
+  printf 'Ctrl+C left the Backend Unix socket behind\n' >&2
+  exit 1
+fi
+if [[ -d "$frontend_dir" ]]; then
+  find "$frontend_dir" -maxdepth 1 -type f -printf '%f\n' | sort >"$test_dir/final"
+else
+  : >"$test_dir/final"
+fi
+if comm -13 "$test_dir/before" "$test_dir/final" | grep -q .; then
+  printf 'Ctrl+C left a TUI frontend session behind\n' >&2
+  exit 1
+fi
+
+printf 'TUI q/Ctrl+C process lifecycle test passed\n'

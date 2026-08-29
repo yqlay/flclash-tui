@@ -269,7 +269,7 @@ func serviceManagementCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := client.shutdown(); err != nil {
+		if err := client.shutdownAndWait(tuiServiceShutdownTimeout); err != nil {
 			return err
 		}
 		fmt.Println("Backend stopped")

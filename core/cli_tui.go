@@ -353,6 +353,9 @@ func tuiCommand(args []string) error {
 	if !isInteractiveTUI() {
 		return errors.New("TUI requires an interactive terminal; use run or proxy commands in non-interactive shells")
 	}
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, syscall.SIGINT)
+	defer signal.Stop(interrupt)
 	if *configArg != "" || *noStartArg {
 		if err := ensureTUIConfig(paths, false); err != nil {
 			return err
@@ -378,6 +381,13 @@ func tuiCommand(args []string) error {
 			*directoryArg != "",
 		)
 		if err != nil {
+			if interrupted, shutdownErr := shutdownTUIServiceOnInterrupt(
+				interrupt,
+				service,
+				paths,
+			); interrupted {
+				return shutdownErr
+			}
 			return err
 		}
 		if _, pathErr := tuiProfileStateKey(paths.homeDir, status.ConfigPath); pathErr != nil {
@@ -403,8 +413,22 @@ func tuiCommand(args []string) error {
 
 	if !*noStartArg {
 		if err := waitForController(client, 3*time.Second); err != nil {
+			if interrupted, shutdownErr := shutdownTUIServiceOnInterrupt(
+				interrupt,
+				service,
+				paths,
+			); interrupted {
+				return shutdownErr
+			}
 			return err
 		}
+	}
+	if interrupted, shutdownErr := shutdownTUIServiceOnInterrupt(
+		interrupt,
+		service,
+		paths,
+	); interrupted {
+		return shutdownErr
 	}
 	frontendSession, existingFrontends, err := registerCLIFrontend(
 		paths.homeDir,
@@ -422,11 +446,31 @@ func tuiCommand(args []string) error {
 		service,
 		coreRunning,
 		formatCLIFrontendNotice(existingFrontends),
+		interrupt,
 	)
 	// Release the current frontend synchronously before tuiCommand returns.
 	// close is idempotent, so the defer remains as an error-path safeguard.
 	frontendSession.close()
 	return runErr
+}
+
+func shutdownTUIServiceOnInterrupt(
+	interrupt <-chan os.Signal,
+	service *tuiServiceClient,
+	paths cliPaths,
+) (bool, error) {
+	select {
+	case <-interrupt:
+	default:
+		return false, nil
+	}
+	if service == nil {
+		service = newTUIServiceClient(paths.homeDir)
+	}
+	if _, err := service.compatibleStatus(); err != nil {
+		return true, nil
+	}
+	return true, service.shutdownAndWait(tuiServiceShutdownTimeout)
 }
 
 func ensureTUIConfig(paths cliPaths, allowCreate bool) error {

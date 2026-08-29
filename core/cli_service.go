@@ -30,6 +30,7 @@ const (
 	tuiCoreSocketFilename     = ".flclash-cli-core.sock"
 	tuiServiceLogFilename     = "flclash-cli-service.log"
 	tuiServiceReloadTimeout   = 2 * time.Minute
+	tuiServiceShutdownTimeout = 5 * time.Second
 	tuiServiceLogMaxBytes     = 5 << 20
 	// ProfileData is JSON base64, so a 32 MiB subscription needs more than
 	// 42 MiB on the wire. Keep the IPC bounded while accepting the documented
@@ -511,6 +512,24 @@ func (c *tuiServiceClient) shutdown() error {
 	return err
 }
 
+func (c *tuiServiceClient) shutdownAndWait(timeout time.Duration) error {
+	status, err := c.compatibleStatus()
+	if err != nil {
+		return err
+	}
+	if err := c.shutdown(); err != nil {
+		return err
+	}
+	if waitForTUIServiceExit(c, status.PID, timeout) {
+		return nil
+	}
+	return fmt.Errorf(
+		"Backend PID %d did not exit within %s",
+		status.PID,
+		timeout,
+	)
+}
+
 func (c *tuiServiceClient) testProxySpeed(
 	proxyName string,
 ) (tuiSpeedResult, error) {
@@ -836,15 +855,17 @@ func waitForTUIServiceExit(
 	client *tuiServiceClient,
 	pid int,
 	timeout time.Duration,
-) {
+) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		_, statusErr := client.compatibleStatus()
 		if statusErr != nil && !cliProcessRunning(pid) {
-			return
+			return true
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+	_, statusErr := client.compatibleStatus()
+	return statusErr != nil && !cliProcessRunning(pid)
 }
 
 func cliProcessRunning(pid int) bool {

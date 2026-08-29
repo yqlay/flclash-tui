@@ -27,8 +27,8 @@ Managed proxy listeners accept only loopback sockets owned by the Backend UID. E
 Lifecycle keys and commands:
 
 ```text
-q in TUI                 detach this frontend only
-Ctrl+C in managed TUI    stop Backend + Core and disconnect all frontends
+q in TUI                 exit and clean up only this frontend process
+Ctrl+C in managed TUI    stop Backend + Core, disconnect all frontends, wait for process/socket cleanup
 flclash core stop        stop Core, keep Backend
 flclash backend stop     stop Backend + Core
 flclash shutdown         alias for backend stop
@@ -184,7 +184,7 @@ d / v           page-scoped delay / speed       n             network/import
 Ctrl+N          notification history/details
 S / c / t / m   System proxy/Core/TUN/mode list p, +, -       Proxy port
 U, F2/u, e      update/rename/edit Profile      x             clear/close all
-q               exit only this TUI               Ctrl+C        shutdown Backend + Core
+q               exit only this TUI               Ctrl+C        shutdown Backend + Core, wait for cleanup
 ```
 
 The Dashboard overlays upload (blue), download (green), and overlap (cyan) as

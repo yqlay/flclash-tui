@@ -34,6 +34,7 @@ const (
 
 type tuiTickMsg time.Time
 type tuiReloadSignalMsg struct{}
+type tuiInterruptSignalMsg struct{}
 
 type tuiServiceWatchMsg struct {
 	status tuiServiceStatus
@@ -229,6 +230,7 @@ func runTUI(
 	service *tuiServiceClient,
 	coreRunning bool,
 	startupNotice string,
+	interrupt <-chan os.Signal,
 ) error {
 	if !isInteractiveTUI() {
 		return errors.New("TUI requires an interactive terminal; use run or proxy commands in non-interactive shells")
@@ -278,6 +280,8 @@ func runTUI(
 	go func() {
 		for {
 			select {
+			case <-interrupt:
+				program.Send(tuiInterruptSignalMsg{})
 			case <-sighup:
 				program.Send(tuiReloadSignalMsg{})
 			case <-done:
@@ -343,6 +347,8 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		)
 	case tuiReloadSignalMsg:
 		return m, m.handleKey(tuiKeyReload)
+	case tuiInterruptSignalMsg:
+		return m, m.handleKey(tuiKeyInterrupt)
 	case tuiServiceWatchMsg:
 		if message.err != nil {
 			m.snapshot.Status = "Backend watch interrupted: " + message.err.Error()
@@ -1117,7 +1123,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		m.snapshot.Status = "Shutting down Backend and Core..."
 		service := m.service
 		return func() tea.Msg {
-			return tuiShutdownResultMsg{err: service.shutdown()}
+			return tuiShutdownResultMsg{
+				err: service.shutdownAndWait(tuiServiceShutdownTimeout),
+			}
 		}
 	case tuiKeyBack:
 		if !m.snapshot.FocusSidebar &&
@@ -3108,7 +3116,8 @@ func (m *tuiModel) startProfileSubscriptionUpdate(
 func (m *tuiModel) handleInput(message tea.KeyMsg) tea.Cmd {
 	switch message.Type {
 	case tea.KeyCtrlC:
-		return tea.Quit
+		m.resetInput()
+		return m.handleKey(tuiKeyInterrupt)
 	case tea.KeyEsc:
 		m.resetInput()
 		m.snapshot.Status = "Input cancelled"

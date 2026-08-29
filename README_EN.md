@@ -15,6 +15,7 @@ This is an unofficial terminal-focused derivative of [FlClash](https://github.co
 - Eight TUI pages, including a Dashboard with a white dotted baseline plus blue upload, green download, and cyan-overlap live traffic curves.
 - Selectable route tests and non-blocking lower-right notifications; `Ctrl+N` opens framed history/details, and feedback is also written to Logs.
 - One Backend per Linux user, safely shared by multiple TUI/CLI frontends.
+- `q` exits and cleans up only the current TUI; `Ctrl+C` stops the frontend, Backend, and Core after process/socket cleanup completes.
 - Default `silent` mode keeps ordinary programs direct while `flc COMMAND` uses an authenticated local proxy.
 - Subscription URL and local YAML imports, atomic Profile writes, and rollback on failure.
 - Connection History survives Backend restarts and supports state, text, and count filters.

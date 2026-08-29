@@ -82,11 +82,13 @@ func TestWaitForTUIServiceExitWaitsForProcessAfterSocketCloses(t *testing.T) {
 	}()
 
 	started := time.Now()
-	waitForTUIServiceExit(
+	if !waitForTUIServiceExit(
 		newTUIServiceClientAt(t.TempDir()),
 		command.Process.Pid,
 		time.Second,
-	)
+	) {
+		t.Fatal("service exit wait timed out")
+	}
 	if elapsed := time.Since(started); elapsed < 75*time.Millisecond {
 		t.Fatalf("wait returned before process exit: %s", elapsed)
 	}
@@ -97,6 +99,24 @@ func TestWaitForTUIServiceExitWaitsForProcessAfterSocketCloses(t *testing.T) {
 		}
 	default:
 		t.Fatal("process was still running after exit wait")
+	}
+}
+
+func TestWaitForTUIServiceExitReportsLiveProcess(t *testing.T) {
+	command := exec.Command("/bin/sh", "-c", "sleep 5")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	})
+	if waitForTUIServiceExit(
+		newTUIServiceClientAt(t.TempDir()),
+		command.Process.Pid,
+		50*time.Millisecond,
+	) {
+		t.Fatal("service exit wait accepted a live process")
 	}
 }
 

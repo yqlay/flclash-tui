@@ -1248,6 +1248,62 @@ func TestTUIInterruptMarksOwnedLocalCoreForShutdown(t *testing.T) {
 	}
 }
 
+func TestTUIInterruptFromInputUsesManagedShutdownPath(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.service = newTUIServiceClientAt(t.TempDir())
+	model.beginInput(tuiInputMixedPort)
+	command := model.handleInput(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if command == nil {
+		t.Fatal("Ctrl+C in input mode did not request shutdown")
+	}
+	if !model.shutdownRequested || model.frontendExitRequested {
+		t.Fatalf(
+			"Ctrl+C in input mode used the wrong lifecycle: shutdown=%t frontend=%t",
+			model.shutdownRequested,
+			model.frontendExitRequested,
+		)
+	}
+	if model.inputMode != tuiInputNone {
+		t.Fatalf("Ctrl+C left input mode active: %v", model.inputMode)
+	}
+	if _, ok := command().(tuiShutdownResultMsg); !ok {
+		t.Fatal("Ctrl+C in input mode bypassed managed Backend shutdown")
+	}
+}
+
+func TestTUIInterruptSignalUsesManagedShutdownPath(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.service = newTUIServiceClientAt(t.TempDir())
+	_, command := model.Update(tuiInterruptSignalMsg{})
+	if command == nil || !model.shutdownRequested {
+		t.Fatal("SIGINT did not request managed Backend shutdown")
+	}
+	if _, ok := command().(tuiShutdownResultMsg); !ok {
+		t.Fatal("SIGINT bypassed managed Backend shutdown")
+	}
+}
+
+func TestTUIStartupInterruptIsConsumedWithoutBackendResidue(t *testing.T) {
+	interrupt := make(chan os.Signal, 1)
+	interrupt <- os.Interrupt
+	interrupted, err := shutdownTUIServiceOnInterrupt(
+		interrupt,
+		nil,
+		cliPaths{homeDir: t.TempDir()},
+	)
+	if err != nil || !interrupted {
+		t.Fatalf("startup interrupt result = %t, %v", interrupted, err)
+	}
+	interrupted, err = shutdownTUIServiceOnInterrupt(
+		interrupt,
+		nil,
+		cliPaths{homeDir: t.TempDir()},
+	)
+	if err != nil || interrupted {
+		t.Fatalf("drained startup interrupt result = %t, %v", interrupted, err)
+	}
+}
+
 func TestTUIProfileRenameUsesVisibleInputPanel(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.width = 80
