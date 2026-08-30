@@ -3,41 +3,122 @@
 package main
 
 import (
-	"bytes"
+	"bufio"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/term"
 )
 
-const cliSSHMasterReadyTimeout = 2 * time.Minute
+const (
+	cliSSHConfigFilename       = ".flclash-ssh.json"
+	cliSSHConfigLockFilename   = ".flclash-ssh.lock"
+	cliSSHRuntimeDirectoryName = "ssh"
+	cliSSHPersistentStateFile  = "persistent.json"
+	cliSSHConfigVersion        = 1
+	cliSSHAskpassFileEnv       = "FLCLASH_SSH_ASKPASS_FILE"
+)
 
-type cliSSHOptions struct {
-	RemotePort  int
-	SSHArgs     []string
-	Destination string
-	Command     []string
+type cliExitCodeError struct{ code int }
+
+func (e *cliExitCodeError) Error() string { return "" }
+func (e *cliExitCodeError) ExitCode() int { return e.code }
+
+type cliSSHProfile struct {
+	Name        string   `json:"name"`
+	Destination string   `json:"destination"`
+	Port        int      `json:"port"`
+	Identity    string   `json:"identity,omitempty"`
+	Password    string   `json:"password,omitempty"`
+	Options     []string `json:"options,omitempty"`
 }
 
-type cliExitCodeError struct {
-	code int
+type cliSSHConfig struct {
+	Version  int             `json:"version"`
+	Profiles []cliSSHProfile `json:"profiles"`
 }
 
-func (e *cliExitCodeError) Error() string {
-	return ""
+type cliSSHTunnelState struct {
+	Name        string    `json:"name"`
+	Destination string    `json:"destination"`
+	Port        int       `json:"port"`
+	ControlPath string    `json:"control_path"`
+	Kind        string    `json:"kind"`
+	StartedAt   time.Time `json:"started_at"`
+	StatePath   string    `json:"-"`
 }
 
-func (e *cliExitCodeError) ExitCode() int {
-	return e.code
+type cliSSHProfileView struct {
+	Name        string   `json:"name"`
+	Destination string   `json:"destination"`
+	Port        int      `json:"port"`
+	Identity    string   `json:"identity,omitempty"`
+	Options     []string `json:"options,omitempty"`
+	PasswordSet bool     `json:"password_set"`
+	Connected   bool     `json:"connected"`
+	SocksPort   int      `json:"socks_port,omitempty"`
+}
+
+type cliSSHProfileEdit struct {
+	Name, Destination, Identity, Password  string
+	Port                                   int
+	Options                                []string
+	PortSet, IdentitySet                   bool
+	PasswordSet, ClearPassword, OptionsSet bool
+}
+
+func sshManagementCommand(args []string) error {
+	if len(args) == 0 || cliSubcommandHelp(args) {
+		printSSHManagementUsage(os.Stdout)
+		return nil
+	}
+	switch args[0] {
+	case "add":
+		return cliSSHAddCommand(args[1:])
+	case "edit":
+		return cliSSHEditCommand(args[1:])
+	case "delete", "remove", "rm":
+		return cliSSHDeleteCommand(args[1:])
+	case "list", "ls":
+		return cliSSHListCommand(args[1:])
+	case "show":
+		return cliSSHShowCommand(args[1:])
+	case "connect", "open":
+		return cliSSHConnectCommand(args[1:])
+	case "disconnect", "close":
+		return cliSSHDisconnectCommand(args[1:])
+	case "status":
+		return cliSSHStatusCommand(args[1:])
+	case "test":
+		return cliSSHTestCommand(args[1:])
+	default:
+		return fmt.Errorf("unknown ssh command %q; use `flclash ssh -help`", args[0])
+	}
+}
+
+func printSSHManagementUsage(w io.Writer) {
+	fmt.Fprintln(w, "Manage independent SSH SOCKS5 profiles and tunnels.")
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  flclash ssh add NAME user@host [--port PORT] [--identity PATH] [--password] [--option KEY=VALUE]")
+	fmt.Fprintln(w, "  flclash ssh edit NAME [user@host] [OPTIONS]")
+	fmt.Fprintln(w, "  flclash ssh delete|show NAME")
+	fmt.Fprintln(w, "  flclash ssh list|status [--json]")
+	fmt.Fprintln(w, "  flclash ssh connect|disconnect [NAME|all]")
+	fmt.Fprintln(w, "  flclash ssh test [NAME]")
+	fmt.Fprintln(w, "`ssh add` with no arguments and `ssh edit NAME` open an interactive prompt.")
 }
 
 func flcSSHCommand(args []string) error {
@@ -45,330 +126,995 @@ func flcSSHCommand(args []string) error {
 		printFLCSSHUsage(os.Stdout)
 		return nil
 	}
-	options, err := parseFLCSSHOptions(args)
+	profileName := ""
+	if args[0] == "-u" || args[0] == "--use" {
+		if len(args) < 3 {
+			return errors.New("usage: flc ssh -u NAME COMMAND [ARG...]")
+		}
+		profileName, args = args[1], args[2:]
+	} else if strings.HasPrefix(args[0], "--use=") {
+		profileName, args = strings.TrimPrefix(args[0], "--use="), args[1:]
+	}
+	if len(args) == 0 {
+		return errors.New("flc ssh requires a local command")
+	}
+	if profileName != "" {
+		profile, err := loadCLISSHProfile(profileName)
+		if err != nil {
+			return err
+		}
+		state, err := startCLISSHTunnel(profile, "transient")
+		if err != nil {
+			return err
+		}
+		defer func() { _ = stopCLIStateTunnel(state) }()
+		return runCLICommandWithSSHProxy(args, state.Port)
+	}
+	state, active, err := activeCLIPersistentSSHTunnel()
 	if err != nil {
 		return err
 	}
-	proxyAddress, err := activeCLIProxyURL()
-	if err != nil {
-		return err
+	if !active {
+		return errors.New("no SSH tunnel is open; run `flclash ssh connect NAME` or use `flc ssh -u NAME COMMAND`")
 	}
-	proxyURL, err := url.Parse(proxyAddress)
-	if err != nil || proxyURL.Scheme == "" || proxyURL.Hostname() == "" ||
-		proxyURL.Port() == "" {
-		return errors.New("FlClash returned an invalid command proxy URL")
-	}
-	sshPath, err := exec.LookPath("ssh")
-	if err != nil {
-		return errors.New("OpenSSH client `ssh` is required for `flc ssh`")
-	}
-	return runFLCSSH(sshPath, options, proxyURL)
+	return runCLICommandWithSSHProxy(args, state.Port)
 }
 
 func printFLCSSHUsage(w io.Writer) {
-	fmt.Fprintln(w, "Use B through A's active FlClash proxy over an SSH reverse tunnel.")
-	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Run one local command through an independent SSH SOCKS5 tunnel.")
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  flc ssh [--remote-port auto|PORT] [SSH_OPTIONS...] DESTINATION")
-	fmt.Fprintln(w, "  flc ssh [--remote-port auto|PORT] [SSH_OPTIONS...] DESTINATION -- COMMAND [ARG...]")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "The SSH connection itself is direct. Programs on B must honor proxy environment variables.")
+	fmt.Fprintln(w, "  flc ssh COMMAND [ARG...]")
+	fmt.Fprintln(w, "  flc ssh -u NAME COMMAND [ARG...]")
+	fmt.Fprintln(w, "-u creates a temporary tunnel which is always closed after the command.")
 }
 
-func parseFLCSSHOptions(args []string) (cliSSHOptions, error) {
-	options := cliSSHOptions{}
-	separator := len(args)
-	for index, argument := range args {
-		if argument == "--" {
-			separator = index
-			options.Command = append([]string(nil), args[index+1:]...)
-			break
+func cliSSHAddCommand(args []string) error {
+	edit, interactive, err := parseCLISSHProfileEdit(args, false)
+	if err != nil {
+		return err
+	}
+	if interactive {
+		edit, err = promptCLISSHProfile(cliSSHProfile{}, false)
+		if err != nil {
+			return err
 		}
 	}
-	connectionArgs := append([]string(nil), args[:separator]...)
-	filtered := make([]string, 0, len(connectionArgs))
-	for index := 0; index < len(connectionArgs); index++ {
-		argument := connectionArgs[index]
-		switch {
-		case argument == "--remote-port":
-			if index+1 >= len(connectionArgs) {
-				return options, errors.New("--remote-port requires auto or a port number")
-			}
-			index++
-			port, err := parseFLCSSHRemotePort(connectionArgs[index])
-			if err != nil {
-				return options, err
-			}
-			options.RemotePort = port
-		case strings.HasPrefix(argument, "--remote-port="):
-			port, err := parseFLCSSHRemotePort(strings.TrimPrefix(argument, "--remote-port="))
-			if err != nil {
-				return options, err
-			}
-			options.RemotePort = port
-		default:
-			filtered = append(filtered, argument)
+	profile, err := cliSSHProfileFromEdit(cliSSHProfile{}, edit, false)
+	if err != nil {
+		return err
+	}
+	err = updateCLISSHConfig(func(config *cliSSHConfig) error {
+		if _, found := findCLISSHProfile(config.Profiles, profile.Name); found {
+			return fmt.Errorf("SSH profile %q already exists", profile.Name)
+		}
+		config.Profiles = append(config.Profiles, profile)
+		sort.Slice(config.Profiles, func(i, j int) bool {
+			return strings.ToLower(config.Profiles[i].Name) < strings.ToLower(config.Profiles[j].Name)
+		})
+		return nil
+	})
+	if err == nil {
+		fmt.Printf("SSH profile %s added (%s)\n", profile.Name, profile.Destination)
+	}
+	return err
+}
+
+func cliSSHEditCommand(args []string) error {
+	if len(args) == 0 || cliSubcommandHelp(args) {
+		return errors.New("usage: flclash ssh edit NAME [user@host] [OPTIONS]")
+	}
+	existing, err := loadCLISSHProfile(args[0])
+	if err != nil {
+		return err
+	}
+	edit, interactive, err := parseCLISSHProfileEdit(args, true)
+	if err != nil {
+		return err
+	}
+	if interactive {
+		edit, err = promptCLISSHProfile(existing, true)
+		if err != nil {
+			return err
 		}
 	}
-	if len(filtered) == 0 {
-		return options, errors.New("flc ssh requires an SSH destination")
+	updated, err := cliSSHProfileFromEdit(existing, edit, true)
+	if err != nil {
+		return err
 	}
-	options.Destination = filtered[len(filtered)-1]
-	if strings.HasPrefix(options.Destination, "-") {
-		return options, errors.New("flc ssh requires the destination as the final argument before --")
+	err = updateCLISSHConfig(func(config *cliSSHConfig) error {
+		index, found := findCLISSHProfile(config.Profiles, args[0])
+		if !found {
+			return fmt.Errorf("SSH profile %q does not exist", args[0])
+		}
+		if other, duplicate := findCLISSHProfile(config.Profiles, updated.Name); duplicate && other != index {
+			return fmt.Errorf("SSH profile %q already exists", updated.Name)
+		}
+		config.Profiles[index] = updated
+		return nil
+	})
+	if err == nil {
+		fmt.Printf("SSH profile %s updated\n", updated.Name)
 	}
-	options.SSHArgs = append([]string(nil), filtered[:len(filtered)-1]...)
-	if err := validateFLCSSHArguments(options.SSHArgs); err != nil {
-		return options, err
-	}
-	if separator < len(args) && len(options.Command) == 0 {
-		return options, errors.New("flc ssh requires a command after --")
-	}
-	return options, nil
+	return err
 }
 
-func parseFLCSSHRemotePort(value string) (int, error) {
-	if value == "auto" {
-		return 0, nil
+func cliSSHDeleteCommand(args []string) error {
+	if len(args) != 1 || cliSubcommandHelp(args) {
+		return errors.New("usage: flclash ssh delete NAME")
 	}
-	port, err := strconv.Atoi(value)
-	if err != nil || port < 1 || port > 65535 {
-		return 0, fmt.Errorf("invalid SSH remote port %q", value)
+	lock, err := lockCLISSHTunnelOperation()
+	if err != nil {
+		return err
 	}
-	return port, nil
+	defer lock.release()
+	if state, active, _ := activeCLIPersistentSSHTunnel(); active && strings.EqualFold(state.Name, args[0]) {
+		_ = stopCLIStateTunnel(state)
+	}
+	err = updateCLISSHConfig(func(config *cliSSHConfig) error {
+		index, found := findCLISSHProfile(config.Profiles, args[0])
+		if !found {
+			return fmt.Errorf("SSH profile %q does not exist", args[0])
+		}
+		config.Profiles = append(config.Profiles[:index], config.Profiles[index+1:]...)
+		return nil
+	})
+	if err == nil {
+		fmt.Printf("SSH profile %s deleted\n", args[0])
+	}
+	return err
 }
 
-func validateFLCSSHArguments(args []string) error {
-	disallowedShort := "MSORLNDfWtTnsGQVg"
-	disallowedOptions := map[string]bool{
-		"clearallforwardings":     true,
-		"controlmaster":           true,
-		"controlpath":             true,
-		"controlpersist":          true,
-		"exitonforwardfailure":    true,
-		"forkafterauthentication": true,
-		"localcommand":            true,
-		"permitlocalcommand":      true,
-		"remotecommand":           true,
-		"sessiontype":             true,
-		"stdioforwarding":         true,
+func cliSSHListCommand(args []string) error {
+	jsonOutput := len(args) == 1 && args[0] == "--json"
+	if len(args) > 0 && !jsonOutput {
+		return errors.New("usage: flclash ssh list [--json]")
 	}
+	views, err := loadCLISSHProfileViews()
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return writeCLIJSON(os.Stdout, views)
+	}
+	if len(views) == 0 {
+		fmt.Println("No SSH profiles configured")
+		return nil
+	}
+	for _, view := range views {
+		status, endpoint := "DISCONNECTED", ""
+		if view.Connected {
+			status, endpoint = "CONNECTED", fmt.Sprintf(" · SOCKS5 127.0.0.1:%d", view.SocksPort)
+		}
+		auth := "agent/key"
+		if view.PasswordSet {
+			auth = "password ********"
+		} else if view.Identity != "" {
+			auth = "key " + view.Identity
+		}
+		fmt.Printf("%-18s %-12s %-28s · %s%s\n", view.Name, status, view.Destination, auth, endpoint)
+	}
+	return nil
+}
+
+func cliSSHShowCommand(args []string) error {
+	if len(args) < 1 || len(args) > 2 {
+		return errors.New("usage: flclash ssh show NAME [--json]")
+	}
+	views, err := loadCLISSHProfileViews()
+	if err != nil {
+		return err
+	}
+	for _, view := range views {
+		if !strings.EqualFold(view.Name, args[0]) {
+			continue
+		}
+		if len(args) == 2 {
+			if args[1] != "--json" {
+				return fmt.Errorf("unknown option %q", args[1])
+			}
+			return writeCLIJSON(os.Stdout, view)
+		}
+		fmt.Printf("Name:        %s\nDestination: %s\nPort:        %d\nIdentity:    %s\nPassword:    %s\nConnected:   %s\n", view.Name, view.Destination, view.Port, cliDisplayValue(view.Identity), cliSSHMaskedPassword(view.PasswordSet), cliOnOff(view.Connected))
+		if view.SocksPort > 0 {
+			fmt.Printf("SOCKS5:      127.0.0.1:%d\n", view.SocksPort)
+		}
+		return nil
+	}
+	return fmt.Errorf("SSH profile %q does not exist", args[0])
+}
+
+func cliSSHConnectCommand(args []string) error {
+	if len(args) != 1 || cliSubcommandHelp(args) {
+		return errors.New("usage: flclash ssh connect NAME")
+	}
+	profile, err := loadCLISSHProfile(args[0])
+	if err != nil {
+		return err
+	}
+	lock, err := lockCLISSHTunnelOperation()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	old, oldActive, err := activeCLIPersistentSSHTunnel()
+	if err != nil {
+		return err
+	}
+	if oldActive && strings.EqualFold(old.Name, profile.Name) {
+		fmt.Printf("SSH %s already connected · SOCKS5 127.0.0.1:%d\n", old.Name, old.Port)
+		return nil
+	}
+	state, err := startCLISSHTunnel(profile, "persistent")
+	if err != nil {
+		return err
+	}
+	runtimeDirectory, _ := ensureCLISSHRuntimeDirectory()
+	persistentPath := filepath.Join(runtimeDirectory, cliSSHPersistentStateFile)
+	if state.StatePath != persistentPath {
+		_ = os.Rename(state.StatePath, persistentPath)
+		state.StatePath = persistentPath
+		if err := saveCLISSHTunnelState(state); err != nil {
+			_ = stopCLIStateTunnel(state)
+			return err
+		}
+	}
+	if oldActive {
+		// The persistent state file now belongs to the new tunnel. Close only
+		// the old control socket so its cleanup cannot remove the new state.
+		old.StatePath = ""
+		_ = stopCLIStateTunnel(old)
+	}
+	fmt.Printf("SSH %s connected · SOCKS5 127.0.0.1:%d\n", state.Name, state.Port)
+	return nil
+}
+
+func cliSSHDisconnectCommand(args []string) error {
+	if len(args) > 1 {
+		return errors.New("usage: flclash ssh disconnect [NAME|all]")
+	}
+	if len(args) == 1 && args[0] == "all" {
+		if err := stopAllCLISSHTunnels(); err != nil {
+			return err
+		}
+		fmt.Println("All SSH tunnels disconnected")
+		return nil
+	}
+	lock, err := lockCLISSHTunnelOperation()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	state, active, err := activeCLIPersistentSSHTunnel()
+	if err != nil {
+		return err
+	}
+	if !active {
+		fmt.Println("No persistent SSH tunnel is open")
+		return nil
+	}
+	if len(args) == 1 && !strings.EqualFold(args[0], state.Name) {
+		return fmt.Errorf("SSH profile %q is not connected", args[0])
+	}
+	if err := stopCLIStateTunnel(state); err != nil {
+		return err
+	}
+	fmt.Printf("SSH %s disconnected\n", state.Name)
+	return nil
+}
+
+func cliSSHStatusCommand(args []string) error {
+	if len(args) == 0 {
+		return cliSSHListCommand(nil)
+	}
+	if len(args) == 1 && args[0] == "--json" {
+		return cliSSHListCommand(args)
+	}
+	return cliSSHShowCommand(args)
+}
+
+func cliSSHTestCommand(args []string) error {
+	if len(args) > 1 {
+		return errors.New("usage: flclash ssh test [NAME]")
+	}
+	state, active, err := activeCLIPersistentSSHTunnel()
+	if err != nil {
+		return err
+	}
+	if !active {
+		return errors.New("no persistent SSH tunnel is open")
+	}
+	if len(args) == 1 && !strings.EqualFold(args[0], state.Name) {
+		return fmt.Errorf("SSH profile %q is not connected", args[0])
+	}
+	started := time.Now()
+	connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(state.Port)), 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("SSH SOCKS5 listener is unavailable: %w", err)
+	}
+	_ = connection.Close()
+	fmt.Printf("SSH %s ready · SOCKS5 127.0.0.1:%d · TCP %s\n", state.Name, state.Port, time.Since(started).Round(time.Millisecond))
+	return nil
+}
+
+func parseCLISSHProfileEdit(args []string, editing bool) (cliSSHProfileEdit, bool, error) {
+	edit := cliSSHProfileEdit{Port: 22}
+	if len(args) == 0 {
+		return edit, true, nil
+	}
+	positionals := []string{}
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
-		if argument == "-o" {
+		next := func() (string, error) {
 			if index+1 >= len(args) {
-				return errors.New("SSH option -o requires a value")
+				return "", fmt.Errorf("%s requires a value", argument)
 			}
 			index++
-			if disallowedFLCSSHOption(args[index], disallowedOptions) {
-				return fmt.Errorf("SSH option %q conflicts with flc ssh tunnel management", args[index])
-			}
-			continue
+			return args[index], nil
 		}
-		if strings.HasPrefix(argument, "-o") && len(argument) > 2 {
-			if disallowedFLCSSHOption(argument[2:], disallowedOptions) {
-				return fmt.Errorf("SSH option %q conflicts with flc ssh tunnel management", argument)
+		switch {
+		case argument == "--port":
+			value, err := next()
+			if err != nil {
+				return edit, false, err
 			}
-			continue
+			edit.Port, err = strconv.Atoi(value)
+			if err != nil || edit.Port < 1 || edit.Port > 65535 {
+				return edit, false, fmt.Errorf("invalid SSH port %q", value)
+			}
+			edit.PortSet = true
+		case strings.HasPrefix(argument, "--port="):
+			value := strings.TrimPrefix(argument, "--port=")
+			var err error
+			edit.Port, err = strconv.Atoi(value)
+			if err != nil || edit.Port < 1 || edit.Port > 65535 {
+				return edit, false, fmt.Errorf("invalid SSH port %q", value)
+			}
+			edit.PortSet = true
+		case argument == "--identity":
+			value, err := next()
+			if err != nil {
+				return edit, false, err
+			}
+			edit.Identity = value
+			edit.IdentitySet = true
+		case strings.HasPrefix(argument, "--identity="):
+			edit.Identity = strings.TrimPrefix(argument, "--identity=")
+			edit.IdentitySet = true
+		case argument == "--option":
+			value, err := next()
+			if err != nil {
+				return edit, false, err
+			}
+			if err := validateCLISSHOption(value); err != nil {
+				return edit, false, err
+			}
+			edit.Options = append(edit.Options, value)
+			edit.OptionsSet = true
+		case strings.HasPrefix(argument, "--option="):
+			value := strings.TrimPrefix(argument, "--option=")
+			if err := validateCLISSHOption(value); err != nil {
+				return edit, false, err
+			}
+			edit.Options = append(edit.Options, value)
+			edit.OptionsSet = true
+		case argument == "--password":
+			value, err := promptCLISSHPassword()
+			if err != nil {
+				return edit, false, err
+			}
+			edit.Password, edit.PasswordSet = value, true
+		case argument == "--clear-password":
+			edit.ClearPassword = true
+		case strings.HasPrefix(argument, "-"):
+			return edit, false, fmt.Errorf("unknown SSH profile option %q", argument)
+		default:
+			positionals = append(positionals, argument)
 		}
-		if strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--") {
-			for _, flag := range argument[1:] {
-				if strings.ContainsRune(disallowedShort, flag) {
-					return fmt.Errorf("SSH option -%c conflicts with flc ssh tunnel management", flag)
-				}
-			}
+	}
+	if editing {
+		if len(positionals) < 1 || len(positionals) > 2 {
+			return edit, false, errors.New("usage: flclash ssh edit NAME [user@host] [OPTIONS]")
+		}
+		edit.Name = positionals[0]
+		if len(positionals) == 2 {
+			edit.Destination = positionals[1]
+		}
+		return edit, len(args) == 1, nil
+	}
+	if len(positionals) != 2 {
+		return edit, false, errors.New("usage: flclash ssh add NAME user@host [OPTIONS]")
+	}
+	edit.Name, edit.Destination = positionals[0], positionals[1]
+	return edit, false, nil
+}
+
+func cliSSHProfileFromEdit(existing cliSSHProfile, edit cliSSHProfileEdit, editing bool) (cliSSHProfile, error) {
+	profile := existing
+	if edit.Name != "" {
+		profile.Name = edit.Name
+	}
+	if edit.Destination != "" {
+		profile.Destination = edit.Destination
+	}
+	if !editing || edit.PortSet || existing.Port == 0 {
+		profile.Port = edit.Port
+	}
+	if edit.IdentitySet || !editing {
+		profile.Identity = edit.Identity
+	}
+	if edit.OptionsSet || !editing {
+		profile.Options = append([]string(nil), edit.Options...)
+	}
+	if edit.PasswordSet {
+		profile.Password = edit.Password
+	} else if edit.ClearPassword {
+		profile.Password = ""
+	}
+	if profile.Port == 0 {
+		profile.Port = 22
+	}
+	return profile, validateCLISSHProfile(profile)
+}
+
+func promptCLISSHProfile(existing cliSSHProfile, editing bool) (cliSSHProfileEdit, error) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return cliSSHProfileEdit{}, errors.New("interactive SSH profile input requires a terminal")
+	}
+	reader := bufio.NewReader(os.Stdin)
+	edit := cliSSHProfileEdit{Port: 22}
+	var err error
+	edit.Name, err = promptCLISSHLine(reader, "Name", existing.Name, false)
+	if err != nil {
+		return edit, err
+	}
+	edit.Destination, err = promptCLISSHLine(reader, "Destination (user@host or SSH alias)", existing.Destination, false)
+	if err != nil {
+		return edit, err
+	}
+	port := existing.Port
+	if port == 0 {
+		port = 22
+	}
+	portText, err := promptCLISSHLine(reader, "SSH port", strconv.Itoa(port), false)
+	if err != nil {
+		return edit, err
+	}
+	edit.Port, err = strconv.Atoi(portText)
+	if err != nil || edit.Port < 1 || edit.Port > 65535 {
+		return edit, fmt.Errorf("invalid SSH port %q", portText)
+	}
+	edit.PortSet = true
+	edit.Identity, err = promptCLISSHLine(reader, "Identity file (optional)", existing.Identity, true)
+	if err != nil {
+		return edit, err
+	}
+	edit.IdentitySet = true
+	answer, err := promptCLISSHLine(reader, "Save/replace password? [y/N]", "n", true)
+	if err != nil {
+		return edit, err
+	}
+	if strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes") {
+		edit.Password, err = promptCLISSHPassword()
+		edit.PasswordSet = err == nil
+		if err != nil {
+			return edit, err
+		}
+	}
+	if editing && existing.Password != "" && !edit.PasswordSet {
+		answer, err = promptCLISSHLine(
+			reader,
+			"Clear saved password? [y/N]",
+			"n",
+			true,
+		)
+		if err != nil {
+			return edit, err
+		}
+		edit.ClearPassword = strings.EqualFold(answer, "y") ||
+			strings.EqualFold(answer, "yes")
+	}
+	if editing {
+		edit.Options, edit.OptionsSet = append([]string(nil), existing.Options...), true
+	}
+	return edit, nil
+}
+
+func promptCLISSHLine(reader *bufio.Reader, label, defaultValue string, optional bool) (string, error) {
+	if defaultValue == "" {
+		fmt.Fprintf(os.Stderr, "%s: ", label)
+	} else {
+		fmt.Fprintf(os.Stderr, "%s [%s]: ", label, defaultValue)
+	}
+	value, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = defaultValue
+	}
+	if value == "" && !optional {
+		return "", fmt.Errorf("%s must not be empty", label)
+	}
+	return value, nil
+}
+
+func promptCLISSHPassword() (string, error) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", errors.New("--password requires an interactive terminal")
+	}
+	fmt.Fprint(os.Stderr, "Password: ")
+	first, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprint(os.Stderr, "Confirm password: ")
+	second, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", err
+	}
+	if len(first) == 0 {
+		return "", errors.New("password must not be empty")
+	}
+	if string(first) != string(second) {
+		return "", errors.New("passwords do not match")
+	}
+	return string(first), nil
+}
+
+func validateCLISSHProfile(profile cliSSHProfile) error {
+	if profile.Name == "" || len(profile.Name) > 64 {
+		return errors.New("SSH profile name must contain 1 to 64 characters")
+	}
+	for _, value := range profile.Name {
+		if !((value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') || strings.ContainsRune("._-", value)) {
+			return errors.New("SSH profile name may contain only letters, numbers, dot, underscore, and hyphen")
+		}
+	}
+	if profile.Destination == "" || strings.HasPrefix(profile.Destination, "-") || strings.ContainsAny(profile.Destination, "\r\n\x00") {
+		return errors.New("SSH destination is invalid")
+	}
+	if profile.Port < 1 || profile.Port > 65535 {
+		return errors.New("SSH port must be between 1 and 65535")
+	}
+	for _, option := range profile.Options {
+		if err := validateCLISSHOption(option); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func disallowedFLCSSHOption(value string, disallowed map[string]bool) bool {
-	key, _, _ := strings.Cut(value, "=")
-	return disallowed[strings.ToLower(strings.TrimSpace(key))]
+func validateCLISSHOption(option string) error {
+	key, value, found := strings.Cut(option, "=")
+	if !found || strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" || strings.ContainsAny(option, "\r\n\x00") {
+		return fmt.Errorf("SSH option %q must use KEY=VALUE", option)
+	}
+	disallowed := map[string]bool{"clearallforwardings": true, "controlmaster": true, "controlpath": true, "controlpersist": true, "dynamicforward": true, "exitonforwardfailure": true, "forkafterauthentication": true, "localcommand": true, "permitlocalcommand": true, "remotecommand": true, "sessiontype": true}
+	if disallowed[strings.ToLower(strings.TrimSpace(key))] {
+		return fmt.Errorf("SSH option %q conflicts with FlClash tunnel management", key)
+	}
+	return nil
 }
 
-func runFLCSSH(sshPath string, options cliSSHOptions, localProxy *url.URL) error {
-	temporaryDirectory, err := os.MkdirTemp("", "flclash-ssh-")
+func loadCLISSHConfig() (cliSSHConfig, error) {
+	paths, err := resolvePaths("", "")
 	if err != nil {
-		return fmt.Errorf("create SSH control directory: %w", err)
+		return cliSSHConfig{}, err
 	}
-	defer os.RemoveAll(temporaryDirectory)
-	controlPath := filepath.Join(temporaryDirectory, "control")
+	path := filepath.Join(paths.homeDir, cliSSHConfigFilename)
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return cliSSHConfig{Version: cliSSHConfigVersion}, nil
+	}
+	if err != nil {
+		return cliSSHConfig{}, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || !cliPathOwnedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
+		return cliSSHConfig{}, fmt.Errorf("unsafe SSH configuration %q; it must be an owned regular file with mode 0600", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cliSSHConfig{}, err
+	}
+	var config cliSSHConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return config, fmt.Errorf("parse SSH configuration: %w", err)
+	}
+	if config.Version != cliSSHConfigVersion {
+		return config, fmt.Errorf("unsupported SSH configuration version %d", config.Version)
+	}
+	for _, profile := range config.Profiles {
+		if err := validateCLISSHProfile(profile); err != nil {
+			return config, fmt.Errorf("invalid SSH profile %q: %w", profile.Name, err)
+		}
+	}
+	return config, nil
+}
 
-	masterArgs := append([]string(nil), options.SSHArgs...)
-	masterArgs = append(masterArgs,
-		"-M", "-S", controlPath,
-		"-o", "ControlMaster=yes",
-		"-o", "ControlPersist=no",
-		"-o", "ExitOnForwardFailure=yes",
-		"-o", "ClearAllForwardings=yes",
-		"-o", "RemoteCommand=none",
-		"-N", options.Destination,
-	)
-	master := exec.Command(sshPath, masterArgs...)
-	master.Stdin = os.Stdin
-	master.Stdout = os.Stdout
-	master.Stderr = os.Stderr
-	master.SysProcAttr = cliSSHProcessAttributes()
-	if err := master.Start(); err != nil {
-		return fmt.Errorf("start SSH control connection: %w", err)
+func updateCLISSHConfig(update func(*cliSSHConfig) error) error {
+	paths, err := resolvePaths("", "")
+	if err != nil {
+		return err
 	}
-	masterDone := make(chan error, 1)
-	go func() {
-		masterDone <- master.Wait()
-	}()
-	defer cleanupFLCSSHMaster(sshPath, controlPath, options, master, masterDone)
+	if err := os.MkdirAll(paths.homeDir, 0o700); err != nil {
+		return err
+	}
+	lock, err := acquireCLIFileLock(filepath.Join(paths.homeDir, cliSSHConfigLockFilename), cliProcessOwner{Kind: "ssh-config", PID: os.Getpid(), HomeDir: paths.homeDir, StartedAt: time.Now()})
+	if err != nil {
+		return fmt.Errorf("lock SSH configuration: %w", err)
+	}
+	defer lock.release()
+	config, err := loadCLISSHConfig()
+	if err != nil {
+		return err
+	}
+	if err := update(&config); err != nil {
+		return err
+	}
+	config.Version = cliSSHConfigVersion
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeCLISSHFileAtomically(filepath.Join(paths.homeDir, cliSSHConfigFilename), append(data, '\n'))
+}
+
+func writeCLISSHFileAtomically(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".flclash-ssh-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := file.Name()
+	defer os.Remove(temporaryPath)
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
+}
+
+func loadCLISSHProfile(name string) (cliSSHProfile, error) {
+	config, err := loadCLISSHConfig()
+	if err != nil {
+		return cliSSHProfile{}, err
+	}
+	index, found := findCLISSHProfile(config.Profiles, name)
+	if !found {
+		return cliSSHProfile{}, fmt.Errorf("SSH profile %q does not exist; add it with `flclash ssh add`", name)
+	}
+	return config.Profiles[index], nil
+}
+func findCLISSHProfile(profiles []cliSSHProfile, name string) (int, bool) {
+	for index, profile := range profiles {
+		if strings.EqualFold(profile.Name, name) {
+			return index, true
+		}
+	}
+	return -1, false
+}
+
+func loadCLISSHProfileViews() ([]cliSSHProfileView, error) {
+	config, err := loadCLISSHConfig()
+	if err != nil {
+		return nil, err
+	}
+	active, connected, err := activeCLIPersistentSSHTunnel()
+	if err != nil {
+		return nil, err
+	}
+	views := make([]cliSSHProfileView, 0, len(config.Profiles))
+	for _, profile := range config.Profiles {
+		view := cliSSHProfileView{Name: profile.Name, Destination: profile.Destination, Port: profile.Port, Identity: profile.Identity, Options: append([]string(nil), profile.Options...), PasswordSet: profile.Password != ""}
+		if connected && strings.EqualFold(active.Name, profile.Name) {
+			view.Connected, view.SocksPort = true, active.Port
+		}
+		views = append(views, view)
+	}
+	return views, nil
+}
+
+func cliSSHMaskedPassword(set bool) string {
+	if set {
+		return "********"
+	}
+	return "not saved"
+}
+
+func startCLISSHTunnel(profile cliSSHProfile, kind string) (cliSSHTunnelState, error) {
+	sshPath, err := exec.LookPath("ssh")
+	if err != nil {
+		return cliSSHTunnelState{}, errors.New("OpenSSH client `ssh` is required")
+	}
+	runtimeDirectory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		return cliSSHTunnelState{}, err
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		port, err := allocateCLISSHPort()
+		if err != nil {
+			return cliSSHTunnelState{}, err
+		}
+		digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d:%s", profile.Name, os.Getpid(), time.Now().UnixNano(), kind)))
+		controlPath := filepath.Join(runtimeDirectory, fmt.Sprintf("ctl-%x.sock", digest[:8]))
+		state := cliSSHTunnelState{Name: profile.Name, Destination: profile.Destination, Port: port, ControlPath: controlPath, Kind: kind, StartedAt: time.Now()}
+		args := []string{"-f", "-N", "-M", "-S", controlPath, "-D", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), "-p", strconv.Itoa(profile.Port), "-o", "ControlMaster=yes", "-o", "ControlPersist=no", "-o", "ExitOnForwardFailure=yes", "-o", "ClearAllForwardings=yes", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3"}
+		if profile.Identity != "" {
+			args = append(args, "-i", profile.Identity)
+		}
+		for _, option := range profile.Options {
+			args = append(args, "-o", option)
+		}
+		args = append(args, profile.Destination)
+		command := exec.Command(sshPath, args...)
+		command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+		cleanup, err := configureCLISSHAskpass(command, profile.Password)
+		if err != nil {
+			return state, err
+		}
+		runErr := command.Run()
+		cleanup()
+		if runErr != nil {
+			_ = os.Remove(controlPath)
+			if attempt < 2 {
+				continue
+			}
+			return state, fmt.Errorf("start SSH SOCKS5 tunnel %q: %w", profile.Name, runErr)
+		}
+		state.StatePath = filepath.Join(runtimeDirectory, fmt.Sprintf("%s-%d-%d.json", kind, os.Getpid(), time.Now().UnixNano()))
+		if err := saveCLISSHTunnelState(state); err != nil {
+			_ = stopCLIStateTunnel(state)
+			return state, err
+		}
+		deadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(deadline) {
+			if cliSSHTunnelAlive(sshPath, state) {
+				return state, nil
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		_ = stopCLIStateTunnel(state)
+		return state, fmt.Errorf("SSH tunnel %q did not become ready", profile.Name)
+	}
+	return cliSSHTunnelState{}, errors.New("could not allocate a local SSH SOCKS5 port")
+}
+
+func configureCLISSHAskpass(command *exec.Cmd, password string) (func(), error) {
+	if password == "" {
+		return func() {}, nil
+	}
+	directory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		return nil, err
+	}
+	secret, err := os.CreateTemp(directory, "askpass-*.secret")
+	if err != nil {
+		return nil, err
+	}
+	path := secret.Name()
+	cleanup := func() { _ = secret.Close(); _ = os.Remove(path) }
+	if err := secret.Chmod(0o600); err != nil {
+		cleanup()
+		return nil, err
+	}
+	if _, err := secret.WriteString(password); err != nil {
+		cleanup()
+		return nil, err
+	}
+	if err := secret.Close(); err != nil {
+		cleanup()
+		return nil, err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+	command.Env = append(os.Environ(), "SSH_ASKPASS="+executable, "SSH_ASKPASS_REQUIRE=force", "DISPLAY=flclash-askpass", cliSSHAskpassFileEnv+"="+path)
+	return cleanup, nil
+}
+
+func cliSSHAskpassCommand(args []string) error {
+	if !strings.Contains(strings.ToLower(strings.Join(args, " ")), "password") {
+		return errors.New("saved password only answers SSH password prompts")
+	}
+	path := os.Getenv(cliSSHAskpassFileEnv)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || !cliPathOwnedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
+		return errors.New("unsafe SSH askpass secret")
+	}
+	password, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(password)
+	return err
+}
+
+func allocateCLISSHPort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer listener.Close()
+	return listener.Addr().(*net.TCPAddr).Port, nil
+}
+func ensureCLISSHRuntimeDirectory() (string, error) {
+	base, err := ensureCLIRuntimeDirectory()
+	if err != nil {
+		return "", err
+	}
+	directory := filepath.Join(base, cliSSHRuntimeDirectoryName)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(directory)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !cliPathOwnedByCurrentUser(info) {
+		return "", fmt.Errorf("unsafe SSH runtime directory %q", directory)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		_ = os.Chmod(directory, 0o700)
+	}
+	return directory, nil
+}
+
+func lockCLISSHTunnelOperation() (*cliFileLock, error) {
+	directory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		return nil, err
+	}
+	lock, err := acquireCLIFileLock(
+		filepath.Join(directory, "operation.lock"),
+		cliProcessOwner{
+			Kind:      "ssh-tunnel",
+			PID:       os.Getpid(),
+			StartedAt: time.Now(),
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("another SSH tunnel operation is running: %w", err)
+	}
+	return lock, nil
+}
+
+func cliSSHTunnelAlive(sshPath string, state cliSSHTunnelState) bool {
+	if state.Port < 1 || state.ControlPath == "" {
+		return false
+	}
+	check := exec.Command(sshPath, "-S", state.ControlPath, "-O", "check", state.Destination)
+	if check.Run() != nil {
+		return false
+	}
+	connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(state.Port)), 250*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = connection.Close()
+	return true
+}
+func saveCLISSHTunnelState(state cliSSHTunnelState) error {
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeCLISSHFileAtomically(state.StatePath, append(data, '\n'))
+}
+func loadCLISSHTunnelState(path string) (cliSSHTunnelState, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return cliSSHTunnelState{}, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || !cliPathOwnedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
+		return cliSSHTunnelState{}, fmt.Errorf("unsafe SSH runtime state %q", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cliSSHTunnelState{}, err
+	}
+	var state cliSSHTunnelState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return state, err
+	}
+	state.StatePath = path
+	return state, nil
+}
+
+func activeCLIPersistentSSHTunnel() (cliSSHTunnelState, bool, error) {
+	directory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		return cliSSHTunnelState{}, false, err
+	}
+	path := filepath.Join(directory, cliSSHPersistentStateFile)
+	state, err := loadCLISSHTunnelState(path)
+	if os.IsNotExist(err) {
+		return cliSSHTunnelState{}, false, nil
+	}
+	if err != nil {
+		return state, false, err
+	}
+	sshPath, err := exec.LookPath("ssh")
+	if err == nil && cliSSHTunnelAlive(sshPath, state) {
+		return state, true, nil
+	}
+	_ = os.Remove(state.ControlPath)
+	_ = os.Remove(path)
+	return cliSSHTunnelState{}, false, nil
+}
+
+func stopCLIStateTunnel(state cliSSHTunnelState) error {
+	sshPath, err := exec.LookPath("ssh")
+	if err == nil && state.ControlPath != "" {
+		command := exec.Command(sshPath, "-S", state.ControlPath, "-O", "exit", state.Destination)
+		_ = command.Run()
+	}
+	_ = os.Remove(state.ControlPath)
+	if state.StatePath != "" {
+		_ = os.Remove(state.StatePath)
+	}
+	return nil
+}
+func stopAllCLISSHTunnels() error {
+	directory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(directory, entry.Name())
+		state, stateErr := loadCLISSHTunnelState(path)
+		if stateErr == nil {
+			_ = stopCLIStateTunnel(state)
+		} else {
+			_ = os.Remove(path)
+		}
+	}
+	return nil
+}
+
+func runCLICommandWithSSHProxy(args []string, port int) error {
+	executable, err := exec.LookPath(args[0])
+	if err != nil {
+		return fmt.Errorf("command not found or cannot be executed: %q (%v)", args[0], err)
+	}
+	args = cliWrappedCommandArguments(executable, args)
+	proxyURL := "socks5h://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	command := exec.Command(executable, args[1:]...)
+	command.Args, command.Env = args, cliProxyEnvironment(os.Environ(), proxyURL)
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("cannot start command %q: %w", args[0], err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
 	interrupt := make(chan os.Signal, 2)
 	signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(interrupt)
-	if err := waitForFLCSSHMaster(
-		sshPath,
-		controlPath,
-		options.Destination,
-		master,
-		masterDone,
-		interrupt,
-	); err != nil {
-		return err
-	}
-
-	requestedPort := strconv.Itoa(options.RemotePort)
-	forwardSpec := net.JoinHostPort("127.0.0.1", requestedPort) + ":" +
-		net.JoinHostPort(localProxy.Hostname(), localProxy.Port())
-	forwardArgs := []string{
-		"-S", controlPath,
-		"-o", "ClearAllForwardings=no",
-		"-O", "forward",
-		"-R", forwardSpec,
-		options.Destination,
-	}
-	forward := exec.Command(sshPath, forwardArgs...)
-	forward.SysProcAttr = cliSSHProcessAttributes()
-	var forwardOutput bytes.Buffer
-	var forwardError bytes.Buffer
-	forward.Stdout = &forwardOutput
-	forward.Stderr = &forwardError
-	if err := runFLCSSHControlCommand(forward, interrupt); err != nil {
-		var exitError *cliExitCodeError
-		if errors.As(err, &exitError) {
-			return err
-		}
-		message := strings.TrimSpace(forwardError.String())
-		if message == "" {
-			message = err.Error()
-		}
-		return fmt.Errorf("SSH reverse forwarding failed: %s", message)
-	}
-	remotePort := options.RemotePort
-	if remotePort == 0 {
-		remotePort, err = parseAllocatedFLCSSHPort(forwardOutput.String())
-		if err != nil {
-			return err
-		}
-	}
-	allocatedSpec := net.JoinHostPort("127.0.0.1", strconv.Itoa(remotePort)) + ":" +
-		net.JoinHostPort(localProxy.Hostname(), localProxy.Port())
-	defer cancelFLCSSHForward(sshPath, controlPath, options.Destination, allocatedSpec)
-
-	remoteProxy := *localProxy
-	remoteProxy.Host = net.JoinHostPort("127.0.0.1", strconv.Itoa(remotePort))
-	fmt.Printf("FLC SSH tunnel ready · remote 127.0.0.1:%d\n", remotePort)
-	return runFLCSSHSession(
-		sshPath,
-		controlPath,
-		options,
-		remoteProxy.String(),
-		interrupt,
-	)
-}
-
-func parseAllocatedFLCSSHPort(output string) (int, error) {
-	fields := strings.Fields(output)
-	for _, field := range fields {
-		port, err := strconv.Atoi(field)
-		if err == nil && port > 0 && port <= 65535 {
-			return port, nil
-		}
-	}
-	return 0, fmt.Errorf("OpenSSH did not report the allocated remote port: %q", strings.TrimSpace(output))
-}
-
-func waitForFLCSSHMaster(
-	sshPath,
-	controlPath,
-	destination string,
-	master *exec.Cmd,
-	masterDone <-chan error,
-	interrupt <-chan os.Signal,
-) error {
-	deadline := time.Now().Add(cliSSHMasterReadyTimeout)
-	for time.Now().Before(deadline) {
-		select {
-		case err := <-masterDone:
-			if err == nil {
-				return errors.New("SSH control connection exited before becoming ready")
-			}
-			return fmt.Errorf("SSH control connection failed: %w", err)
-		case received := <-interrupt:
-			_ = master.Process.Signal(received)
-			if received == syscall.SIGINT {
-				return &cliExitCodeError{code: 130}
-			}
-			return &cliExitCodeError{code: 143}
-		default:
-		}
-		if _, err := os.Stat(controlPath); err == nil {
-			check := exec.Command(
-				sshPath,
-				"-S", controlPath,
-				"-O", "check",
-				destination,
-			)
-			if check.Run() == nil {
-				return nil
-			}
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return errors.New("timed out waiting for the SSH control connection")
-}
-
-func runFLCSSHSession(
-	sshPath,
-	controlPath string,
-	options cliSSHOptions,
-	proxyAddress string,
-	interrupt <-chan os.Signal,
-) error {
-	bootstrap := flcSSHRemoteBootstrap(proxyAddress, options.Command)
-	args := append([]string(nil), options.SSHArgs...)
-	args = append(
-		args,
-		"-S", controlPath,
-		"-o", "ClearAllForwardings=yes",
-		"-o", "RemoteCommand=none",
-	)
-	if len(options.Command) == 0 {
-		args = append(args, "-t")
-	} else {
-		args = append(args, "-T")
-	}
-	args = append(args, options.Destination, bootstrap)
-	command := exec.Command(sshPath, args...)
-	command.Stdin = os.Stdin
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	command.SysProcAttr = cliSSHProcessAttributes()
-	if err := command.Start(); err != nil {
-		return fmt.Errorf("start SSH proxy session: %w", err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		done <- command.Wait()
-	}()
+	var result error
 	select {
-	case err := <-done:
-		return flcSSHSessionResult(err)
+	case result = <-done:
 	case received := <-interrupt:
 		_ = command.Process.Signal(received)
 		select {
@@ -382,129 +1128,12 @@ func runFLCSSHSession(
 		}
 		return &cliExitCodeError{code: 143}
 	}
-}
-
-func runFLCSSHControlCommand(
-	command *exec.Cmd,
-	interrupt <-chan os.Signal,
-) error {
-	if err := command.Start(); err != nil {
-		return err
-	}
-	done := make(chan error, 1)
-	go func() {
-		done <- command.Wait()
-	}()
-	select {
-	case err := <-done:
-		return err
-	case received := <-interrupt:
-		_ = command.Process.Signal(received)
-		select {
-		case <-done:
-		case <-time.After(cliExitKillPeriod):
-			_ = command.Process.Kill()
-			<-done
+	if result != nil {
+		var exitError *exec.ExitError
+		if errors.As(result, &exitError) {
+			return &cliExitCodeError{code: exitError.ExitCode()}
 		}
-		if received == syscall.SIGINT {
-			return &cliExitCodeError{code: 130}
-		}
-		return &cliExitCodeError{code: 143}
+		return fmt.Errorf("command %q failed: %w", args[0], result)
 	}
-}
-
-func flcSSHSessionResult(err error) error {
-	if err == nil {
-		return nil
-	}
-	var exitError *exec.ExitError
-	if errors.As(err, &exitError) {
-		return &cliExitCodeError{code: exitError.ExitCode()}
-	}
-	return err
-}
-
-func flcSSHRemoteBootstrap(proxyAddress string, command []string) string {
-	quotedProxy := quotePOSIXShell(proxyAddress)
-	keys := []string{
-		"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-		"http_proxy", "https_proxy", "all_proxy",
-	}
-	assignments := make([]string, 0, len(keys))
-	for _, key := range keys {
-		assignments = append(assignments, key+"="+quotedProxy)
-	}
-	bootstrap := "export " + strings.Join(assignments, " ") + "; exec "
-	if len(command) == 0 {
-		return bootstrap + "\"${SHELL:-/bin/sh}\" -l"
-	}
-	quotedCommand := make([]string, 0, len(command))
-	for _, argument := range command {
-		quotedCommand = append(quotedCommand, quotePOSIXShell(argument))
-	}
-	return bootstrap + strings.Join(quotedCommand, " ")
-}
-
-func quotePOSIXShell(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
-}
-
-func cleanupFLCSSHMaster(
-	sshPath,
-	controlPath string,
-	options cliSSHOptions,
-	master *exec.Cmd,
-	masterDone <-chan error,
-) {
-	if master.ProcessState != nil {
-		return
-	}
-	exit := exec.Command(
-		sshPath,
-		"-S", controlPath,
-		"-O", "exit",
-		options.Destination,
-	)
-	_ = exit.Run()
-	select {
-	case <-masterDone:
-		return
-	case <-time.After(cliExitTerminatePeriod):
-	}
-	if master.ProcessState != nil {
-		return
-	}
-	_ = master.Process.Signal(syscall.SIGTERM)
-	select {
-	case <-masterDone:
-		return
-	case <-time.After(cliExitKillPeriod):
-	}
-	if master.ProcessState != nil {
-		return
-	}
-	_ = master.Process.Kill()
-	<-masterDone
-}
-
-func cancelFLCSSHForward(
-	sshPath,
-	controlPath,
-	destination,
-	forwardSpec string,
-) {
-	cancel := exec.Command(
-		sshPath,
-		"-S", controlPath,
-		"-O", "cancel",
-		"-R", forwardSpec,
-		destination,
-	)
-	_ = cancel.Run()
-}
-
-func cliSSHProcessAttributes() *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{
-		Pdeathsig: syscall.SIGTERM,
-	}
+	return nil
 }

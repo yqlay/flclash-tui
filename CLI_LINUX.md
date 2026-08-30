@@ -28,11 +28,11 @@ Lifecycle keys and commands:
 
 ```text
 q in TUI                 exit and clean up only this frontend process
-Ctrl+C in managed TUI    stop Backend + Core, disconnect all frontends, wait for process/socket cleanup
+Ctrl+C in managed TUI    stop Backend + Core + SSH tunnels, disconnect all frontends, wait for cleanup
 flclash core stop        stop Core, keep Backend
 flclash backend stop     stop Backend + Core
 flclash shutdown         alias for backend stop
-flclash exit             idempotently stop all TUI frontends, Backend, and Core; remove runtime sockets/locks
+flclash exit             idempotently stop all TUI frontends, Backend, Core, and SSH tunnels; remove runtime state
 ```
 
 ## Core command map
@@ -162,30 +162,34 @@ Outside silent mode, `flc` uses the normal Proxy port. It sets `HTTP_PROXY`, `HT
 flc sh -c 'curl -s https://example.com | jq .'
 ```
 
-### Use A's FlClash from an SSH host B
+### Independent SSH command proxy
 
-`flc ssh` opens a normal direct OpenSSH connection from A to B, then creates a
-loopback-only reverse forwarding from B to A's active FlClash entry. B does not
-need FlClash. The interactive shell or remote command receives upper- and
-lower-case `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` values:
+SSH profiles and tunnels are independent of Mihomo, subscriptions, Core state,
+and the normal `flc` proxy. FlClash creates a loopback-only OpenSSH dynamic
+SOCKS5 forward and injects `socks5h://127.0.0.1:PORT` into the local child
+command's upper- and lower-case proxy environment:
 
 ```bash
-flc ssh user@B
-flc ssh -p 2222 user@B
-flc ssh --remote-port 18080 user@B
-flc ssh user@B -- curl https://example.com
-flclash flc ssh user@B -- git ls-remote https://github.com/owner/repository.git
+flclash ssh add school user@B --port 2222 --password
+flclash ssh connect school
+flc ssh curl https://example.com
+
+flc ssh -u school git ls-remote https://github.com/owner/repository.git
+flclash ssh list
+flclash ssh test school
+flclash ssh disconnect school
 ```
 
-The default `--remote-port auto` asks OpenSSH to allocate the remote port
-atomically. A fixed port is useful for troubleshooting but fails if occupied.
-The SSH server must allow TCP forwarding. Only programs launched in this
-session that honor proxy environment variables are proxied: this is not TUN,
-transparent routing, or a whole-host proxy for B. The A-to-B SSH transport is
-not sent through FlClash. Wrapper-owned forwarding, control-socket, detached,
-and TTY options are rejected so cleanup remains reliable. Forwarding failure
-aborts before any unproxied remote shell starts, remote command exit codes are
-preserved, and the private control socket/tunnel are removed on exit or signal.
+`flc ssh COMMAND` requires the one persistent tunnel opened from the TUI or
+`flclash ssh connect`. `-u NAME` creates a separate temporary tunnel for that
+command and closes it afterwards; an existing persistent tunnel remains open.
+Commands must support proxy environment variables and SOCKS5. Tunnel setup is
+fail-closed, so a failed SSH connection never runs the command directly.
+
+`--password` reads and confirms the value without terminal echo. Profiles are
+stored separately in mode-`0600` `.flclash-ssh.json`; list/status/TUI/log output
+only exposes `password_set` or `********`. Key files, ssh-agent, and safe
+`--option KEY=VALUE` OpenSSH settings are also supported.
 
 Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availability, the new listener, old-listener closure, and managed System proxy are checked, with rollback on failure. Listener recreation is not a zero-gap handoff.
 
@@ -195,11 +199,12 @@ Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availa
 1 Dashboard     Core/System proxy/TUN/Mode/Proxy port/network/memory/30-sample traffic chart
 2 Proxies       groups/nodes/Providers, selection, delay and speed tests
 3 Profiles      import URL/local YAML, activate, update, rename, edit
-4 History       persistent shared active and recent connection history
-5 Connections   current Core connections and close actions
-6 Logs          Core and application events, export and clear
-7 Settings      complete traffic/Core/System proxy settings
-8 Maintenance   YAML edit, backup/restore, Geo, traffic reset, update check
+4 SSH            independent profiles, connect/disconnect, add/edit/delete/test
+5 History        persistent shared active and recent connection history
+6 Connections    current Core connections and close actions
+7 Logs           Core and application events, export and clear
+8 Settings       complete traffic/Core/System proxy settings
+9 Maintenance    YAML edit, backup/restore, Geo, traffic reset, update check
 ```
 
 ```text
@@ -211,7 +216,7 @@ d / v           page-scoped delay / speed       n             network/import
 Ctrl+N          notification history/details
 S / c / t / m   System proxy/Core/TUN/mode list p, +, -       Proxy port
 U, F2/u, e      update/rename/edit Profile      x             clear/close all
-q               exit only this TUI               Ctrl+C        fully exit all TUIs + Backend + Core
+q               exit only this TUI               Ctrl+C        exit TUIs + Backend + Core + SSH
 ```
 
 The Dashboard overlays upload (blue), download (green), and overlap (cyan) as

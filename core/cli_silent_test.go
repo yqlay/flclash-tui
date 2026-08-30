@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -653,6 +654,26 @@ rules:
 	}
 	if !waitForTUITestPort(proxyPort, true, 2*time.Second) {
 		t.Fatal("unified Proxy port closed in silent mode")
+	}
+	status, err = service.stopAtRevision(status.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !waitForTUITestPort(proxyPort, false, 2*time.Second) {
+		t.Fatal("silent TCP listener remained bound after Core stop")
+	}
+	udpAddress := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: proxyPort}
+	udpListener, err := net.ListenUDP("udp", udpAddress)
+	if err != nil {
+		t.Fatalf("silent UDP listener remained bound after Core stop: %v", err)
+	}
+	_ = udpListener.Close()
+	status, err = service.startAtRevision(status.Revision)
+	if err != nil {
+		t.Fatalf("restart silent Core in same Backend: %v", err)
+	}
+	if !waitForTUITestPort(proxyPort, true, 2*time.Second) {
+		t.Fatal("silent TCP listener did not return after restart")
 	}
 	privateStatus, err := service.flcProxy()
 	if err != nil {

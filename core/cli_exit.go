@@ -25,7 +25,7 @@ var completeCLIExitForTUI = completeCLIExit
 func exitCommand(args []string) error {
 	if cliSubcommandHelp(args) {
 		fmt.Println("Usage: flclash exit")
-		fmt.Println("Stop every TUI frontend, the shared Backend, and Core.")
+		fmt.Println("Stop every TUI frontend, the shared Backend, Core, and SSH tunnels.")
 		return nil
 	}
 	if len(args) != 0 {
@@ -42,6 +42,9 @@ func exitCommand(args []string) error {
 // caller can exclude its own PID so its defers release the current terminal and
 // frontend lock normally.
 func completeCLIExit(excludePID int) error {
+	if err := stopAllCLISSHTunnels(); err != nil {
+		return fmt.Errorf("stop SSH tunnels: %w", err)
+	}
 	backendPID := 0
 	if client, status, err := currentManagedServiceRaw(); err == nil {
 		backendPID = status.PID

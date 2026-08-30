@@ -12,12 +12,12 @@ This is an unofficial terminal-focused derivative of [FlClash](https://github.co
 
 ## Highlights
 
-- Eight TUI pages, including a Dashboard with a white dotted baseline plus blue upload, green download, and cyan-overlap live traffic curves.
+- Nine TUI pages, including independent SSH management and a Dashboard with a white dotted baseline plus blue upload, green download, and cyan-overlap live traffic curves.
 - Selectable route tests and non-blocking lower-right notifications; `Ctrl+N` opens framed history/details, and feedback is also written to Logs.
 - One Backend per Linux user, safely shared by multiple TUI/CLI frontends.
 - `q` exits and cleans up only the current TUI; `Ctrl+C` stops the frontend, Backend, and Core after process/socket cleanup completes.
 - Default `silent` mode keeps ordinary programs direct while `flc COMMAND` uses an authenticated local proxy.
-- `flc ssh` gives the current remote session access to local FlClash through an SSH reverse tunnel, without installing FlClash remotely.
+- Independent SSH SOCKS5 profiles; `flc ssh` sends a local command through an SSH server without depending on Mihomo or a subscription.
 - Subscription URL and local YAML imports, atomic Profile writes, and rollback on failure.
 - Connection History survives Backend restarts and supports state, text, and count filters.
 - Native AMD64/ARM64 Debian packages and portable archives through one architecture-aware installer.
@@ -61,7 +61,9 @@ flclash
 ```bash
 flc curl https://example.com
 flc git clone https://github.com/owner/repository.git
-flc ssh user@server -- curl https://example.com
+flclash ssh add school user@server --password
+flclash ssh connect school
+flc ssh curl https://example.com
 ```
 
 For desktop applications, switch to `rule`, `global`, or `direct` before enabling **System proxy**. On headless systems, prefer `flc`, application-specific proxy settings, or TUN.
@@ -81,7 +83,7 @@ flclash
 flclash status
 flclash core start|stop|restart
 flclash backend status|stop|restart
-flclash exit                       # stop all frontends, Backend, and Core
+flclash exit                       # stop frontends, Backend, Core, and SSH tunnels
 flclash mode rule|global|direct|silent
 flclash port [PORT|off]
 flclash sys status|on|off
@@ -95,8 +97,11 @@ flclash history show --state active --search example --limit 20
 flclash history clear
 flclash logs --lines 100 --follow
 
-flc ssh user@server                # remote interactive proxy environment
-flc ssh user@server -- COMMAND     # run one proxied remote command
+flclash ssh add NAME user@host --password
+flclash ssh connect NAME
+flclash ssh list|status|disconnect
+flc ssh COMMAND                    # use the manually opened tunnel
+flc ssh -u NAME COMMAND            # temporary tunnel, closed afterwards
 ```
 
 See [CLI_LINUX.md](CLI_LINUX.md) for commands, TUI keys, silent/FLC behavior, TUN, History, logs, data paths, and external Core mode. Runtime help is available through `flclash --help`, `flclash COMMAND --help`, and `flc --help`.
@@ -107,7 +112,8 @@ See [CLI_LINUX.md](CLI_LINUX.md) for commands, TUI keys, silent/FLC behavior, TU
 - Backend and Core use user-private Unix sockets.
 - The silent-mode FLC listener is loopback-only and uses temporary credentials.
 - Internal `.flclash-*-runtime-*.yaml` files are hidden from user Profiles.
-- Logs do not record subscription URLs, YAML contents, or FLC credentials.
+- SSH profiles use a separate mode-`0600` `.flclash-ssh.json`; passwords are always shown as `********`.
+- Logs do not record subscription URLs, YAML contents, FLC credentials, or SSH passwords.
 
 ## Credits
 

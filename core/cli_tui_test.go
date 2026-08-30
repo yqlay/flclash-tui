@@ -318,8 +318,8 @@ func TestTUICompactNavigationTracksSelectedPage(t *testing.T) {
 		10,
 	))
 	if !strings.Contains(output, "Navigation") ||
-		!strings.Contains(output, "7  Settings") ||
-		!strings.Contains(output, "8  Maintenance") {
+		!strings.Contains(output, "8  Settings") ||
+		!strings.Contains(output, "9  Maintenance") {
 		t.Fatalf("compact navigation hid selected page:\n%s", output)
 	}
 }
@@ -1634,6 +1634,7 @@ func TestTUISidebarMatchesGraphicalInformationArchitecture(t *testing.T) {
 		"Dashboard",
 		"Proxies",
 		"Profiles",
+		"SSH",
 		"History",
 		"Connections",
 		"Logs",
@@ -1655,6 +1656,23 @@ func TestTUISidebarMatchesGraphicalInformationArchitecture(t *testing.T) {
 		if strings.Contains(plain, removed) {
 			t.Fatalf("sidebar still exposes standalone %s page:\n%s", removed, plain)
 		}
+	}
+}
+
+func TestSilentNetworkCheckDoesNotCreateListenerWhileCoreStopped(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.coreRunning = false
+	model.snapshot.Settings.Mode = tuiSilentMode
+	command := model.startNetworkCheck(true)
+	if command == nil {
+		t.Fatal("silent stopped-Core check did not return a result command")
+	}
+	message, ok := command().(tuiNetworkResultMsg)
+	if !ok {
+		t.Fatalf("network result type = %T", command())
+	}
+	if message.info.Error != "" || message.info.Route != "SILENT · Core stopped" {
+		t.Fatalf("stopped silent network result = %+v", message.info)
 	}
 }
 
@@ -4446,7 +4464,7 @@ func TestBubbleTeaProcessesBurstNavigationKeys(t *testing.T) {
 	)
 	_, command := model.Update(tea.KeyMsg{
 		Type:  tea.KeyRunes,
-		Runes: []rune("ssss"),
+		Runes: []rune("sssss"),
 	})
 	if command != nil {
 		t.Fatal("navigation burst unexpectedly returned a command")

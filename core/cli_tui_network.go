@@ -65,9 +65,21 @@ func (m *tuiModel) startNetworkCheck(force bool) tea.Cmd {
 	m.networkCheckActive = true
 	m.snapshot.Network.Loading = true
 	route := m.networkRoute()
+	coreRunning := m.coreRunning
+	ownsCore := m.ownsCore
 	return func() tea.Msg {
 		resolved := route
 		if resolved.silent {
+			if ownsCore && !coreRunning {
+				return tuiNetworkResultMsg{
+					info: tuiNetworkInfo{
+						IntranetIP: detectTUIIntranetIP(),
+						Route:      "SILENT · Core stopped",
+						CheckedAt:  time.Now(),
+					},
+					route: resolved.key,
+				}
+			}
 			if resolved.service == nil {
 				return tuiNetworkResultMsg{
 					info: tuiNetworkInfo{
@@ -123,8 +135,9 @@ func (m *tuiModel) networkRoute() tuiNetworkRoute {
 	if strings.EqualFold(m.snapshot.Settings.Mode, tuiSilentMode) {
 		return tuiNetworkRoute{
 			key: fmt.Sprintf(
-				"silent:%d:%t:%s",
+				"silent:%d:%t:%t:%s",
 				m.snapshot.ActiveProxyPort,
+				m.coreRunning,
 				m.snapshot.FLCEnabled,
 				m.snapshot.FLCOutbound,
 			),

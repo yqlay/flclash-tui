@@ -140,6 +140,17 @@ func updateListeners() {
 }
 
 func stopListeners() {
+	// Custom listeners declared through the top-level `listeners` section are
+	// tracked separately from Mihomo's standard HTTP/SOCKS/mixed listeners.
+	// Silent mode uses one of these custom inbounds for the private FLC entry,
+	// so it must be dropped explicitly before the standard listeners are
+	// stopped. Otherwise a stopped Core keeps the silent TCP/UDP port bound and
+	// cannot be started again in the same Backend process.
+	listener.PatchInboundListeners(
+		map[string]constant.InboundListener{},
+		tunnel.Tunnel,
+		true,
+	)
 	listener.StopListener()
 }
 

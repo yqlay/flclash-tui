@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.5.12"
+const cliVersion = "0.5.13"
 
 type cliPaths struct {
 	homeDir    string
@@ -71,6 +71,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  mode              Select rule/global/direct/silent mode")
 	fmt.Fprintln(w, "  port              Get, set, or disable the normal Proxy port")
 	fmt.Fprintln(w, "  flc               Select or test the private silent-mode command proxy")
+	fmt.Fprintln(w, "  ssh               Manage independent SSH SOCKS5 profiles and tunnels")
 	fmt.Fprintln(w, "  net               Show or test Dashboard network detection")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Lifecycle shortcuts:")
@@ -82,7 +83,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  logs              Read or follow the managed backend log")
 	fmt.Fprintln(w, "  backend           Manage the per-user Backend process")
 	fmt.Fprintln(w, "  shutdown          Stop Backend and Core; disconnect all frontends")
-	fmt.Fprintln(w, "  exit              Fully exit all frontends, Backend, and Core")
+	fmt.Fprintln(w, "  exit              Fully exit frontends, Backend, Core, and SSH tunnels")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Configuration and runtime:")
 	fmt.Fprintln(w, "  profile           Import, select, update, rename, edit, or list profiles")

@@ -1,3 +1,13 @@
+## FlClash TUI v0.5.13
+
+- Fix silent-mode Core stop/start by explicitly dropping the private custom
+  inbound before standard Mihomo listeners, so its TCP/UDP port is released.
+- Replace the reverse `flc ssh` experiment with independent OpenSSH dynamic
+  SOCKS5 profiles, persistent/manual tunnels, command-scoped `-u` tunnels,
+  masked mode-`0600` password storage, and complete-exit cleanup.
+- Add a standalone SSH TUI page and update command help, completion,
+  documentation, and lifecycle/UI regression coverage.
+
 ## FlClash TUI v0.5.12
 
 - Add idempotent `flclash exit` and make `Ctrl+C` fully stop every registered

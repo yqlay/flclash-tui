@@ -44,6 +44,7 @@ const (
 	tuiPageDashboard tuiPage = iota
 	tuiPageProxies
 	tuiPageProfiles
+	tuiPageSSH
 	tuiPageRequests
 	tuiPageConnections
 	tuiPageLogs
@@ -203,6 +204,16 @@ type tuiProfile struct {
 	SubscriptionURL string
 }
 
+type tuiSSHProfile struct {
+	Name        string
+	Destination string
+	Port        int
+	Identity    string
+	PasswordSet bool
+	Connected   bool
+	SocksPort   int
+}
+
 const (
 	tuiProfileImportSubscriptionRow = -2
 	tuiProfileImportFileRow         = -1
@@ -220,6 +231,7 @@ type tuiSnapshot struct {
 	Requests               []tuiRequest
 	Logs                   []string
 	Profiles               []tuiProfile
+	SSHProfiles            []tuiSSHProfile
 	Providers              []tuiProvider
 	Settings               tuiSettings
 	Network                tuiNetworkInfo
@@ -232,6 +244,7 @@ type tuiSnapshot struct {
 	SelectedGroup          int
 	SelectedNode           int
 	SelectedRow            int
+	SelectedSSH            int
 	SelectedProvider       int
 	SelectedConnection     int
 	SelectedRequest        int
@@ -1484,6 +1497,39 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 	}
 }
 
+func refreshTUISSH(snapshot *tuiSnapshot) {
+	selectedName := ""
+	if snapshot.SelectedSSH >= 0 && snapshot.SelectedSSH < len(snapshot.SSHProfiles) {
+		selectedName = snapshot.SSHProfiles[snapshot.SelectedSSH].Name
+	}
+	views, err := loadCLISSHProfileViews()
+	if err != nil {
+		if snapshot.Page == tuiPageSSH {
+			snapshot.Status = "SSH profiles unavailable: " + err.Error()
+		}
+		return
+	}
+	snapshot.SSHProfiles = make([]tuiSSHProfile, 0, len(views))
+	for _, view := range views {
+		snapshot.SSHProfiles = append(snapshot.SSHProfiles, tuiSSHProfile{
+			Name:        view.Name,
+			Destination: view.Destination,
+			Port:        view.Port,
+			Identity:    view.Identity,
+			PasswordSet: view.PasswordSet,
+			Connected:   view.Connected,
+			SocksPort:   view.SocksPort,
+		})
+	}
+	snapshot.SelectedSSH = 0
+	for index, profile := range snapshot.SSHProfiles {
+		if strings.EqualFold(profile.Name, selectedName) {
+			snapshot.SelectedSSH = index
+			break
+		}
+	}
+}
+
 func findTUIGroup(groups []tuiGroup, name string) int {
 	for index, group := range groups {
 		if group.Name == name {
@@ -2168,6 +2214,7 @@ const (
 	tuiKeyDashboard
 	tuiKeyProxies
 	tuiKeyProfiles
+	tuiKeySSH
 	tuiKeyRequests
 	tuiKeyConnections
 	tuiKeyLogs
@@ -2242,14 +2289,16 @@ func readTUIKeysSynchronized(reader io.Reader, keys chan<- tuiKey, handled <-cha
 		case '3':
 			key = tuiKeyProfiles
 		case '4':
-			key = tuiKeyRequests
+			key = tuiKeySSH
 		case '5':
-			key = tuiKeyConnections
+			key = tuiKeyRequests
 		case '6':
-			key = tuiKeyLogs
+			key = tuiKeyConnections
 		case '7':
-			key = tuiKeyTools
+			key = tuiKeyLogs
 		case '8':
+			key = tuiKeyTools
+		case '9':
 			key = tuiKeyMaintenance
 		case 'P':
 			key = tuiKeyProviders
@@ -2417,6 +2466,8 @@ func tuiPageForKey(key tuiKey) (tuiPage, bool) {
 		return tuiPageProxies, true
 	case tuiKeyProfiles:
 		return tuiPageProfiles, true
+	case tuiKeySSH:
+		return tuiPageSSH, true
 	case tuiKeyRequests:
 		return tuiPageRequests, true
 	case tuiKeyConnections:
@@ -2588,9 +2639,9 @@ func renderTUICompact(
 		b.WriteString(tuiClampAnsiLine(line, width))
 		b.WriteByte('\n')
 	}
-	footer := "  1-8 page · ←/Esc nav · ↑↓/ws · Enter · q"
+	footer := "  1-9 page · ←/Esc nav · ↑↓/ws · Enter · q"
 	if snapshot.FocusSidebar {
-		footer = "  ↑↓/ws page · →/Enter open · 1-8 direct · q"
+		footer = "  ↑↓/ws page · →/Enter open · 1-9 direct · q"
 	} else if snapshot.Page == tuiPageDashboard {
 		footer = "  ↑↓/ws select · PgUp/PgDn scroll · Esc nav · q"
 	}
@@ -2606,6 +2657,8 @@ func tuiPageName(page tuiPage) string {
 		return "Proxies"
 	case tuiPageProfiles:
 		return "Profiles"
+	case tuiPageSSH:
+		return "SSH"
 	case tuiPageRequests:
 		return "History"
 	case tuiPageConnections:
@@ -2817,6 +2870,8 @@ func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) stri
 		drawTUILogs(&b, snapshot, width, height)
 	} else if snapshot.Page == tuiPageProfiles {
 		drawTUIProfiles(&b, snapshot, width, height)
+	} else if snapshot.Page == tuiPageSSH {
+		drawTUISSH(&b, snapshot, width, height)
 	} else if snapshot.Page == tuiPageTools {
 		drawTUITools(&b, snapshot, width, height)
 	} else if snapshot.Page == tuiPageMaintenance {
@@ -2935,6 +2990,7 @@ func tuiSidebar(snapshot tuiSnapshot, width, height int) []string {
 		"@  Dashboard",
 		"*  Proxies",
 		"+  Profiles",
+		"#  SSH",
 		">  History",
 		"~  Connections",
 		"=  Logs",
@@ -3353,10 +3409,11 @@ func tuiVisibleRange(total, selected, limit int) (int, int) {
 func drawTUIHelp(b *strings.Builder, width, height int) {
 	rows := []string{
 		"Navigation     ← sidebar · → content · ↑↓/ws move · Enter opens/applies · Esc back",
-		"Sections       1-8 open directly · Tab changes focus · [/] changes proxy view",
+		"Sections       1-9 open directly · Tab changes focus · [/] changes proxy view",
 		"Dashboard      d rule-route latency (5 samples) · v Cloudflare 4-stream speed · n refresh",
 		"Proxies        Enter nodes · d node RTT (5 samples) · v node speed · Esc groups",
 		"Profiles       Enter activate · U refresh subscription · F2/u rename · e edit · n import",
+		"SSH            Enter connect/disconnect · n add · e edit · x delete · t test",
 		"History        x clears shared history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
 		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
@@ -4128,6 +4185,60 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 			width,
 			index == snapshot.SelectedRow && !snapshot.FocusSidebar,
 			tuiGreen,
+		)
+	}
+	tuiEndPanel(b, width)
+}
+
+func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
+	tuiTitle(
+		b,
+		"SSH",
+		"Independent SOCKS5 · Enter connect/disconnect · n add · e edit · x delete · d test",
+		width,
+	)
+	if len(snapshot.SSHProfiles) == 0 {
+		tuiRow(b, "No SSH profiles · press n to add one", width, false, tuiDim)
+		tuiEndPanel(b, width)
+		return
+	}
+	limit := maxTUIWidth(height-3, 1)
+	start, end := tuiVisibleRange(
+		len(snapshot.SSHProfiles),
+		snapshot.SelectedSSH,
+		limit,
+	)
+	for index := start; index < end; index++ {
+		profile := snapshot.SSHProfiles[index]
+		status := "DISCONNECTED"
+		endpoint := ""
+		color := tuiDim
+		if profile.Connected {
+			status = "CONNECTED"
+			endpoint = fmt.Sprintf(" · SOCKS5 127.0.0.1:%d", profile.SocksPort)
+			color = tuiGreen
+		}
+		auth := "agent/key"
+		if profile.PasswordSet {
+			auth = "password ********"
+		} else if profile.Identity != "" {
+			auth = "key " + profile.Identity
+		}
+		row := fmt.Sprintf(
+			"%-18s %-12s %s:%d · %s%s",
+			truncateTUI(profile.Name, 18),
+			status,
+			truncateTUI(profile.Destination, 28),
+			profile.Port,
+			auth,
+			endpoint,
+		)
+		tuiRow(
+			b,
+			row,
+			width,
+			index == snapshot.SelectedSSH && !snapshot.FocusSidebar,
+			color,
 		)
 	}
 	tuiEndPanel(b, width)

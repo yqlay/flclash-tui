@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.5.12}"
+VERSION="${VERSION:-0.5.13}"
 ARCH="${ARCH:-amd64}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist}"
 PACKAGE_NAME="flclash-tui_${VERSION}_${ARCH}"
@@ -73,6 +73,7 @@ Conflicts: flclash-cli
 Replaces: flclash-cli
 Provides: flclash-cli
 Depends: iproute2, iptables, polkitd | policykit-1
+Recommends: openssh-client
 Description: Linux terminal client derived from FlClash
  Unofficial Linux terminal interface and command-line client that reuses the FlClash Mihomo core.
  Supports interactive proxy management, config profiles, settings, and scriptable control.

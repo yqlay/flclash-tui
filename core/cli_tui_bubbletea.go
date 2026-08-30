@@ -98,6 +98,11 @@ type tuiEditorResultMsg struct {
 	err error
 }
 
+type tuiSSHCommandResultMsg struct {
+	action string
+	err    error
+}
+
 type tuiInputMode byte
 
 const (
@@ -584,6 +589,15 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			refreshTUIProfiles(&state.snapshot, state.paths)
 		})
+	case tuiSSHCommandResultMsg:
+		m.busy = false
+		refreshTUISSH(&m.snapshot)
+		if message.err != nil {
+			m.snapshot.Status = "SSH " + message.action + " failed: " + message.err.Error()
+		} else {
+			m.snapshot.Status = "SSH " + message.action + " complete"
+		}
+		return m, m.startRefresh()
 	case tea.KeyMsg:
 		if message.String() == "ctrl+n" || m.notificationDetailOpen {
 			return m, m.handleTeaKey(message)
@@ -837,6 +851,7 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 	return func() tea.Msg {
 		refreshTUISnapshot(&snapshot, client)
 		refreshTUIProfiles(&snapshot, paths)
+		refreshTUISSH(&snapshot)
 		snapshot.Frontends, _ = listCLIFrontends()
 		var serviceStatus *tuiServiceStatus
 		if service != nil {
@@ -1150,7 +1165,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeyHelp:
 		m.snapshot.ShowHelp = !m.snapshot.ShowHelp
 	case tuiKeyCloseConnections:
-		if m.snapshot.Page == tuiPageRequests {
+		if m.snapshot.Page == tuiPageSSH {
+			return m.runSelectedSSHCommand("delete")
+		} else if m.snapshot.Page == tuiPageRequests {
 			if m.service != nil {
 				return m.startOperation(func(state *tuiOperationState) {
 					if !prepareTUIBackendRevision(state, m.service) {
@@ -1197,6 +1214,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			})
 		}
 	case tuiKeyCloseConnection:
+		if m.snapshot.Page == tuiPageSSH {
+			return m.runSelectedSSHCommand("test")
+		}
 		if m.snapshot.Page == tuiPageDashboard {
 			return m.testDashboardDelay()
 		}
@@ -1245,6 +1265,8 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		})
 	case tuiKeyEdit:
 		switch m.snapshot.Page {
+		case tuiPageSSH:
+			return m.runSelectedSSHCommand("edit")
 		case tuiPageProfiles:
 			if m.snapshot.SelectedRow < 0 ||
 				m.snapshot.SelectedRow >= len(m.snapshot.Profiles) {
@@ -1267,7 +1289,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			m.snapshot.Status = "Edit YAML is available in Profiles and Maintenance"
 		}
 	case tuiKeyNewProfile:
-		if m.snapshot.Page == tuiPageProfiles {
+		if m.snapshot.Page == tuiPageSSH {
+			return m.runSSHCommand("add")
+		} else if m.snapshot.Page == tuiPageProfiles {
 			m.beginInput(tuiInputSubscription)
 		} else if m.snapshot.Page == tuiPageDashboard {
 			return m.startNetworkCheck(true)
@@ -1510,6 +1534,12 @@ func (m *tuiModel) revealDashboardSelection() {
 
 func (m *tuiModel) moveSelection(delta int) {
 	switch m.snapshot.Page {
+	case tuiPageSSH:
+		m.snapshot.SelectedSSH = wrapTUIIndex(
+			m.snapshot.SelectedSSH,
+			delta,
+			len(m.snapshot.SSHProfiles),
+		)
 	case tuiPageProfiles:
 		moveTUIProfile(&m.snapshot, delta)
 		if m.snapshot.SelectedRow == tuiProfileImportSubscriptionRow {
@@ -2284,6 +2314,16 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			state.settingsDirty = false
 			syncStoppedTUISettings(state)
 		})
+	case tuiPageSSH:
+		if m.snapshot.SelectedSSH < 0 ||
+			m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
+			m.snapshot.Status = "Press n to add an SSH profile"
+			return nil
+		}
+		if m.snapshot.SSHProfiles[m.snapshot.SelectedSSH].Connected {
+			return m.runSelectedSSHCommand("disconnect")
+		}
+		return m.runSelectedSSHCommand("connect")
 	case tuiPageTools:
 		return m.selectTUISetting(m.snapshot.SelectedTool)
 	case tuiPageMaintenance:
@@ -2884,6 +2924,38 @@ func (m *tuiModel) startEditor(path string) tea.Cmd {
 	m.snapshot.Status = "Editor open"
 	return tea.ExecProcess(command, func(err error) tea.Msg {
 		return tuiEditorResultMsg{err: err}
+	})
+}
+
+func (m *tuiModel) runSelectedSSHCommand(action string) tea.Cmd {
+	if m.snapshot.SelectedSSH < 0 ||
+		m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
+		m.snapshot.Status = "Select an SSH profile first"
+		return nil
+	}
+	return m.runSSHCommand(action, m.snapshot.SSHProfiles[m.snapshot.SelectedSSH].Name)
+}
+
+func (m *tuiModel) runSSHCommand(args ...string) tea.Cmd {
+	if m.busy {
+		m.snapshot.Status = "Another operation is still running"
+		return nil
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		m.snapshot.Status = "SSH command failed: " + err.Error()
+		return nil
+	}
+	commandArgs := append([]string{"ssh"}, args...)
+	command := exec.Command(executable, commandArgs...)
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	m.busy = true
+	action := strings.Join(args, " ")
+	m.snapshot.Status = "SSH " + action + "..."
+	return tea.ExecProcess(command, func(err error) tea.Msg {
+		return tuiSSHCommandResultMsg{action: action, err: err}
 	})
 }
 
@@ -3800,14 +3872,16 @@ func tuiKeyFromTea(message tea.KeyMsg) (tuiKey, bool) {
 	case "3":
 		return tuiKeyProfiles, true
 	case "4":
-		return tuiKeyRequests, true
+		return tuiKeySSH, true
 	case "5":
-		return tuiKeyConnections, true
+		return tuiKeyRequests, true
 	case "6":
-		return tuiKeyLogs, true
+		return tuiKeyConnections, true
 	case "7":
-		return tuiKeyTools, true
+		return tuiKeyLogs, true
 	case "8":
+		return tuiKeyTools, true
+	case "9":
 		return tuiKeyMaintenance, true
 	case "P":
 		return tuiKeyProviders, true
