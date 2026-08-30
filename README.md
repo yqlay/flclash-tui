@@ -17,6 +17,7 @@ FlClash TUI 是面向 Linux、SSH 和无头服务器的 Mihomo/Clash 终端代�
 - 每个 Linux 用户一个 Backend，多个 TUI/CLI 前端安全共享状态。
 - `q` 只退出并清理当前 TUI 前端；`Ctrl+C` 关闭前端、Backend 和 Core，并等待后台进程及 socket 清理完成。
 - 默认 `silent` 模式：普通程序保持直连，只有 `flc COMMAND` 使用带认证的本地代理。
+- `flc ssh` 通过 SSH 反向隧道，让远端主机当前会话按需使用本机 FlClash，无需在远端安装 FlClash。
 - 订阅 URL 与本地 YAML 文件导入、Profile 原子写入、失败回滚。
 - 连接 History 跨 Backend 重启保留，并支持状态、关键字和数量筛选。
 - AMD64/ARM64 的 Debian 包与便携压缩包；统一安装脚本自动识别架构。
@@ -60,6 +61,7 @@ flclash
 ```bash
 flc curl https://example.com
 flc git clone https://github.com/owner/repository.git
+flc ssh user@server -- curl https://example.com
 ```
 
 如需桌面程序使用代理，切换到 `rule`、`global` 或 `direct`，再启用 **System proxy**；无桌面会话的服务器通常应使用 `flc`、应用自身代理设置或 TUN。
@@ -79,6 +81,7 @@ flclash                              # 打开 TUI
 flclash status
 flclash core start|stop|restart
 flclash backend status|stop|restart
+flclash exit                       # 完全退出全部前端、Backend 和 Core
 flclash mode rule|global|direct|silent
 flclash port [PORT|off]
 flclash sys status|on|off
@@ -91,6 +94,9 @@ flclash profile list
 flclash history show --state active --search example --limit 20
 flclash history clear
 flclash logs --lines 100 --follow
+
+flc ssh user@server                # 远端交互 shell 使用本机代理环境
+flc ssh user@server -- COMMAND     # 在远端执行单个代理命令
 ```
 
 完整命令、TUI 快捷键、silent/FLC、TUN、History、日志、数据目录和外部 Core 用法见 [CLI_LINUX.md](CLI_LINUX.md)。程序内帮助以 `flclash --help`、`flclash COMMAND --help` 和 `flc --help` 为准。

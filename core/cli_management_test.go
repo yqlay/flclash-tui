@@ -43,6 +43,10 @@ func TestCompletionCoversPrimaryAndNestedCommands(t *testing.T) {
 	})
 	for _, value := range []string{
 		"start stop restart reload status",
+		"backend shutdown exit profile",
+		"flc) words='status select test env ssh'",
+		"complete -F _flc flc",
+		"--remote-port -4 -6 -A -a -C -i -J -p -v",
 		"config geo env doctor completion check update run version",
 		"COMP_WORDS[2]} == close",
 		"words='all'",

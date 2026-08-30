@@ -1145,6 +1145,9 @@ func TestTUIProfileRenameKeyAndHintAreVisible(t *testing.T) {
 }
 
 func TestTUIQuitKeysUseGracefulShutdownPath(t *testing.T) {
+	originalExit := completeCLIExitForTUI
+	completeCLIExitForTUI = func(int) error { return nil }
+	t.Cleanup(func() { completeCLIExitForTUI = originalExit })
 	tests := []struct {
 		name              string
 		key               tea.KeyMsg
@@ -1231,13 +1234,16 @@ func TestTUIQuitCancelsOnlyFrontendMonitors(t *testing.T) {
 }
 
 func TestTUIInterruptMarksOwnedLocalCoreForShutdown(t *testing.T) {
+	originalExit := completeCLIExitForTUI
+	completeCLIExitForTUI = func(int) error { return nil }
+	t.Cleanup(func() { completeCLIExitForTUI = originalExit })
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	command := model.handleKey(tuiKeyInterrupt)
 	if command == nil {
 		t.Fatal("Ctrl+C did not return a quit command for an owned local Core")
 	}
-	if _, ok := command().(tea.QuitMsg); !ok {
-		t.Fatal("Ctrl+C did not terminate the local TUI event loop")
+	if _, ok := command().(tuiShutdownResultMsg); !ok {
+		t.Fatal("Ctrl+C did not run complete FlClash shutdown")
 	}
 	if !model.shutdownRequested || model.frontendExitRequested {
 		t.Fatalf(
@@ -1249,6 +1255,9 @@ func TestTUIInterruptMarksOwnedLocalCoreForShutdown(t *testing.T) {
 }
 
 func TestTUIInterruptFromInputUsesManagedShutdownPath(t *testing.T) {
+	originalExit := completeCLIExitForTUI
+	completeCLIExitForTUI = func(int) error { return nil }
+	t.Cleanup(func() { completeCLIExitForTUI = originalExit })
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.service = newTUIServiceClientAt(t.TempDir())
 	model.beginInput(tuiInputMixedPort)
@@ -1272,6 +1281,9 @@ func TestTUIInterruptFromInputUsesManagedShutdownPath(t *testing.T) {
 }
 
 func TestTUIInterruptSignalUsesManagedShutdownPath(t *testing.T) {
+	originalExit := completeCLIExitForTUI
+	completeCLIExitForTUI = func(int) error { return nil }
+	t.Cleanup(func() { completeCLIExitForTUI = originalExit })
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.service = newTUIServiceClientAt(t.TempDir())
 	_, command := model.Update(tuiInterruptSignalMsg{})
@@ -1284,6 +1296,9 @@ func TestTUIInterruptSignalUsesManagedShutdownPath(t *testing.T) {
 }
 
 func TestTUIStartupInterruptIsConsumedWithoutBackendResidue(t *testing.T) {
+	originalExit := completeCLIExitForTUI
+	completeCLIExitForTUI = func(int) error { return nil }
+	t.Cleanup(func() { completeCLIExitForTUI = originalExit })
 	interrupt := make(chan os.Signal, 1)
 	interrupt <- os.Interrupt
 	interrupted, err := shutdownTUIServiceOnInterrupt(

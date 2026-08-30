@@ -456,21 +456,15 @@ func tuiCommand(args []string) error {
 
 func shutdownTUIServiceOnInterrupt(
 	interrupt <-chan os.Signal,
-	service *tuiServiceClient,
-	paths cliPaths,
+	_ *tuiServiceClient,
+	_ cliPaths,
 ) (bool, error) {
 	select {
 	case <-interrupt:
 	default:
 		return false, nil
 	}
-	if service == nil {
-		service = newTUIServiceClient(paths.homeDir)
-	}
-	if _, err := service.compatibleStatus(); err != nil {
-		return true, nil
-	}
-	return true, service.shutdownAndWait(tuiServiceShutdownTimeout)
+	return true, completeCLIExitForTUI(os.Getpid())
 }
 
 func ensureTUIConfig(paths cliPaths, allowCreate bool) error {

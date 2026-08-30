@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.5.11"
+const cliVersion = "0.5.12"
 
 type cliPaths struct {
 	homeDir    string
@@ -42,9 +42,15 @@ func main() {
 		if program != "flc" {
 			program = "flclash"
 		}
-		fmt.Fprintf(os.Stderr, "%s: %v\n", program, err)
+		if err.Error() != "" {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", program, err)
+		}
 		if errors.Is(err, flag.ErrHelp) {
 			return
+		}
+		var exitCoder interface{ ExitCode() int }
+		if errors.As(err, &exitCoder) {
+			os.Exit(exitCoder.ExitCode())
 		}
 		os.Exit(1)
 	}
@@ -76,6 +82,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  logs              Read or follow the managed backend log")
 	fmt.Fprintln(w, "  backend           Manage the per-user Backend process")
 	fmt.Fprintln(w, "  shutdown          Stop Backend and Core; disconnect all frontends")
+	fmt.Fprintln(w, "  exit              Fully exit all frontends, Backend, and Core")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Configuration and runtime:")
 	fmt.Fprintln(w, "  profile           Import, select, update, rename, edit, or list profiles")

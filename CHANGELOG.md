@@ -1,3 +1,16 @@
+## FlClash TUI v0.5.12
+
+- Add idempotent `flclash exit` and make `Ctrl+C` fully stop every registered
+  TUI frontend, Backend, and Core, with lock-validated TERM/KILL fallback and
+  final process/socket/session-lock verification. Keep `q` scoped to the current
+  TUI and usable as text while an input editor is active.
+- Add `flc ssh` / `flclash flc ssh`: OpenSSH reverse forwarding exposes A's
+  active FlClash proxy only to B's current proxy-aware shell or remote command,
+  with automatic remote-port allocation, authenticated URL preservation,
+  fail-closed setup, exit-code propagation, and deterministic tunnel cleanup.
+- Extend runtime help, shell completion, Chinese/English documentation, Go
+  regression tests, and pseudo-terminal lifecycle coverage.
+
 ## FlClash TUI v0.5.11
 
 - Keep `q` scoped to the current TUI frontend, including synchronous frontend

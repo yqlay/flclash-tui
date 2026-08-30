@@ -17,6 +17,7 @@ This is an unofficial terminal-focused derivative of [FlClash](https://github.co
 - One Backend per Linux user, safely shared by multiple TUI/CLI frontends.
 - `q` exits and cleans up only the current TUI; `Ctrl+C` stops the frontend, Backend, and Core after process/socket cleanup completes.
 - Default `silent` mode keeps ordinary programs direct while `flc COMMAND` uses an authenticated local proxy.
+- `flc ssh` gives the current remote session access to local FlClash through an SSH reverse tunnel, without installing FlClash remotely.
 - Subscription URL and local YAML imports, atomic Profile writes, and rollback on failure.
 - Connection History survives Backend restarts and supports state, text, and count filters.
 - Native AMD64/ARM64 Debian packages and portable archives through one architecture-aware installer.
@@ -60,6 +61,7 @@ flclash
 ```bash
 flc curl https://example.com
 flc git clone https://github.com/owner/repository.git
+flc ssh user@server -- curl https://example.com
 ```
 
 For desktop applications, switch to `rule`, `global`, or `direct` before enabling **System proxy**. On headless systems, prefer `flc`, application-specific proxy settings, or TUN.
@@ -79,6 +81,7 @@ flclash
 flclash status
 flclash core start|stop|restart
 flclash backend status|stop|restart
+flclash exit                       # stop all frontends, Backend, and Core
 flclash mode rule|global|direct|silent
 flclash port [PORT|off]
 flclash sys status|on|off
@@ -91,6 +94,9 @@ flclash profile list
 flclash history show --state active --search example --limit 20
 flclash history clear
 flclash logs --lines 100 --follow
+
+flc ssh user@server                # remote interactive proxy environment
+flc ssh user@server -- COMMAND     # run one proxied remote command
 ```
 
 See [CLI_LINUX.md](CLI_LINUX.md) for commands, TUI keys, silent/FLC behavior, TUN, History, logs, data paths, and external Core mode. Runtime help is available through `flclash --help`, `flclash COMMAND --help`, and `flc --help`.

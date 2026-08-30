@@ -32,6 +32,7 @@ Ctrl+C in managed TUI    stop Backend + Core, disconnect all frontends, wait for
 flclash core stop        stop Core, keep Backend
 flclash backend stop     stop Backend + Core
 flclash shutdown         alias for backend stop
+flclash exit             idempotently stop all TUI frontends, Backend, and Core; remove runtime sockets/locks
 ```
 
 ## Core command map
@@ -50,6 +51,7 @@ flclash backend restart
 flclash backend stop
 flclash backend logs
 flclash backend clients
+flclash exit
 
 flclash status [--json] [--watch]
 flclash logs [--lines N] [--follow]
@@ -160,6 +162,31 @@ Outside silent mode, `flc` uses the normal Proxy port. It sets `HTTP_PROXY`, `HT
 flc sh -c 'curl -s https://example.com | jq .'
 ```
 
+### Use A's FlClash from an SSH host B
+
+`flc ssh` opens a normal direct OpenSSH connection from A to B, then creates a
+loopback-only reverse forwarding from B to A's active FlClash entry. B does not
+need FlClash. The interactive shell or remote command receives upper- and
+lower-case `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` values:
+
+```bash
+flc ssh user@B
+flc ssh -p 2222 user@B
+flc ssh --remote-port 18080 user@B
+flc ssh user@B -- curl https://example.com
+flclash flc ssh user@B -- git ls-remote https://github.com/owner/repository.git
+```
+
+The default `--remote-port auto` asks OpenSSH to allocate the remote port
+atomically. A fixed port is useful for troubleshooting but fails if occupied.
+The SSH server must allow TCP forwarding. Only programs launched in this
+session that honor proxy environment variables are proxied: this is not TUN,
+transparent routing, or a whole-host proxy for B. The A-to-B SSH transport is
+not sent through FlClash. Wrapper-owned forwarding, control-socket, detached,
+and TTY options are rejected so cleanup remains reliable. Forwarding failure
+aborts before any unproxied remote shell starts, remote command exit codes are
+preserved, and the private control socket/tunnel are removed on exit or signal.
+
 Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availability, the new listener, old-listener closure, and managed System proxy are checked, with rollback on failure. Listener recreation is not a zero-gap handoff.
 
 ## TUI pages and keys
@@ -184,7 +211,7 @@ d / v           page-scoped delay / speed       n             network/import
 Ctrl+N          notification history/details
 S / c / t / m   System proxy/Core/TUN/mode list p, +, -       Proxy port
 U, F2/u, e      update/rename/edit Profile      x             clear/close all
-q               exit only this TUI               Ctrl+C        shutdown Backend + Core, wait for cleanup
+q               exit only this TUI               Ctrl+C        fully exit all TUIs + Backend + Core
 ```
 
 The Dashboard overlays upload (blue), download (green), and overlap (cyan) as

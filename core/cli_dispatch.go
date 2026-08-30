@@ -47,6 +47,8 @@ func dispatchCLI(program string, args []string) error {
 		return serviceManagementCommand(commandArgs)
 	case "shutdown":
 		return serviceManagementCommand([]string{"stop"})
+	case "exit":
+		return exitCommand(commandArgs)
 	case "_service":
 		return serviceCommand(commandArgs)
 	case "check", "validate":
@@ -126,6 +128,9 @@ func dispatchFLC(args []string) error {
 		fmt.Printf("flc %s (FlClash command proxy)\n", cliVersion)
 		return nil
 	}
+	if args[0] == "ssh" {
+		return flcSSHCommand(args[1:])
+	}
 	if args[0] == "--" {
 		args = args[1:]
 	}
@@ -141,11 +146,13 @@ func printFLCUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  flc COMMAND [ARG...]")
 	fmt.Fprintln(w, "  flc -- COMMAND [ARG...]")
+	fmt.Fprintln(w, "  flc ssh [SSH_OPTIONS...] DESTINATION [-- COMMAND [ARG...]]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Examples:")
 	fmt.Fprintln(w, "  flc curl https://example.com")
 	fmt.Fprintln(w, "  flc wget https://example.com/file")
 	fmt.Fprintln(w, "  flc git clone https://github.com/owner/repository.git")
+	fmt.Fprintln(w, "  flc ssh user@server -- curl https://example.com")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "In silent mode flc uses an authenticated private listener; other modes use Proxy port.")
 	fmt.Fprintln(w, "flc fails closed when its proxy entry is unavailable; it never silently runs direct.")

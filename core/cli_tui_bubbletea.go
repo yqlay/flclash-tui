@@ -1107,24 +1107,14 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		m.stopTrafficMonitor()
 		return tea.Quit
 	case tuiKeyInterrupt:
-		if !m.ownsCore {
-			m.frontendExitRequested = true
-			m.stopCoreMemoryMonitor()
-			m.stopTrafficMonitor()
-			return tea.Quit
-		}
 		if m.shutdownRequested {
 			return nil
 		}
 		m.shutdownRequested = true
-		if m.service == nil {
-			return tea.Quit
-		}
-		m.snapshot.Status = "Shutting down Backend and Core..."
-		service := m.service
+		m.snapshot.Status = "Shutting down all frontends, Backend, and Core..."
 		return func() tea.Msg {
 			return tuiShutdownResultMsg{
-				err: service.shutdownAndWait(tuiServiceShutdownTimeout),
+				err: completeCLIExitForTUI(os.Getpid()),
 			}
 		}
 	case tuiKeyBack:

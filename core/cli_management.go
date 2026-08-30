@@ -620,12 +620,15 @@ func portCommand(args []string) error {
 
 func flcManagementCommand(args []string) error {
 	if cliSubcommandHelp(args) {
-		fmt.Println("Usage: flclash flc [status|select NAME|test|env]")
+		fmt.Println("Usage: flclash flc [status|select NAME|test|env|ssh ...]")
 		fmt.Println("Manage the private command proxy used by flc in silent mode.")
 		return nil
 	}
 	if len(args) == 0 {
 		args = []string{"status"}
+	}
+	if args[0] == "ssh" {
+		return flcSSHCommand(args[1:])
 	}
 	client, status, err := currentManagedService()
 	if err != nil {
@@ -1069,7 +1072,7 @@ func completionCommand(args []string) error {
 		fmt.Println("Usage: flclash completion bash|zsh|fish")
 		return nil
 	}
-	commands := "tui core sys tun mode port flc net start stop restart reload status backend shutdown profile proxy history connections logs config geo env doctor completion check update run version help"
+	commands := "tui core sys tun mode port flc net start stop restart reload status backend shutdown exit profile proxy history connections logs config geo env doctor completion check update run version help"
 	groups := []struct {
 		command string
 		values  string
@@ -1080,7 +1083,7 @@ func completionCommand(args []string) error {
 		{"tun", "user system on off status"},
 		{"mode", "rule global direct silent"},
 		{"port", "off"},
-		{"flc", "status select test env"},
+		{"flc", "status select test env ssh"},
 		{"net", "show refresh delay speed"},
 		{"status", "--json --watch"},
 		{"backend", "start stop restart status logs clients"},
@@ -1107,6 +1110,8 @@ func completionCommand(args []string) error {
 		fmt.Printf("    words='%s'\n", commands)
 		fmt.Println("  elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == connections && ${COMP_WORDS[2]} == close ]]; then")
 		fmt.Println("    words='all'")
+		fmt.Println("  elif (( COMP_CWORD >= 3 )) && [[ ${COMP_WORDS[1]} == flc && ${COMP_WORDS[2]} == ssh ]]; then")
+		fmt.Println("    words='--remote-port -4 -6 -A -a -C -i -J -p -v'")
 		fmt.Println("  else")
 		fmt.Println("    case \"${COMP_WORDS[1]}\" in")
 		for _, group := range groups {
@@ -1118,6 +1123,13 @@ func completionCommand(args []string) error {
 		fmt.Println("  COMPREPLY=( $(compgen -W \"$words\" -- \"$current\") )")
 		fmt.Println("}")
 		fmt.Println("complete -F _flclash flclash")
+		fmt.Println("_flc() {")
+		fmt.Println("  local current words")
+		fmt.Println("  current=\"${COMP_WORDS[COMP_CWORD]}\"")
+		fmt.Println("  if (( COMP_CWORD == 1 )); then words='ssh'; else words='--remote-port -4 -6 -A -a -C -i -J -p -v'; fi")
+		fmt.Println("  COMPREPLY=( $(compgen -W \"$words\" -- \"$current\") )")
+		fmt.Println("}")
+		fmt.Println("complete -F _flc flc")
 	case "zsh":
 		fmt.Printf("#compdef flclash\n_arguments '1:command:(%s)' '*::argument:->args'\n", commands)
 		fmt.Println("case $words[2] in")
@@ -1132,6 +1144,10 @@ func completionCommand(args []string) error {
 			fmt.Printf("  %s) _values 'argument' %s ;;\n", group.command, group.values)
 		}
 		fmt.Println("esac")
+		fmt.Println("_flc() {")
+		fmt.Println("  _arguments '1:command:(ssh)' '*:ssh argument:(--remote-port -4 -6 -A -a -C -i -J -p -v)'")
+		fmt.Println("}")
+		fmt.Println("compdef _flc flc")
 	case "fish":
 		for _, command := range strings.Fields(commands) {
 			fmt.Printf("complete -c flclash -f -n '__fish_use_subcommand' -a %s\n", command)
@@ -1146,6 +1162,8 @@ func completionCommand(args []string) error {
 			}
 		}
 		fmt.Println("complete -c flclash -f -n '__fish_seen_subcommand_from connections; and __fish_seen_subcommand_from close' -a all")
+		fmt.Println("complete -c flc -f -n '__fish_use_subcommand' -a ssh")
+		fmt.Println("complete -c flc -f -n '__fish_seen_subcommand_from ssh' -a '--remote-port -4 -6 -A -a -C -i -J -p -v'")
 	default:
 		return fmt.Errorf("unsupported shell %q", args[0])
 	}

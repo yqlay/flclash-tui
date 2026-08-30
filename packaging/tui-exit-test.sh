@@ -23,7 +23,7 @@ test_dir=$(mktemp -d)
 backend_started=false
 cleanup() {
   if [[ "$backend_started" == true ]]; then
-    "$binary" backend stop >/dev/null 2>&1 || true
+    "$binary" exit >/dev/null 2>&1 || true
   fi
   rm -rf -- "$test_dir"
 }
@@ -81,6 +81,64 @@ if [[ "$frontends" != 0 ]]; then
   exit 1
 fi
 
+# flclash exit must also clean up a frontend that cannot handle graceful TERM.
+# The frontend PID is read from its validated session lock through `clients`;
+# SIGKILL is therefore scoped to this FlClash TUI rather than a process name.
+(
+  { printf "\033]11;rgb:0000/0000/0000\007\033[1;1R"; sleep 30; } |
+    script -qfec "$binary tui --directory $managed_dir" /dev/null >/dev/null
+) &
+stuck_job=$!
+stuck_pid=""
+for _ in $(seq 1 100); do
+  stuck_pid=$("$binary" backend clients | sed -n 's/^PID[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)
+  if [[ -n "$stuck_pid" ]]; then
+    break
+  fi
+  sleep 0.05
+done
+if [[ -z "$stuck_pid" ]]; then
+  printf 'could not observe the second TUI frontend registration\n' >&2
+  exit 1
+fi
+kill -STOP "$stuck_pid"
+timeout 15s "$binary" exit >/dev/null
+# script(1) can stop itself after its foreground TUI is killed. Resume its
+# direct child so it can reap the dead TUI before process-liveness assertions.
+stuck_children=$(pgrep -P "$stuck_job" 2>/dev/null || true)
+if [[ -n "$stuck_children" ]]; then
+  # shellcheck disable=SC2086
+  kill -CONT $stuck_children 2>/dev/null || true
+fi
+sleep 0.1
+stuck_children=$(pgrep -P "$stuck_job" 2>/dev/null || true)
+if [[ -n "$stuck_children" ]]; then
+  # The remaining child is the test's idle input producer, not FlClash.
+  # shellcheck disable=SC2086
+  kill -TERM $stuck_children 2>/dev/null || true
+fi
+wait "$stuck_job" 2>/dev/null || true
+backend_started=false
+if kill -0 "$stuck_pid" 2>/dev/null || kill -0 "$backend_pid" 2>/dev/null; then
+  printf 'flclash exit left frontend PID %s or Backend PID %s running\n' "$stuck_pid" "$backend_pid" >&2
+  exit 1
+fi
+if [[ -e "${runtime_root}/.flclash-cli-service.sock" ]]; then
+  printf 'flclash exit left the Backend Unix socket behind\n' >&2
+  exit 1
+fi
+timeout 5s "$binary" exit >/dev/null
+
+# Start a fresh managed runtime to independently verify Ctrl+C from input mode.
+"$binary" start --directory "$managed_dir" >/dev/null
+backend_started=true
+after_restart_status=$("$binary" status --json)
+backend_pid=$(sed -n 's/.*"backend_pid": \([0-9][0-9]*\).*/\1/p' <<<"$after_restart_status")
+if [[ -z "$backend_pid" ]] || ! kill -0 "$backend_pid" 2>/dev/null; then
+  printf 'could not restart Backend before Ctrl+C test\n' >&2
+  exit 1
+fi
+
 # Ctrl+C must use the same shutdown path even while an input editor owns the
 # keyboard. It may return only after both frontend and Backend processes exit.
 timeout 15s bash -c '
@@ -120,4 +178,4 @@ if comm -13 "$test_dir/before" "$test_dir/final" | grep -q .; then
   exit 1
 fi
 
-printf 'TUI q/Ctrl+C process lifecycle test passed\n'
+printf 'TUI q/Ctrl+C/flclash-exit process lifecycle test passed\n'

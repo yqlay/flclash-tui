@@ -350,6 +350,43 @@ func listCLIFrontends() ([]cliProcessOwner, error) {
 	return owners, nil
 }
 
+// activeCLIBackendOwner returns only an owner that still holds the backend
+// lock. An unlocked stale metadata file is cleaned up and reported inactive.
+func activeCLIBackendOwner() (cliProcessOwner, bool, error) {
+	path, err := cliRuntimeLockPath()
+	if err != nil {
+		return cliProcessOwner{}, false, err
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, cliFrontendSessionFileMode)
+	if os.IsNotExist(err) {
+		return cliProcessOwner{}, false, nil
+	}
+	if err != nil {
+		return cliProcessOwner{}, false, err
+	}
+	defer file.Close()
+	lockErr := syscall.Flock(
+		int(file.Fd()),
+		syscall.LOCK_EX|syscall.LOCK_NB,
+	)
+	if lockErr == nil {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = os.Remove(path)
+		return cliProcessOwner{}, false, nil
+	}
+	if !errors.Is(lockErr, syscall.EWOULDBLOCK) &&
+		!errors.Is(lockErr, syscall.EAGAIN) {
+		return cliProcessOwner{}, false, lockErr
+	}
+	owner := readCLIProcessOwner(path)
+	if owner.PID <= 0 {
+		return cliProcessOwner{}, false, errors.New(
+			"active Backend lock has no valid owner PID",
+		)
+	}
+	return owner, true, nil
+}
+
 func cliTTYName() string {
 	path, err := os.Readlink("/proc/self/fd/0")
 	if err != nil || !strings.HasPrefix(path, "/dev/") {

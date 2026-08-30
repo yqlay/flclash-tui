@@ -58,6 +58,27 @@ func TestCLIBackendLockAllowsOnlyOnePerUser(t *testing.T) {
 	replacement.release()
 }
 
+func TestActiveCLIBackendOwnerRequiresHeldLock(t *testing.T) {
+	useTestCLIRuntimeDirectory(t)
+	lock, err := acquireCLIBackendLock(cliProcessOwner{Kind: "service"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, active, err := activeCLIBackendOwner()
+	if err != nil || !active || owner.PID != os.Getpid() {
+		t.Fatalf("active owner = (%+v, %t, %v)", owner, active, err)
+	}
+	path := lock.path
+	lock.release()
+	owner, active, err = activeCLIBackendOwner()
+	if err != nil || active || owner.PID != 0 {
+		t.Fatalf("released owner = (%+v, %t, %v)", owner, active, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("stale backend lock was not removed: %v", err)
+	}
+}
+
 func TestCLIFrontendSessionsAllowMultipleAndCleanStaleFiles(t *testing.T) {
 	runtimeDirectory := useTestCLIRuntimeDirectory(t)
 	first, existing, err := registerCLIFrontend(
