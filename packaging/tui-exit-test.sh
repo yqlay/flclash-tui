@@ -129,8 +129,10 @@ if [[ -e "${runtime_root}/.flclash-cli-service.sock" ]]; then
 fi
 timeout 5s "$binary" exit >/dev/null
 
-# Start a fresh managed runtime to independently verify Ctrl+C from input mode.
-"$binary" start --directory "$managed_dir" >/dev/null
+# Start a fresh Backend to independently verify Ctrl+C from input mode. Core
+# intentionally remains stopped: a new silent profile has no FLC outbound yet,
+# and `flclash start` must fail closed in that state.
+"$binary" backend start --directory "$managed_dir" >/dev/null
 backend_started=true
 after_restart_status=$("$binary" status --json)
 backend_pid=$(sed -n 's/.*"backend_pid": \([0-9][0-9]*\).*/\1/p' <<<"$after_restart_status")
