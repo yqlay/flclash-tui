@@ -42,25 +42,31 @@ func exitCommand(args []string) error {
 // caller can exclude its own PID so its defers release the current terminal and
 // frontend lock normally.
 func completeCLIExit(excludePID int) error {
+	var exitErrors []error
 	if err := stopAllCLISSHTunnels(); err != nil {
-		return fmt.Errorf("stop SSH tunnels: %w", err)
+		exitErrors = append(exitErrors, fmt.Errorf("stop SSH tunnels: %w", err))
 	}
 	backendPID := 0
 	if client, status, err := currentManagedServiceRaw(); err == nil {
 		backendPID = status.PID
-		_ = client.shutdown()
+		shutdownErr := client.shutdown()
 		if waitForTUIServiceExit(client, backendPID, tuiServiceShutdownTimeout) {
 			backendPID = 0
+		} else if shutdownErr != nil {
+			exitErrors = append(
+				exitErrors,
+				fmt.Errorf("request Backend shutdown: %w", shutdownErr),
+			)
 		}
 	}
 
 	waitForCLIFrontends(excludePID, cliExitFrontendGracePeriod)
 	if err := signalCLIFrontends(excludePID, syscall.SIGTERM); err != nil {
-		return err
+		exitErrors = append(exitErrors, err)
 	}
 	waitForCLIFrontends(excludePID, cliExitTerminatePeriod)
 	if err := signalCLIFrontends(excludePID, syscall.SIGKILL); err != nil {
-		return err
+		exitErrors = append(exitErrors, err)
 	}
 	waitForCLIFrontends(excludePID, cliExitKillPeriod)
 
@@ -71,12 +77,12 @@ func completeCLIExit(excludePID int) error {
 	}
 	if backendPID > 0 && backendPID != excludePID {
 		if err := signalCLIBackend(backendPID, syscall.SIGTERM); err != nil {
-			return err
+			exitErrors = append(exitErrors, err)
 		}
 		waitForCLIProcess(backendPID, cliExitTerminatePeriod)
 		if cliProcessRunning(backendPID) {
 			if err := signalCLIBackend(backendPID, syscall.SIGKILL); err != nil {
-				return err
+				exitErrors = append(exitErrors, err)
 			}
 			waitForCLIProcess(backendPID, cliExitKillPeriod)
 		}
@@ -84,20 +90,31 @@ func completeCLIExit(excludePID int) error {
 
 	frontends, err := activeCLIFrontendsExcept(excludePID)
 	if err != nil {
-		return fmt.Errorf("verify TUI frontend exit: %w", err)
-	}
-	if len(frontends) != 0 {
-		return fmt.Errorf(
+		exitErrors = append(
+			exitErrors,
+			fmt.Errorf("verify TUI frontend exit: %w", err),
+		)
+	} else if len(frontends) != 0 {
+		exitErrors = append(exitErrors, fmt.Errorf(
 			"TUI frontend PID(s) still running: %s",
 			formatCLIPIDs(frontends),
-		)
+		))
 	}
 	if owner, active, err := activeCLIBackendOwner(); err != nil {
-		return fmt.Errorf("verify Backend exit: %w", err)
+		exitErrors = append(
+			exitErrors,
+			fmt.Errorf("verify Backend exit: %w", err),
+		)
 	} else if active && owner.PID != excludePID {
-		return fmt.Errorf("Backend PID %d is still running", owner.PID)
+		exitErrors = append(
+			exitErrors,
+			fmt.Errorf("Backend PID %d is still running", owner.PID),
+		)
 	}
-	return cleanupCLIExitArtifacts(excludePID)
+	if err := cleanupCLIExitArtifacts(excludePID); err != nil {
+		exitErrors = append(exitErrors, err)
+	}
+	return errors.Join(exitErrors...)
 }
 
 func signalCLIFrontends(excludePID int, signal syscall.Signal) error {

@@ -52,6 +52,9 @@ flclash ssh add home user@host --password --local-port 1080
 flclash ssh connect home
 flc ssh curl https://example.com
 
+# Encrypted private key; key passphrase and SSH password may both be saved
+flclash ssh add school user@host --identity ~/.ssh/id_ed25519 --passphrase --password
+
 # Reuse the tunnel from another local SOCKS5-aware application
 ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
 
@@ -60,7 +63,7 @@ flclash ssh test home
 flclash ssh disconnect home
 ```
 
-SSH profiles can also be added, viewed, edited, deleted, and tested from the TUI **SSH** page. A connected profile is read-only; disconnect it before editing.
+SSH profiles can also be added, viewed, edited, deleted, and tested from the TUI **SSH** page. `Key passphrase` unlocks the private key and `SSH password` authenticates to the server; both may be set. A connected profile is read-only; disconnect it before editing.
 
 ## Common commands
 

@@ -67,6 +67,73 @@ func TestTUIServiceRuntimeRejectsStaleRevision(t *testing.T) {
 	}
 }
 
+func TestTUIServiceRuntimeKeepsFailedStartCleanupManageable(t *testing.T) {
+	runtime := newTestTUIServiceRuntime(t)
+	previousStop := stopTUIServiceCoreListeners
+	previousWait := waitTUIServiceProxyPortState
+	stopTUIServiceCoreListeners = func() bool { return false }
+	waitTUIServiceProxyPortState = func(int, bool, time.Duration) bool {
+		return false
+	}
+	t.Cleanup(func() {
+		stopTUIServiceCoreListeners = previousStop
+		waitTUIServiceProxyPortState = previousWait
+	})
+
+	err := runtime.rollbackStartedCore(17890, errors.New("simulated startup failure"))
+	status := runtime.snapshot("")
+	if err == nil || !strings.Contains(err.Error(), "cleanup failed") ||
+		!status.Running || status.ActiveProxyPort != 17890 {
+		t.Fatalf("failed Core start cleanup = status:%+v err:%v", status, err)
+	}
+}
+
+func TestTUIServiceRuntimeDoesNotReportStoppedWhileListenerRemains(t *testing.T) {
+	runtime := newTestTUIServiceRuntime(t)
+	runtime.mu.Lock()
+	runtime.running = true
+	runtime.activePort = 17890
+	runtime.mu.Unlock()
+	previousStop := stopTUIServiceCoreListeners
+	previousWait := waitTUIServiceProxyPortState
+	stopTUIServiceCoreListeners = func() bool { return true }
+	waitTUIServiceProxyPortState = func(port int, open bool, _ time.Duration) bool {
+		return port == 17890 && open
+	}
+	t.Cleanup(func() {
+		stopTUIServiceCoreListeners = previousStop
+		waitTUIServiceProxyPortState = previousWait
+	})
+
+	changed, err := runtime.stopCoreAndProxy(runtime.snapshot(""))
+	status := runtime.snapshot("")
+	if err == nil || changed || !strings.Contains(err.Error(), "did not stop") ||
+		!status.Running || status.ActiveProxyPort != 17890 {
+		t.Fatalf("lingering Core listener stop = changed:%t status:%+v err:%v", changed, status, err)
+	}
+}
+
+func TestTUIServiceRuntimeFailedShutdownRemainsRetryable(t *testing.T) {
+	runtime := newTestTUIServiceRuntime(t)
+	runtime.mu.Lock()
+	runtime.running = true
+	runtime.activePort = 17890
+	runtime.mu.Unlock()
+	previousStop := stopTUIServiceCoreListeners
+	stopTUIServiceCoreListeners = func() bool { return false }
+	t.Cleanup(func() { stopTUIServiceCoreListeners = previousStop })
+
+	status := runtime.handle(tuiServiceRequest{
+		ProtocolVersion: tuiServiceProtocolVersion,
+		RequestID:       "failed-shutdown",
+		Action:          "shutdown",
+	})
+	if status.OK || !status.Running || status.ShuttingDown ||
+		!strings.Contains(status.Error, "stop proxy listeners failed") {
+		t.Fatalf("failed shutdown state = %+v", status)
+	}
+}
+
 func TestTUIServiceRuntimeDeletesProfileAndLinkedMetadata(t *testing.T) {
 	directory := t.TempDir()
 	activePath := filepath.Join(directory, "config.yaml")

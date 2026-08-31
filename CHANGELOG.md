@@ -1,3 +1,41 @@
+## FlClash TUI v0.5.15
+
+- Keep complete exit progressing through frontend, Backend, Core, socket, and
+  lock cleanup even when SSH runtime cleanup fails, while returning every
+  cleanup error to the caller.
+- Keep failed Core listener starts and stops in a truthful, retryable state,
+  validate that proxy ports actually close, and report rollback failures for
+  traffic-mode, System proxy, FLC outbound, settings, and subscription updates.
+- Make `logs --follow` survive log rotation and truncation, prevent blank Core
+  connection IDs from polluting History, and refuse to overwrite corrupt or
+  unsupported shared state during an update.
+- Require an old Backend process to exit before upgrade, migration, or manual
+  restart; reject oversized or trailing Backend requests and GitHub release
+  metadata instead of accepting a partial first JSON value.
+- Compare update prerelease versions with SemVer precedence (including numeric
+  identifiers such as `beta.10`) and reject malformed SemVer tags.
+- Rename the SSH profile fields to `SSH host` and `Identity(private key)`, and
+  separate the private-key passphrase from the SSH server password. Both
+  credentials can coexist in one profile and are selected by the matching
+  OpenSSH AskPass prompt without exposing either value in arguments, status,
+  JSON views, logs, or TUI output.
+- Make first-time SSH connections work with saved credentials by defaulting to
+  `StrictHostKeyChecking=accept-new`, while preserving an explicit per-profile
+  host-key policy and still rejecting changed host keys.
+- Fix SSH SOCKS5 startup by clearing inherited OpenSSH forwards before adding
+  FlClash's dynamic forward through the live control master; previously
+  `ClearAllForwardings=yes` also removed FlClash's own `-D` listener.
+- Serialize command-scoped SSH tunnel startup and cleanup with complete-exit
+  operations, and report cleanup failures instead of leaving them silent.
+- Remove owned mode-`0600` AskPass secret files left by an interrupted process,
+  force OpenSSH authentication prompts to the stable `C` locale, and reject
+  unknown prompt types instead of returning the wrong credential.
+- Distinguish a healthy `CONNECTED` SSH tunnel from a `BROKEN` control master
+  whose local SOCKS5 listener is unavailable, while keeping the broken tunnel
+  manageable so it can still be disconnected cleanly. Connecting the selected
+  broken profile now rebuilds it, and `flc ssh` refuses to launch a command
+  until the SOCKS5 listener is ready.
+
 ## FlClash TUI v0.5.14
 
 - Add native TUI forms for SSH profile creation and editing, including masked

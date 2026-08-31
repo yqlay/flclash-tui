@@ -1858,6 +1858,14 @@ func TestTUIRequestHistoryTracksLifecycleAndLimit(t *testing.T) {
 	if history[0].Active {
 		t.Fatalf("completed request remained active: %+v", history[0])
 	}
+	history = updateTUIRequestHistory(
+		history,
+		[]tuiConnection{{Host: "missing-id.example"}},
+		start.Add(3*time.Second),
+	)
+	if len(history) != 1 {
+		t.Fatalf("connection without an ID polluted History: %+v", history)
+	}
 
 	oversized := make([]tuiRequest, tuiRequestHistoryLimit+20)
 	for index := range oversized {
@@ -4410,6 +4418,26 @@ func TestTUIStateRejectsInvalidSavedProfileAndRecovers(t *testing.T) {
 	recovered, err := restoreTUIActiveProfile(paths)
 	if err != nil || recovered.configPath != defaultPath {
 		t.Fatalf("state did not recover: paths=%+v err=%v", recovered, err)
+	}
+}
+
+func TestTUIStateUpdateDoesNotOverwriteCorruptState(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, tuiStateFilename)
+	corrupt := []byte("not-json\n")
+	if err := os.WriteFile(path, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rememberTUIProxySelection(directory, "PROXY", "Tokyo"); err == nil ||
+		!strings.Contains(err.Error(), "load shared state") {
+		t.Fatalf("corrupt shared state update error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, corrupt) {
+		t.Fatalf("corrupt shared state was overwritten: %q", data)
 	}
 }
 

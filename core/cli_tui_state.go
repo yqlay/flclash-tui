@@ -176,11 +176,7 @@ func updateTUIState(
 	}()
 	state, err := loadTUIState(homeDir)
 	if err != nil {
-		state = tuiPersistentState{
-			Version:             tuiStateVersion,
-			SelectedProxies:     map[string]string{},
-			SubscriptionSources: map[string]string{},
-		}
+		return fmt.Errorf("load shared state before update: %w", err)
 	}
 	update(&state)
 	return saveTUIState(homeDir, state)

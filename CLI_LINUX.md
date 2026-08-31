@@ -178,6 +178,9 @@ flclash ssh connect home
 flc ssh curl https://example.com
 
 flc ssh -u home git ls-remote https://github.com/owner/repository.git
+
+# Encrypted key plus SSH password (including publickey,password MFA servers)
+flclash ssh add school user@A --identity ~/.ssh/id_ed25519 --passphrase --password
 flclash ssh list
 flclash ssh test home
 ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
@@ -196,16 +199,23 @@ command and closes it afterwards; an existing persistent tunnel remains open.
 Commands must support proxy environment variables and SOCKS5. Tunnel setup is
 fail-closed, so a failed SSH connection never runs the command directly.
 
-`--password` reads and confirms the value without terminal echo. Profiles are
-stored separately in mode-`0600` `.flclash-ssh.json`; list/status/TUI/log output
-only exposes `password_set` or `********`. Key files, ssh-agent, and safe
-`--option KEY=VALUE` OpenSSH settings are also supported.
+`--passphrase` reads the private-key passphrase and `--password` reads the SSH
+server login password; both are confirmed without terminal echo and may coexist
+in one profile. AskPass selects the matching secret for OpenSSH's `passphrase`
+or `password` prompt, so encrypted keys followed by password authentication are
+supported. Profiles are stored separately in mode-`0600` `.flclash-ssh.json`;
+list/status/TUI/log output exposes only set flags or `********`. Key files,
+ssh-agent, and safe `--option KEY=VALUE` OpenSSH settings are also supported.
+New hosts default to `StrictHostKeyChecking=accept-new`: the first key is added
+to `known_hosts`, while a later key change is rejected. Set an explicit
+`StrictHostKeyChecking=...` profile option to override this policy.
 
 The SSH TUI page performs every management action without suspending or leaving
 the full-screen interface. Press `n` to open the add form or `e` to edit the
 selected profile. In the form, use `Up/Down` or `Tab` to select a row and
-`Enter` to edit or confirm it. Password replacement is entered twice and stays
-masked; `c` stages password removal. OpenSSH options are separate rows: use the
+`Enter` to edit or confirm it. Key-passphrase and SSH-password replacements are
+entered twice and stay masked; `c` stages removal of the selected secret.
+OpenSSH options are separate rows: use the
 add row to create one and `x` to remove the selected option. Select Save to
 commit or press `Esc` to discard the form. Deletion also stays in the TUI and
 requires `Enter` confirmation; `Esc` cancels it.

@@ -124,68 +124,72 @@ var tuiTrafficModes = []string{
 }
 
 type tuiModel struct {
-	snapshot               tuiSnapshot
-	client                 controllerClient
-	service                *tuiServiceClient
-	paths                  cliPaths
-	setupParams            []byte
-	ownsCore               bool
-	coreRunning            bool
-	systemProxyManaged     bool
-	width                  int
-	height                 int
-	refreshSequence        uint64
-	refreshInFlight        bool
-	busy                   bool
-	inputMode              tuiInputMode
-	inputValue             []rune
-	inputCursor            int
-	inputSelectAll         bool
-	modeSelectionOpen      bool
-	selectedMode           int
-	renameProfilePath      string
-	editorPath             string
-	editorTempPath         string
-	editorBackup           tuiProfileBackup
-	pendingMixedPort       *int
-	stagedSettings         *tuiSettings
-	settingsDirty          bool
-	backendRevision        uint64
-	networkCheckActive     bool
-	memoryRefreshActive    bool
-	coreMemoryUpdates      <-chan tuiCoreMemoryUpdate
-	stopCoreMemory         func()
-	trafficUpdates         <-chan tuiTrafficUpdate
-	stopTraffic            func()
-	stopServiceOnExit      bool // Legacy test visibility; managed frontends always leave this false.
-	frontendExitRequested  bool
-	shutdownRequested      bool
-	notifications          []tuiNotification
-	notificationDetailOpen bool
-	notificationSelected   int
-	notificationScroll     int
-	sshFormOpen            bool
-	sshFormExisting        bool
-	sshFormReadOnly        bool
-	sshFormOriginalName    string
-	sshFormFingerprint     string
-	sshForm                cliSSHProfile
-	sshFormSelected        int
-	sshFormFieldEditing    bool
-	sshFormInput           []rune
-	sshFormCursor          int
-	sshFormSelectAll       bool
-	sshFormAddingOption    bool
-	sshFormPasswordChanged bool
-	sshFormPasswordCleared bool
-	sshFormPasswordConfirm bool
-	sshFormPasswordFirst   string
-	sshDeleteConfirmOpen   bool
-	sshDeleteName          string
-	profileDeleteOpen      bool
-	profileDeletePath      string
-	profileDeleteName      string
-	profileDeleteKind      string
+	snapshot                 tuiSnapshot
+	client                   controllerClient
+	service                  *tuiServiceClient
+	paths                    cliPaths
+	setupParams              []byte
+	ownsCore                 bool
+	coreRunning              bool
+	systemProxyManaged       bool
+	width                    int
+	height                   int
+	refreshSequence          uint64
+	refreshInFlight          bool
+	busy                     bool
+	inputMode                tuiInputMode
+	inputValue               []rune
+	inputCursor              int
+	inputSelectAll           bool
+	modeSelectionOpen        bool
+	selectedMode             int
+	renameProfilePath        string
+	editorPath               string
+	editorTempPath           string
+	editorBackup             tuiProfileBackup
+	pendingMixedPort         *int
+	stagedSettings           *tuiSettings
+	settingsDirty            bool
+	backendRevision          uint64
+	networkCheckActive       bool
+	memoryRefreshActive      bool
+	coreMemoryUpdates        <-chan tuiCoreMemoryUpdate
+	stopCoreMemory           func()
+	trafficUpdates           <-chan tuiTrafficUpdate
+	stopTraffic              func()
+	stopServiceOnExit        bool // Legacy test visibility; managed frontends always leave this false.
+	frontendExitRequested    bool
+	shutdownRequested        bool
+	notifications            []tuiNotification
+	notificationDetailOpen   bool
+	notificationSelected     int
+	notificationScroll       int
+	sshFormOpen              bool
+	sshFormExisting          bool
+	sshFormReadOnly          bool
+	sshFormOriginalName      string
+	sshFormFingerprint       string
+	sshForm                  cliSSHProfile
+	sshFormSelected          int
+	sshFormFieldEditing      bool
+	sshFormInput             []rune
+	sshFormCursor            int
+	sshFormSelectAll         bool
+	sshFormAddingOption      bool
+	sshFormPassphraseChanged bool
+	sshFormPassphraseCleared bool
+	sshFormPassphraseConfirm bool
+	sshFormPassphraseFirst   string
+	sshFormPasswordChanged   bool
+	sshFormPasswordCleared   bool
+	sshFormPasswordConfirm   bool
+	sshFormPasswordFirst     string
+	sshDeleteConfirmOpen     bool
+	sshDeleteName            string
+	profileDeleteOpen        bool
+	profileDeletePath        string
+	profileDeleteName        string
+	profileDeleteKind        string
 }
 
 func newTUIModel(
@@ -794,19 +798,24 @@ func (m *tuiModel) sshFormView() tuiSSHFormView {
 		Port:              m.sshForm.Port,
 		LocalPort:         m.sshForm.LocalPort,
 		Identity:          m.sshForm.Identity,
+		PassphraseSet:     m.sshForm.IdentityPassphrase != "",
+		PassphraseChanged: m.sshFormPassphraseChanged,
+		PassphraseCleared: m.sshFormPassphraseCleared,
 		PasswordSet:       m.sshForm.Password != "",
 		PasswordChanged:   m.sshFormPasswordChanged,
 		PasswordCleared:   m.sshFormPasswordCleared,
 		Options:           append([]string(nil), m.sshForm.Options...),
 		Selected:          m.sshFormSelected,
 		FieldEditing:      m.sshFormFieldEditing,
+		PassphraseConfirm: m.sshFormPassphraseConfirm,
 		PasswordConfirm:   m.sshFormPasswordConfirm,
 		DeleteConfirmOpen: m.sshDeleteConfirmOpen,
 		DeleteName:        m.sshDeleteName,
 	}
 	if m.sshFormFieldEditing {
 		value := m.sshFormInput
-		if m.sshFormSelected == tuiSSHFormPasswordRow {
+		if m.sshFormSelected == tuiSSHFormPassphraseRow ||
+			m.sshFormSelected == tuiSSHFormPasswordRow {
 			value = []rune(strings.Repeat("•", len(m.sshFormInput)))
 		}
 		view.FieldInput = tuiInputViewport(
@@ -2415,7 +2424,8 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			m.snapshot.Status = "Press n to add an SSH profile"
 			return nil
 		}
-		if m.snapshot.SSHProfiles[m.snapshot.SelectedSSH].Connected {
+		profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
+		if profile.Connected && profile.Ready {
 			return m.runSelectedSSHAction("disconnect")
 		}
 		return m.runSelectedSSHAction("connect")
@@ -3121,6 +3131,10 @@ func (m *tuiModel) beginSSHForm(existing bool) {
 	m.sshForm = profile
 	m.sshFormSelected = tuiSSHFormNameRow
 	m.sshFormFieldEditing = false
+	m.sshFormPassphraseChanged = false
+	m.sshFormPassphraseCleared = false
+	m.sshFormPassphraseConfirm = false
+	m.sshFormPassphraseFirst = ""
 	m.sshFormPasswordChanged = false
 	m.sshFormPasswordCleared = false
 	m.sshFormPasswordConfirm = false
@@ -3146,6 +3160,10 @@ func (m *tuiModel) resetSSHForm() {
 	m.sshFormCursor = 0
 	m.sshFormSelectAll = false
 	m.sshFormAddingOption = false
+	m.sshFormPassphraseChanged = false
+	m.sshFormPassphraseCleared = false
+	m.sshFormPassphraseConfirm = false
+	m.sshFormPassphraseFirst = ""
 	m.sshFormPasswordChanged = false
 	m.sshFormPasswordCleared = false
 	m.sshFormPasswordConfirm = false
@@ -3198,6 +3216,9 @@ func (m *tuiModel) beginSSHFormFieldEdit() {
 		}
 	case tuiSSHFormIdentityRow:
 		value = m.sshForm.Identity
+	case tuiSSHFormPassphraseRow:
+		m.sshFormPassphraseConfirm = false
+		m.sshFormPassphraseFirst = ""
 	case tuiSSHFormPasswordRow:
 		m.sshFormPasswordConfirm = false
 		m.sshFormPasswordFirst = ""
@@ -3230,6 +3251,8 @@ func (m *tuiModel) cancelSSHFormFieldEdit() {
 	m.sshFormCursor = 0
 	m.sshFormSelectAll = false
 	m.sshFormAddingOption = false
+	m.sshFormPassphraseConfirm = false
+	m.sshFormPassphraseFirst = ""
 	m.sshFormPasswordConfirm = false
 	m.sshFormPasswordFirst = ""
 }
@@ -3257,9 +3280,34 @@ func (m *tuiModel) commitSSHFormField() bool {
 		m.sshForm.LocalPort = port
 	case tuiSSHFormIdentityRow:
 		m.sshForm.Identity = strings.TrimSpace(value)
+	case tuiSSHFormPassphraseRow:
+		if value == "" {
+			m.snapshot.Status = "Private key passphrase must not be empty; press c outside editing to clear it"
+			return false
+		}
+		if !m.sshFormPassphraseConfirm {
+			m.sshFormPassphraseFirst = value
+			m.sshFormPassphraseConfirm = true
+			m.sshFormInput = nil
+			m.sshFormCursor = 0
+			m.sshFormSelectAll = false
+			m.snapshot.Status = "Confirm the private key passphrase · Enter confirm · Esc cancel"
+			return false
+		}
+		if value != m.sshFormPassphraseFirst {
+			m.sshFormPassphraseConfirm = false
+			m.sshFormPassphraseFirst = ""
+			m.sshFormInput = nil
+			m.sshFormCursor = 0
+			m.snapshot.Status = "Passphrases do not match; enter the private key passphrase again"
+			return false
+		}
+		m.sshForm.IdentityPassphrase = value
+		m.sshFormPassphraseChanged = true
+		m.sshFormPassphraseCleared = false
 	case tuiSSHFormPasswordRow:
 		if value == "" {
-			m.snapshot.Status = "Password must not be empty; press c outside editing to clear it"
+			m.snapshot.Status = "SSH password must not be empty; press c outside editing to clear it"
 			return false
 		}
 		if !m.sshFormPasswordConfirm {
@@ -3276,7 +3324,7 @@ func (m *tuiModel) commitSSHFormField() bool {
 			m.sshFormPasswordFirst = ""
 			m.sshFormInput = nil
 			m.sshFormCursor = 0
-			m.snapshot.Status = "Passwords do not match; enter the new password again"
+			m.snapshot.Status = "SSH passwords do not match; enter the new password again"
 			return false
 		}
 		m.sshForm.Password = value
@@ -3346,15 +3394,23 @@ func (m *tuiModel) handleSSHForm(message tea.KeyMsg) tea.Cmd {
 		if len(message.Runes) == 1 {
 			switch message.Runes[0] {
 			case 'c':
-				if m.sshFormSelected == tuiSSHFormPasswordRow {
+				if m.sshFormSelected == tuiSSHFormPassphraseRow ||
+					m.sshFormSelected == tuiSSHFormPasswordRow {
 					if m.sshFormReadOnly {
 						m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
 						return nil
 					}
-					m.sshForm.Password = ""
-					m.sshFormPasswordChanged = false
-					m.sshFormPasswordCleared = true
-					m.snapshot.Status = "Saved SSH password will be cleared when the form is saved"
+					if m.sshFormSelected == tuiSSHFormPassphraseRow {
+						m.sshForm.IdentityPassphrase = ""
+						m.sshFormPassphraseChanged = false
+						m.sshFormPassphraseCleared = true
+						m.snapshot.Status = "Saved private key passphrase will be cleared when the form is saved"
+					} else {
+						m.sshForm.Password = ""
+						m.sshFormPasswordChanged = false
+						m.sshFormPasswordCleared = true
+						m.snapshot.Status = "Saved SSH password will be cleared when the form is saved"
+					}
 				}
 			case 'x':
 				return m.deleteSelectedSSHFormOption()
@@ -4518,7 +4574,13 @@ func updateTUISubscriptionProfile(
 	}
 	updatedData, err := os.ReadFile(path)
 	if err != nil {
-		_ = restoreTUISubscriptionProfile(path, backup)
+		if rollbackErr := restoreTUISubscriptionProfile(path, backup); rollbackErr != nil {
+			return tuiProfileBackup{}, fmt.Errorf(
+				"read updated subscription profile: %v; profile rollback failed: %w",
+				err,
+				rollbackErr,
+			)
+		}
 		return tuiProfileBackup{}, err
 	}
 	backup.updatedSHA256 = tuiBytesSHA256(updatedData)

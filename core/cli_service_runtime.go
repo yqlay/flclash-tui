@@ -27,6 +27,12 @@ const (
 	tuiServiceDedupLimit          = 256
 )
 
+var (
+	startTUIServiceCoreListeners = handleStartListener
+	stopTUIServiceCoreListeners  = handleStopListener
+	waitTUIServiceProxyPortState = waitForTUIProxyPortState
+)
+
 type tuiServiceRuntime struct {
 	mu                      sync.RWMutex
 	mutationMu              sync.Mutex
@@ -317,10 +323,11 @@ func (r *tuiServiceRuntime) mutate(
 	case "restore_profile":
 		changed, resultPath, err = r.restoreProfile(request.ConfigPath)
 	case "shutdown":
-		_, err = r.stopCoreAndProxy(status)
-		r.setRunning(false)
-		r.setShuttingDown(true)
-		changed = true
+		changed, err = r.stopCoreAndProxy(status)
+		if err == nil {
+			r.setShuttingDown(true)
+			changed = true
+		}
 	}
 	if err != nil {
 		r.logMutation(request, false, err)
@@ -459,7 +466,10 @@ func (r *tuiServiceRuntime) startCoreListeners() (bool, error) {
 		runtimePort = r.runtimePort
 		r.mu.RUnlock()
 		defer func() {
-			if !r.running {
+			r.mu.RLock()
+			running := r.running
+			r.mu.RUnlock()
+			if !running {
 				r.releaseTunLease()
 			}
 		}()
@@ -485,24 +495,28 @@ func (r *tuiServiceRuntime) startCoreListeners() (bool, error) {
 			}
 		}
 	}
-	if !handleStartListener() {
+	if !startTUIServiceCoreListeners() {
 		return false, errors.New("start proxy listeners failed")
 	}
-	if port > 0 && !waitForTUIProxyPortState(
+	if port > 0 && !waitTUIServiceProxyPortState(
 		port,
 		true,
 		tuiListenerValidationTimeout,
 	) {
-		_ = handleStopListener()
-		return false, fmt.Errorf(
-			"proxy listener on 127.0.0.1:%d did not become ready; Core listeners stopped",
+		return false, r.rollbackStartedCore(
 			port,
+			fmt.Errorf(
+				"proxy listener on 127.0.0.1:%d did not become ready",
+				port,
+			),
 		)
 	}
 	if systemProxy && systemProxyPort != port {
 		if err := setLinuxSystemProxy(port, true); err != nil {
-			_ = handleStopListener()
-			return false, fmt.Errorf("update System proxy to active port: %w", err)
+			return false, r.rollbackStartedCore(
+				port,
+				fmt.Errorf("update System proxy to active port: %w", err),
+			)
 		}
 		r.setSystemProxyState(true, port)
 	}
@@ -511,6 +525,25 @@ func (r *tuiServiceRuntime) startCoreListeners() (bool, error) {
 	r.activePort = port
 	r.mu.Unlock()
 	return true, nil
+}
+
+func (r *tuiServiceRuntime) rollbackStartedCore(port int, cause error) error {
+	stopped := stopTUIServiceCoreListeners()
+	if stopped && waitTUIServiceProxyPortState(
+		port,
+		false,
+		tuiListenerValidationTimeout,
+	) {
+		return fmt.Errorf("%w; Core listeners stopped", cause)
+	}
+	r.mu.Lock()
+	r.running = true
+	r.activePort = port
+	r.mu.Unlock()
+	return fmt.Errorf(
+		"%v; Core listener cleanup failed and the Backend still marks Core as running",
+		cause,
+	)
 }
 
 func (r *tuiServiceRuntime) flcProxy(requestID string) tuiServiceStatus {
@@ -953,7 +986,13 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 			r.tunLease = oldTunLease
 			r.mu.Unlock()
 			if systemProxy {
-				_, _ = r.applySystemProxy(true)
+				if _, proxyRollbackErr := r.applySystemProxy(true); proxyRollbackErr != nil {
+					return false, fmt.Errorf(
+						"switch to silent mode: %v; System proxy rollback failed: %w",
+						err,
+						proxyRollbackErr,
+					)
+				}
 			}
 			return false, err
 		}
@@ -965,14 +1004,16 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 			r.tunLease = oldTunLease
 			r.mu.Unlock()
 			_, rollbackErr := r.reloadUnlocked(paths.configPath, "")
+			var proxyRollbackErr error
 			if systemProxy {
-				_, _ = r.applySystemProxy(true)
+				_, proxyRollbackErr = r.applySystemProxy(true)
 			}
-			if rollbackErr != nil {
+			if rollbackErr != nil || proxyRollbackErr != nil {
 				return false, fmt.Errorf(
-					"save silent mode: %v; Core rollback failed: %w",
+					"save silent mode: %v; Core rollback: %v; System proxy rollback: %v",
 					err,
 					rollbackErr,
+					proxyRollbackErr,
 				)
 			}
 			return false, fmt.Errorf("save silent mode: %w", err)
@@ -1199,9 +1240,15 @@ func (r *tuiServiceRuntime) applyFLCOutbound(outbound string) (bool, error) {
 			r.mu.Lock()
 			r.flc = previous
 			r.mu.Unlock()
-			_, _ = r.reloadUnlocked(paths.configPath, "")
+			if _, rollbackErr := r.reloadUnlocked(paths.configPath, ""); rollbackErr != nil {
+				return false, fmt.Errorf(
+					"save FLC outbound: %v; Core rollback failed: %w",
+					err,
+					rollbackErr,
+				)
+			}
 		}
-		return false, err
+		return false, fmt.Errorf("save FLC outbound: %w", err)
 	}
 	if mode != tuiSilentMode {
 		r.mu.Lock()
@@ -1435,8 +1482,18 @@ func (r *tuiServiceRuntime) stopCoreAndProxy(
 		changed = true
 	}
 	if status.Running {
-		if !handleStopListener() {
+		if !stopTUIServiceCoreListeners() {
 			return changed, errors.New("stop proxy listeners failed")
+		}
+		if status.ActiveProxyPort > 0 && !waitTUIServiceProxyPortState(
+			status.ActiveProxyPort,
+			false,
+			tuiListenerValidationTimeout,
+		) {
+			return changed, fmt.Errorf(
+				"proxy listener on 127.0.0.1:%d did not stop; Core remains marked running",
+				status.ActiveProxyPort,
+			)
 		}
 		r.setRunning(false)
 		changed = true
@@ -1829,14 +1886,19 @@ func (r *tuiServiceRuntime) applySettings(
 					)
 				}
 				_, reloadErr := r.reloadUnlocked(configPath, "")
+				var proxyRestoreErr error
 				if proxyPort > 0 {
-					_ = setLinuxSystemProxy(proxyPort, true)
+					proxyRestoreErr = setLinuxSystemProxy(proxyPort, true)
+					if proxyRestoreErr != nil {
+						r.setSystemProxyState(false, 0)
+					}
 				}
-				if reloadErr != nil {
+				if reloadErr != nil || proxyRestoreErr != nil {
 					return false, fmt.Errorf(
-						"update managed system proxy: %v; rollback reload failed: %w",
+						"update managed system proxy: %v; Core rollback: %v; System proxy rollback: %v",
 						proxyErr,
 						reloadErr,
+						proxyRestoreErr,
 					)
 				}
 				return false, fmt.Errorf(

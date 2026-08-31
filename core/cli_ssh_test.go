@@ -7,7 +7,9 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +41,37 @@ func TestParseCLISSHProfileEdit(t *testing.T) {
 	}
 }
 
-func TestCLISSHConfigIsPrivateAndViewsMaskPassword(t *testing.T) {
+func TestParseCLISSHProfileEditRejectsCredentialConflicts(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"school", "student@example.edu", "--passphrase", "--clear-passphrase"},
+		{"school", "student@example.edu", "--password", "--clear-password"},
+		{"school", "student@example.edu", "--clear-passphrase"},
+		{"school", "student@example.edu", "--clear-password"},
+	} {
+		if _, _, err := parseCLISSHProfileEdit(arguments, false); err == nil {
+			t.Fatalf("conflicting SSH credential arguments were accepted: %v", arguments)
+		}
+	}
+}
+
+func TestValidateCLISSHProfileRejectsWhitespaceInHost(t *testing.T) {
+	for _, destination := range []string{
+		"ssh student@example.edu",
+		"student@example.edu extra",
+		"student@example.edu\tproxy",
+	} {
+		err := validateCLISSHProfile(cliSSHProfile{
+			Name:        "school",
+			Destination: destination,
+			Port:        22,
+		})
+		if err == nil {
+			t.Fatalf("invalid SSH host %q was accepted", destination)
+		}
+	}
+}
+
+func TestCLISSHConfigIsPrivateAndViewsMaskSecrets(t *testing.T) {
 	configRoot := t.TempDir()
 	runtimeRoot := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configRoot)
@@ -49,11 +81,13 @@ func TestCLISSHConfigIsPrivateAndViewsMaskPassword(t *testing.T) {
 
 	err := updateCLISSHConfig(func(config *cliSSHConfig) error {
 		config.Profiles = []cliSSHProfile{{
-			Name:        "school",
-			Destination: "student@example.edu",
-			Port:        22,
-			LocalPort:   1080,
-			Password:    "do-not-display",
+			Name:               "school",
+			Destination:        "student@example.edu",
+			Port:               22,
+			LocalPort:          1080,
+			Identity:           "/tmp/id_ed25519",
+			IdentityPassphrase: "do-not-display-passphrase",
+			Password:           "do-not-display-password",
 		}}
 		return nil
 	})
@@ -76,10 +110,155 @@ func TestCLISSHConfigIsPrivateAndViewsMaskPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(views) != 1 || !views[0].PasswordSet ||
+	if len(views) != 1 || !views[0].PassphraseSet || !views[0].PasswordSet ||
 		views[0].LocalPort != 1080 ||
-		strings.Contains(string(encoded), "do-not-display") {
-		t.Fatalf("password leaked through view: %s", encoded)
+		strings.Contains(string(encoded), "do-not-display-passphrase") ||
+		strings.Contains(string(encoded), "do-not-display-password") {
+		t.Fatalf("SSH secret leaked through view: %s", encoded)
+	}
+}
+
+func TestCLISSHAskpassSelectsKeyPassphraseAndPassword(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "askpass.secret")
+	data, err := json.Marshal(cliSSHAskpassSecrets{
+		IdentityPassphrase: "key-secret",
+		Password:           "login-secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		prompt string
+		want   string
+	}{
+		{"Enter passphrase for key '/tmp/id_ed25519':", "key-secret"},
+		{"student@example.edu's password:", "login-secret"},
+	} {
+		answer, err := cliSSHAskpassAnswer(test.prompt, path)
+		if err != nil || answer != test.want {
+			t.Fatalf("askpass answer for %q = %q, %v; want %q", test.prompt, answer, err, test.want)
+		}
+	}
+	if _, err := cliSSHAskpassAnswer("Confirm host key?", path); err == nil {
+		t.Fatal("askpass answered an unrelated authentication prompt")
+	}
+}
+
+func TestCLISSHAskpassRejectsMissingOrUnsafeSecrets(t *testing.T) {
+	directory := t.TempDir()
+	missingPassword := filepath.Join(directory, "missing-password.secret")
+	data, err := json.Marshal(cliSSHAskpassSecrets{IdentityPassphrase: "key-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(missingPassword, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cliSSHAskpassAnswer("Password:", missingPassword); err == nil ||
+		!strings.Contains(err.Error(), "no SSH password") {
+		t.Fatalf("missing SSH password error = %v", err)
+	}
+	unsafe := filepath.Join(directory, "unsafe.secret")
+	if err := os.WriteFile(unsafe, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cliSSHAskpassAnswer("Passphrase:", unsafe); err == nil ||
+		!strings.Contains(err.Error(), "unsafe") {
+		t.Fatalf("unsafe askpass secret error = %v", err)
+	}
+}
+
+func TestConfigureCLISSHAskpassKeepsBothSecretsOutOfEnvironment(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntime })
+	directory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stalePath := filepath.Join(directory, "askpass-stale.secret")
+	if err := os.WriteFile(stalePath, []byte("stale-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_ASKPASS", "/tmp/stale-askpass")
+	t.Setenv("SSH_ASKPASS_REQUIRE", "prefer")
+	t.Setenv("DISPLAY", ":99")
+	t.Setenv("LC_ALL", "zh_CN.UTF-8")
+	t.Setenv(cliSSHAskpassFileEnv, "/tmp/stale-secret")
+	command := exec.Command("true")
+	cleanup, err := configureCLISSHAskpass(command, "key-secret", "login-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		cleanup()
+		t.Fatalf("stale SSH askpass secret was not removed: %v", err)
+	}
+	secretPath := ""
+	environment := map[string]string{}
+	for _, value := range command.Env {
+		if strings.Contains(value, "key-secret") || strings.Contains(value, "login-secret") {
+			cleanup()
+			t.Fatal("SSH secret leaked into the child environment")
+		}
+		if strings.HasPrefix(value, cliSSHAskpassFileEnv+"=") {
+			secretPath = strings.TrimPrefix(value, cliSSHAskpassFileEnv+"=")
+		}
+		key, item, found := strings.Cut(value, "=")
+		if found {
+			environment[key] = item
+		}
+	}
+	if secretPath == "" {
+		cleanup()
+		t.Fatal("SSH askpass secret path was not configured")
+	}
+	if environment["LC_ALL"] != "C" ||
+		environment["SSH_ASKPASS_REQUIRE"] != "force" ||
+		environment["DISPLAY"] != "flclash-askpass" ||
+		environment["SSH_ASKPASS"] == "/tmp/stale-askpass" ||
+		environment[cliSSHAskpassFileEnv] != secretPath {
+		cleanup()
+		t.Fatalf("SSH askpass environment was not replaced safely: %+v", environment)
+	}
+	for prompt, want := range map[string]string{
+		"Enter passphrase for key:": "key-secret",
+		"Password:":                 "login-secret",
+	} {
+		answer, err := cliSSHAskpassAnswer(prompt, secretPath)
+		if err != nil || answer != want {
+			cleanup()
+			t.Fatalf("configured askpass answer for %q = %q, %v", prompt, answer, err)
+		}
+	}
+	cleanup()
+	if _, err := os.Stat(secretPath); !os.IsNotExist(err) {
+		t.Fatalf("askpass temporary secret remains after cleanup: %v", err)
+	}
+}
+
+func TestStopAllCLISSHTunnelsRemovesStaleAskpassSecrets(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntime })
+	directory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "askpass-crashed.secret")
+	if err := os.WriteFile(path, []byte("stale-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := stopAllCLISSHTunnels(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("complete SSH cleanup left stale askpass secret: %v", err)
 	}
 }
 
@@ -88,13 +267,16 @@ func TestTUISSHPageRendersMaskedAuthentication(t *testing.T) {
 		Page:         tuiPageSSH,
 		SelectedMenu: int(tuiPageSSH),
 		SSHProfiles: []tuiSSHProfile{{
-			Name:        "school",
-			Destination: "student@example.edu",
-			Port:        22,
-			LocalPort:   1080,
-			PasswordSet: true,
-			Connected:   true,
-			SocksPort:   45678,
+			Name:          "school",
+			Destination:   "student@example.edu",
+			Port:          22,
+			LocalPort:     1080,
+			Identity:      "/tmp/id_ed25519",
+			PassphraseSet: true,
+			PasswordSet:   true,
+			Connected:     true,
+			Ready:         true,
+			SocksPort:     45678,
 		}},
 	}
 	output := stripTUIANSI(renderTUIAtSize(
@@ -110,13 +292,130 @@ func TestTUISSHPageRendersMaskedAuthentication(t *testing.T) {
 		"SSH",
 		"school",
 		"CONNECTED",
-		"password ********",
+		"key + passphrase **** + password ****",
 		"SOCKS5 127.0.0.1:45678",
 		"configured 1080",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("SSH page does not contain %q:\n%s", expected, output)
 		}
+	}
+}
+
+func TestTUISSHPageDistinguishesBrokenSOCKSListener(t *testing.T) {
+	output := stripTUIANSI(renderTUIAtSize(
+		tuiSnapshot{
+			Page: tuiPageSSH,
+			SSHProfiles: []tuiSSHProfile{{
+				Name:        "school",
+				Destination: "student@example.edu",
+				Port:        22,
+				Connected:   true,
+				Ready:       false,
+				SocksPort:   45678,
+			}},
+		},
+		cliPaths{},
+		"private Unix socket",
+		true,
+		false,
+		180,
+		30,
+	))
+	for _, expected := range []string{"BROKEN", "SOCKS5 127.0.0.1:45678 unavailable"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("broken SSH page does not contain %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestTUIEnterReconnectsBrokenSSHProfile(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.FocusSidebar = false
+	model.snapshot.SSHProfiles = []tuiSSHProfile{{
+		Name:      "school",
+		Connected: true,
+		Ready:     false,
+	}}
+	command := model.selectCurrent()
+	if command == nil || model.snapshot.Status != "SSH connect school..." {
+		t.Fatalf("broken SSH Enter action = command:%t status:%q", command != nil, model.snapshot.Status)
+	}
+}
+
+func TestTUISSHFormUsesDistinctHostKeyAndSecretLabels(t *testing.T) {
+	snapshot := tuiSnapshot{
+		Page: tuiPageSSH,
+		SSHForm: tuiSSHFormView{
+			Open:          true,
+			Name:          "school",
+			Destination:   "student@example.edu",
+			Port:          22,
+			Identity:      "/tmp/id_ed25519",
+			PassphraseSet: true,
+			PasswordSet:   true,
+		},
+	}
+	output := stripTUIANSI(renderTUIAtSize(
+		snapshot,
+		cliPaths{},
+		"private Unix socket",
+		true,
+		false,
+		180,
+		30,
+	))
+	for _, expected := range []string{
+		"SSH host",
+		"Identity(private key)",
+		"Key passphrase",
+		"SSH password",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("SSH form does not contain %q:\n%s", expected, output)
+		}
+	}
+	if strings.Contains(output, "SSH exit") {
+		t.Fatalf("SSH form still contains the old SSH exit label:\n%s", output)
+	}
+}
+
+func TestCLISSHProfileEditPreservesOrClearsCredentialsIndependently(t *testing.T) {
+	existing := cliSSHProfile{
+		Name:               "school",
+		Destination:        "student@example.edu",
+		Port:               22,
+		IdentityPassphrase: "key-secret",
+		Password:           "login-secret",
+	}
+	preserved, err := cliSSHProfileFromEdit(existing, cliSSHProfileEdit{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserved.IdentityPassphrase != "key-secret" ||
+		preserved.Password != "login-secret" {
+		t.Fatalf("empty edit did not preserve both credentials: %+v", preserved)
+	}
+	clearedPassphrase, err := cliSSHProfileFromEdit(existing, cliSSHProfileEdit{
+		ClearPassphrase: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clearedPassphrase.IdentityPassphrase != "" ||
+		clearedPassphrase.Password != "login-secret" {
+		t.Fatalf("passphrase clear affected the wrong credential: %+v", clearedPassphrase)
+	}
+	clearedPassword, err := cliSSHProfileFromEdit(existing, cliSSHProfileEdit{
+		ClearPassword: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clearedPassword.IdentityPassphrase != "key-secret" ||
+		clearedPassword.Password != "" {
+		t.Fatalf("password clear affected the wrong credential: %+v", clearedPassword)
 	}
 }
 
@@ -132,6 +431,196 @@ func TestCLISSHRejectsManagedForwardingOptions(t *testing.T) {
 	}
 }
 
+func TestCLISSHTunnelArgumentsUseSafeFirstConnectPolicy(t *testing.T) {
+	profile := cliSSHProfile{
+		Port:     2222,
+		Identity: "/tmp/id_ed25519",
+	}
+	arguments := cliSSHTunnelArguments(profile, "/tmp/control.sock")
+	joined := strings.Join(arguments, " ")
+	for _, expected := range []string{
+		"-p 2222",
+		"-i /tmp/id_ed25519",
+		"ClearAllForwardings=yes",
+		"StrictHostKeyChecking=accept-new",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("SSH arguments do not contain %q: %v", expected, arguments)
+		}
+	}
+	profile.Options = []string{"StrictHostKeyChecking=yes"}
+	arguments = cliSSHTunnelArguments(profile, "/tmp/control.sock")
+	joined = strings.Join(arguments, " ")
+	if strings.Contains(joined, "StrictHostKeyChecking=accept-new") ||
+		!strings.Contains(joined, "StrictHostKeyChecking=yes") {
+		t.Fatalf("explicit host-key policy did not override the default: %v", arguments)
+	}
+	forwardArguments := cliSSHDynamicForwardArguments(cliSSHTunnelState{
+		Destination: "student@example.edu",
+		Port:        1080,
+		ControlPath: "/tmp/control.sock",
+	})
+	if joined := strings.Join(forwardArguments, " "); !strings.Contains(joined, "-O forward -D 127.0.0.1:1080") {
+		t.Fatalf("dynamic forward control arguments are incomplete: %v", forwardArguments)
+	}
+}
+
+func TestStartCLISSHTunnelAddsForwardAfterClearingConfiguredForwards(t *testing.T) {
+	binDirectory := t.TempDir()
+	sshPath := filepath.Join(binDirectory, "ssh")
+	script := "#!/bin/sh\n" +
+		"control=''\nprevious=''\n" +
+		"for argument in \"$@\"; do\n" +
+		"  if [ \"$previous\" = '-S' ]; then control=\"$argument\"; fi\n" +
+		"  previous=\"$argument\"\n" +
+		"done\n" +
+		"case \" $* \" in\n" +
+		"  *' -O check '*) test -e \"$control\" ;;\n" +
+		"  *' -O exit '*) unlink \"$control\" ;;\n" +
+		"  *) touch \"$control\" ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	runtimeRoot := t.TempDir()
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	previousForward := addCLISSHDynamicForwardForOperation
+	var listener net.Listener
+	addCLISSHDynamicForwardForOperation = func(
+		_ string,
+		state cliSSHTunnelState,
+	) error {
+		var err error
+		listener, err = net.Listen(
+			"tcp4",
+			net.JoinHostPort("127.0.0.1", strconv.Itoa(state.Port)),
+		)
+		return err
+	}
+	t.Cleanup(func() {
+		if listener != nil {
+			_ = listener.Close()
+		}
+		cliRuntimeDirectoryOverride = previousRuntime
+		addCLISSHDynamicForwardForOperation = previousForward
+	})
+	state, err := startCLISSHTunnel(cliSSHProfile{
+		Name:        "school",
+		Destination: "student@example.edu",
+		Port:        22,
+	}, "transient")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listener == nil || !cliSSHTunnelAlive(sshPath, state) {
+		t.Fatalf("two-stage SSH SOCKS5 tunnel is not ready: %+v", state)
+	}
+	if err := stopCLIStateTunnel(state); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStartCLISSHTunnelCleansMasterWhenForwardFails(t *testing.T) {
+	binDirectory := t.TempDir()
+	sshPath := filepath.Join(binDirectory, "ssh")
+	script := "#!/bin/sh\n" +
+		"control=''\nprevious=''\n" +
+		"for argument in \"$@\"; do\n" +
+		"  if [ \"$previous\" = '-S' ]; then control=\"$argument\"; fi\n" +
+		"  previous=\"$argument\"\n" +
+		"done\n" +
+		"case \" $* \" in\n" +
+		"  *' -O check '*) test -e \"$control\" ;;\n" +
+		"  *' -O exit '*) unlink \"$control\" ;;\n" +
+		"  *) touch \"$control\" ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	runtimeRoot := t.TempDir()
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	previousForward := addCLISSHDynamicForwardForOperation
+	forwardCalls := 0
+	addCLISSHDynamicForwardForOperation = func(string, cliSSHTunnelState) error {
+		forwardCalls++
+		return errors.New("simulated dynamic forward failure")
+	}
+	t.Cleanup(func() {
+		cliRuntimeDirectoryOverride = previousRuntime
+		addCLISSHDynamicForwardForOperation = previousForward
+	})
+	_, err := startCLISSHTunnel(cliSSHProfile{
+		Name:        "school",
+		Destination: "student@example.edu",
+		Port:        22,
+	}, "transient")
+	if err == nil || !strings.Contains(err.Error(), "configure SSH SOCKS5 forward") {
+		t.Fatalf("dynamic-forward failure = %v", err)
+	}
+	if forwardCalls != 3 {
+		t.Fatalf("automatic-port forward attempts = %d, want 3", forwardCalls)
+	}
+	directory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "ctl-") ||
+			strings.HasSuffix(entry.Name(), ".json") {
+			t.Fatalf("failed dynamic forward left runtime state %q", entry.Name())
+		}
+	}
+}
+
+func TestWaitCLISSHTunnelOperationLockWaitsForCleanupTurn(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntime })
+	first, err := lockCLISSHTunnelOperation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan struct {
+		lock *cliFileLock
+		err  error
+	}, 1)
+	go func() {
+		lock, err := waitCLISSHTunnelOperationLock(2 * time.Second)
+		result <- struct {
+			lock *cliFileLock
+			err  error
+		}{lock: lock, err: err}
+	}()
+	select {
+	case early := <-result:
+		first.release()
+		if early.lock != nil {
+			early.lock.release()
+		}
+		t.Fatalf("operation lock wait returned before release: %v", early.err)
+	case <-time.After(75 * time.Millisecond):
+	}
+	first.release()
+	select {
+	case acquired := <-result:
+		if acquired.err != nil || acquired.lock == nil {
+			t.Fatalf("operation lock was not acquired after release: %v", acquired.err)
+		}
+		acquired.lock.release()
+	case <-time.After(2 * time.Second):
+		t.Fatal("operation lock wait did not finish after release")
+	}
+}
+
 func TestRunCLICommandWithSSHProxySetsEnvironmentAndExitCode(t *testing.T) {
 	err := runCLICommandWithSSHProxy([]string{
 		"sh",
@@ -141,6 +630,126 @@ func TestRunCLICommandWithSSHProxySetsEnvironmentAndExitCode(t *testing.T) {
 	var exitError *cliExitCodeError
 	if !errors.As(err, &exitError) || exitError.ExitCode() != 7 {
 		t.Fatalf("SSH wrapper exit = %v, want exit code 7", err)
+	}
+}
+
+func TestFLCSSHTransientCommandReportsCommandAndCleanupFailures(t *testing.T) {
+	configRoot := t.TempDir()
+	runtimeRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:        "school",
+		Destination: "student@example.edu",
+		Port:        22,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previousStart := startCLITransientSSHTunnelForCommand
+	previousStop := stopCLITransientSSHTunnelForCommand
+	previousRun := runCLICommandWithSSHProxyForCommand
+	started, ran, stopped := false, false, false
+	startCLITransientSSHTunnelForCommand = func(profile cliSSHProfile) (cliSSHTunnelState, error) {
+		started = profile.Name == "school"
+		return cliSSHTunnelState{Name: profile.Name, Port: 1080}, nil
+	}
+	runCLICommandWithSSHProxyForCommand = func(args []string, port int) error {
+		ran = port == 1080 && len(args) == 2 && args[0] == "curl"
+		return errors.New("simulated command failure")
+	}
+	stopCLITransientSSHTunnelForCommand = func(state cliSSHTunnelState) error {
+		stopped = state.Name == "school"
+		return errors.New("simulated cleanup failure")
+	}
+	t.Cleanup(func() {
+		cliRuntimeDirectoryOverride = previousRuntime
+		startCLITransientSSHTunnelForCommand = previousStart
+		stopCLITransientSSHTunnelForCommand = previousStop
+		runCLICommandWithSSHProxyForCommand = previousRun
+	})
+	err := flcSSHCommand([]string{"-u", "school", "curl", "https://example.com"})
+	if err == nil || !strings.Contains(err.Error(), "simulated command failure") ||
+		!strings.Contains(err.Error(), "simulated cleanup failure") {
+		t.Fatalf("combined transient SSH command error = %v", err)
+	}
+	if !started || !ran || !stopped {
+		t.Fatalf("transient SSH lifecycle = start:%t run:%t stop:%t", started, ran, stopped)
+	}
+}
+
+func TestFLCSSHTransientStartFailureDoesNotRunCommandOrCleanup(t *testing.T) {
+	configRoot := t.TempDir()
+	runtimeRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:        "school",
+		Destination: "student@example.edu",
+		Port:        22,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previousStart := startCLITransientSSHTunnelForCommand
+	previousStop := stopCLITransientSSHTunnelForCommand
+	previousRun := runCLICommandWithSSHProxyForCommand
+	ran, stopped := false, false
+	startCLITransientSSHTunnelForCommand = func(cliSSHProfile) (cliSSHTunnelState, error) {
+		return cliSSHTunnelState{}, errors.New("simulated start failure")
+	}
+	runCLICommandWithSSHProxyForCommand = func([]string, int) error {
+		ran = true
+		return nil
+	}
+	stopCLITransientSSHTunnelForCommand = func(cliSSHTunnelState) error {
+		stopped = true
+		return nil
+	}
+	t.Cleanup(func() {
+		cliRuntimeDirectoryOverride = previousRuntime
+		startCLITransientSSHTunnelForCommand = previousStart
+		stopCLITransientSSHTunnelForCommand = previousStop
+		runCLICommandWithSSHProxyForCommand = previousRun
+	})
+	err := flcSSHCommand([]string{"-u", "school", "curl"})
+	if err == nil || !strings.Contains(err.Error(), "simulated start failure") {
+		t.Fatalf("transient SSH start error = %v", err)
+	}
+	if ran || stopped {
+		t.Fatalf("failed transient SSH start ran command=%t cleanup=%t", ran, stopped)
+	}
+}
+
+func TestFLCSSHPersistentCommandRejectsBrokenSOCKSListener(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	previousActive := activeCLIPersistentSSHTunnelForCommand
+	previousRun := runCLICommandWithSSHProxyForCommand
+	runCalled := false
+	activeCLIPersistentSSHTunnelForCommand = func() (cliSSHTunnelState, bool, error) {
+		return cliSSHTunnelState{Name: "school", Port: port}, true, nil
+	}
+	runCLICommandWithSSHProxyForCommand = func([]string, int) error {
+		runCalled = true
+		return nil
+	}
+	t.Cleanup(func() {
+		activeCLIPersistentSSHTunnelForCommand = previousActive
+		runCLICommandWithSSHProxyForCommand = previousRun
+	})
+	err = flcSSHCommand([]string{"curl", "https://example.com"})
+	if err == nil || !strings.Contains(err.Error(), "SOCKS5 listener is unavailable") {
+		t.Fatalf("broken persistent SSH command error = %v", err)
+	}
+	if runCalled {
+		t.Fatal("command ran while the persistent SSH SOCKS5 listener was unavailable")
 	}
 }
 
@@ -164,14 +773,16 @@ func TestTUISSHAddAndEditStayInsideTUI(t *testing.T) {
 		t.Fatalf("SSH add form state = open %t existing %t", model.sshFormOpen, model.sshFormExisting)
 	}
 	model.sshForm = cliSSHProfile{
-		Name:        "school",
-		Destination: "student@example.edu",
-		Port:        2222,
-		LocalPort:   1080,
-		Identity:    "/tmp/id_ed25519",
-		Password:    "never-render-this",
-		Options:     []string{"StrictHostKeyChecking=yes"},
+		Name:               "school",
+		Destination:        "student@example.edu",
+		Port:               2222,
+		LocalPort:          1080,
+		Identity:           "/tmp/id_ed25519",
+		IdentityPassphrase: "never-render-this-passphrase",
+		Password:           "never-render-this-password",
+		Options:            []string{"StrictHostKeyChecking=yes"},
 	}
+	model.sshFormPassphraseChanged = true
 	model.sshFormPasswordChanged = true
 	model.sshFormSelected = model.sshFormSaveRow()
 	command = model.activateSSHFormRow()
@@ -189,16 +800,19 @@ func TestTUISSHAddAndEditStayInsideTUI(t *testing.T) {
 	}
 	if profile.Destination != "student@example.edu" || profile.Port != 2222 ||
 		profile.LocalPort != 1080 ||
-		profile.Password != "never-render-this" || len(profile.Options) != 1 {
+		profile.IdentityPassphrase != "never-render-this-passphrase" ||
+		profile.Password != "never-render-this-password" || len(profile.Options) != 1 {
 		t.Fatalf("saved SSH profile = %+v", profile)
 	}
-	if strings.Contains(model.View(), profile.Password) {
-		t.Fatal("SSH password leaked through the TUI view")
+	if strings.Contains(model.View(), profile.IdentityPassphrase) ||
+		strings.Contains(model.View(), profile.Password) {
+		t.Fatal("SSH secret leaked through the TUI view")
 	}
 
 	model.beginSSHForm(true)
 	if !model.sshFormOpen || !model.sshFormExisting ||
-		model.sshForm.Password != "never-render-this" {
+		model.sshForm.IdentityPassphrase != "never-render-this-passphrase" ||
+		model.sshForm.Password != "never-render-this-password" {
 		t.Fatalf("SSH edit form did not load the selected profile: %+v", model.sshForm)
 	}
 	model.sshForm.Destination = "new@example.edu"
@@ -212,8 +826,10 @@ func TestTUISSHAddAndEditStayInsideTUI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.Destination != "new@example.edu" || profile.Password != "never-render-this" {
-		t.Fatalf("SSH edit did not preserve password: %+v", profile)
+	if profile.Destination != "new@example.edu" ||
+		profile.IdentityPassphrase != "never-render-this-passphrase" ||
+		profile.Password != "never-render-this-password" {
+		t.Fatalf("SSH edit did not preserve secrets: %+v", profile)
 	}
 }
 
@@ -253,14 +869,15 @@ func TestCLISSHLocalPortPolicy(t *testing.T) {
 	}
 }
 
-func TestTUISSHFormPasswordAndOptionEditing(t *testing.T) {
+func TestTUISSHFormSecretsAndOptionEditing(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.sshFormOpen = true
 	model.sshForm = cliSSHProfile{
-		Name:        "school",
-		Destination: "student@example.edu",
-		Port:        22,
-		Password:    "old-secret",
+		Name:               "school",
+		Destination:        "student@example.edu",
+		Port:               22,
+		IdentityPassphrase: "old-passphrase",
+		Password:           "old-password",
 	}
 	model.sshFormSelected = tuiSSHFormLocalPortRow
 	model.beginSSHFormFieldEdit()
@@ -276,6 +893,33 @@ func TestTUISSHFormPasswordAndOptionEditing(t *testing.T) {
 	if !model.commitSSHFormField() || model.sshForm.LocalPort != 0 {
 		t.Fatalf("automatic local SOCKS5 port was not staged: %d", model.sshForm.LocalPort)
 	}
+	model.sshFormSelected = tuiSSHFormPassphraseRow
+	model.beginSSHFormFieldEdit()
+	model.sshFormInput = []rune("new-passphrase")
+	model.sshFormCursor = len(model.sshFormInput)
+	if model.commitSSHFormField() {
+		t.Fatal("private key passphrase was committed without confirmation")
+	}
+	if !model.sshFormPassphraseConfirm {
+		t.Fatal("private key passphrase confirmation phase was not entered")
+	}
+	if strings.Contains(model.View(), "new-passphrase") ||
+		strings.Contains(model.View(), "old-passphrase") {
+		t.Fatal("private key passphrase leaked while editing")
+	}
+	model.sshFormInput = []rune("new-passphrase")
+	model.sshFormCursor = len(model.sshFormInput)
+	if !model.commitSSHFormField() ||
+		model.sshForm.IdentityPassphrase != "new-passphrase" {
+		t.Fatal("confirmed private key passphrase was not staged")
+	}
+	model.sshFormSelected = tuiSSHFormPassphraseRow
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	if model.sshForm.IdentityPassphrase != "" ||
+		!model.sshFormPassphraseCleared {
+		t.Fatal("private key passphrase clear state was not staged")
+	}
+
 	model.sshFormSelected = tuiSSHFormPasswordRow
 	model.beginSSHFormFieldEdit()
 	model.sshFormInput = []rune("new-secret")
@@ -286,7 +930,7 @@ func TestTUISSHFormPasswordAndOptionEditing(t *testing.T) {
 	if !model.sshFormPasswordConfirm {
 		t.Fatal("password confirmation phase was not entered")
 	}
-	if strings.Contains(model.View(), "new-secret") || strings.Contains(model.View(), "old-secret") {
+	if strings.Contains(model.View(), "new-secret") || strings.Contains(model.View(), "old-password") {
 		t.Fatal("SSH password leaked while editing")
 	}
 	model.sshFormInput = []rune("new-secret")
@@ -714,6 +1358,63 @@ func TestConnectCLISSHProfileSwitchesSharedFixedPort(t *testing.T) {
 	}
 }
 
+func TestConnectCLISSHProfileRestartsBrokenSelectedTunnel(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	runtimeRoot := t.TempDir()
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntime })
+	profile := cliSSHProfile{
+		Name:        "school",
+		Destination: "student@example.edu",
+		Port:        22,
+	}
+	if err := addCLISSHProfile(profile); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	brokenPort := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	broken := cliSSHTunnelState{Name: profile.Name, Port: brokenPort}
+	repaired := cliSSHTunnelState{Name: profile.Name, Port: 2080}
+	previousActive := activeCLIPersistentSSHTunnelForOperation
+	previousStart := startCLIPersistentSSHTunnelForOperation
+	previousStop := stopCLIStateTunnelForOperation
+	stopCalled, startCalled := false, false
+	activeCLIPersistentSSHTunnelForOperation = func() (cliSSHTunnelState, bool, error) {
+		return broken, true, nil
+	}
+	stopCLIStateTunnelForOperation = func(state cliSSHTunnelState) error {
+		stopCalled = state == broken
+		return nil
+	}
+	startCLIPersistentSSHTunnelForOperation = func(received cliSSHProfile) (cliSSHTunnelState, error) {
+		startCalled = received.Name == profile.Name
+		return repaired, nil
+	}
+	t.Cleanup(func() {
+		activeCLIPersistentSSHTunnelForOperation = previousActive
+		startCLIPersistentSSHTunnelForOperation = previousStart
+		stopCLIStateTunnelForOperation = previousStop
+	})
+	state, alreadyConnected, err := connectCLISSHProfile(profile.Name)
+	if err != nil || alreadyConnected || state != repaired || !stopCalled || !startCalled {
+		t.Fatalf(
+			"restart broken selected SSH tunnel = state:%+v already:%t stop:%t start:%t err:%v",
+			state,
+			alreadyConnected,
+			stopCalled,
+			startCalled,
+			err,
+		)
+	}
+}
+
 func TestDeleteConnectedCLISSHProfileRestoresTunnelOnConfigFailure(t *testing.T) {
 	configRoot := t.TempDir()
 	runtimeRoot := t.TempDir()
@@ -810,6 +1511,7 @@ func TestStopCLIStateTunnelKeepsStateWhenOpenSSHExitFails(t *testing.T) {
 }
 
 func TestActiveCLISSHTunnelKeepsBrokenForwardManageable(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	binDirectory := t.TempDir()
 	sshPath := filepath.Join(binDirectory, "ssh")
 	script := "#!/bin/sh\n" +
@@ -851,6 +1553,13 @@ func TestActiveCLISSHTunnelKeepsBrokenForwardManageable(t *testing.T) {
 		StartedAt:   time.Now(),
 		StatePath:   statePath,
 	}
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:        state.Name,
+		Destination: state.Destination,
+		Port:        22,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := saveCLISSHTunnelState(state); err != nil {
 		t.Fatal(err)
 	}
@@ -862,6 +1571,25 @@ func TestActiveCLISSHTunnelKeepsBrokenForwardManageable(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("broken SSH tunnel lost manageable state at %s: %v", path, err)
 		}
+	}
+	views, err := loadCLISSHProfileViews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || !views[0].Connected || views[0].Ready || views[0].SocksPort != port {
+		t.Fatalf("broken SSH tunnel view = %+v", views)
+	}
+	listOutput := captureCLIOutput(t, func() error { return cliSSHListCommand(nil) })
+	if !strings.Contains(listOutput, "BROKEN") ||
+		!strings.Contains(listOutput, "SOCKS5 127.0.0.1:"+strconv.Itoa(port)+" unavailable") {
+		t.Fatalf("broken SSH list output = %q", listOutput)
+	}
+	showOutput := captureCLIOutput(t, func() error {
+		return cliSSHShowCommand([]string{"school"})
+	})
+	if !strings.Contains(showOutput, "Connected:             running") ||
+		!strings.Contains(showOutput, "SOCKS5 ready:          stopped") {
+		t.Fatalf("broken SSH show output = %q", showOutput)
 	}
 	if err := stopCLIStateTunnel(loaded); err != nil {
 		t.Fatalf("broken SSH forward could not be disconnected: %v", err)

@@ -279,10 +279,12 @@ func serviceManagementCommand(args []string) error {
 		wasRunning := false
 		if err == nil {
 			wasRunning = status.Running
-			if err := client.shutdown(); err != nil {
+			if err := client.shutdownPIDAndWait(
+				status.PID,
+				tuiServiceShutdownTimeout,
+			); err != nil {
 				return err
 			}
-			waitForTUIServiceExit(client, status.PID, 3*time.Second)
 		}
 		paths, pathErr := resolvePaths("", "")
 		if pathErr != nil {
@@ -1084,7 +1086,7 @@ func completionCommand(args []string) error {
 		{"mode", "rule global direct silent"},
 		{"port", "off"},
 		{"flc", "status select test env ssh"},
-		{"ssh", "add edit delete list show connect disconnect status test --port --local-port --identity --password --clear-password --option"},
+		{"ssh", "add edit delete list show connect disconnect status test --port --local-port --identity --passphrase --clear-passphrase --password --clear-password --option"},
 		{"net", "show refresh delay speed"},
 		{"status", "--json --watch"},
 		{"backend", "start stop restart status logs clients"},
@@ -1307,12 +1309,60 @@ func cliOnOff(value bool) string {
 }
 
 func readManagedLog(path string, lineCount int, follow bool) error {
+	var interrupt chan os.Signal
+	if follow {
+		interrupt = make(chan os.Signal, 1)
+		signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(interrupt)
+	}
+	return readManagedLogTo(path, lineCount, follow, os.Stdout, interrupt)
+}
+
+func readManagedLogTo(
+	path string,
+	lineCount int,
+	follow bool,
+	output io.Writer,
+	interrupt <-chan os.Signal,
+) error {
 	if lineCount < 0 {
 		return errors.New("lines must not be negative")
 	}
-	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
+	var file *os.File
+	var reader *bufio.Reader
+	open := func() error {
+		if file != nil {
+			_ = file.Close()
+			file = nil
+			reader = nil
+		}
+		opened, err := os.Open(path)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		file = opened
+		reader = bufio.NewReader(file)
+		return nil
+	}
+	if err := open(); err != nil {
 		return err
+	}
+	defer func() {
+		if file != nil {
+			_ = file.Close()
+		}
+	}()
+	var data []byte
+	if file != nil {
+		var err error
+		data, err = io.ReadAll(file)
+		if err != nil {
+			return err
+		}
+		reader = bufio.NewReader(file)
 	}
 	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 	if len(lines) == 1 && lines[0] == "" {
@@ -1322,38 +1372,56 @@ func readManagedLog(path string, lineCount int, follow bool) error {
 		lines = lines[len(lines)-lineCount:]
 	}
 	for _, line := range lines {
-		fmt.Println(line)
+		fmt.Fprintln(output, line)
 	}
 	if !follow {
 		return nil
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if _, err := file.Seek(0, io.SeekEnd); err != nil {
-		return err
-	}
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(interrupt)
-	reader := bufio.NewReader(file)
 	for {
-		line, readErr := reader.ReadString('\n')
-		if line != "" {
-			fmt.Print(line)
-		}
-		if readErr == nil {
-			continue
-		}
-		if !errors.Is(readErr, io.EOF) {
-			return readErr
+		if reader != nil {
+			line, readErr := reader.ReadString('\n')
+			if line != "" {
+				if _, err := io.WriteString(output, line); err != nil {
+					return err
+				}
+			}
+			if readErr == nil {
+				continue
+			}
+			if !errors.Is(readErr, io.EOF) {
+				return readErr
+			}
 		}
 		select {
 		case <-interrupt:
 			return nil
 		case <-time.After(200 * time.Millisecond):
+		}
+		pathInfo, pathErr := os.Stat(path)
+		if os.IsNotExist(pathErr) {
+			if file != nil {
+				_ = file.Close()
+				file = nil
+				reader = nil
+			}
+			continue
+		}
+		if pathErr != nil {
+			return pathErr
+		}
+		if file == nil {
+			if err := open(); err != nil {
+				return err
+			}
+			continue
+		}
+		fileInfo, fileErr := file.Stat()
+		position, seekErr := file.Seek(0, io.SeekCurrent)
+		if fileErr != nil || seekErr != nil ||
+			!os.SameFile(pathInfo, fileInfo) || pathInfo.Size() < position {
+			if err := open(); err != nil {
+				return err
+			}
 		}
 	}
 }

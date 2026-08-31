@@ -205,15 +205,17 @@ type tuiProfile struct {
 }
 
 type tuiSSHProfile struct {
-	Name        string
-	Destination string
-	Port        int
-	LocalPort   int
-	Identity    string
-	PasswordSet bool
-	Options     []string
-	Connected   bool
-	SocksPort   int
+	Name          string
+	Destination   string
+	Port          int
+	LocalPort     int
+	Identity      string
+	PassphraseSet bool
+	PasswordSet   bool
+	Options       []string
+	Connected     bool
+	Ready         bool
+	SocksPort     int
 }
 
 const (
@@ -222,6 +224,7 @@ const (
 	tuiSSHFormPortRow
 	tuiSSHFormLocalPortRow
 	tuiSSHFormIdentityRow
+	tuiSSHFormPassphraseRow
 	tuiSSHFormPasswordRow
 	tuiSSHFormOptionStartRow
 )
@@ -235,6 +238,9 @@ type tuiSSHFormView struct {
 	Port              int
 	LocalPort         int
 	Identity          string
+	PassphraseSet     bool
+	PassphraseChanged bool
+	PassphraseCleared bool
 	PasswordSet       bool
 	PasswordChanged   bool
 	PasswordCleared   bool
@@ -242,6 +248,7 @@ type tuiSSHFormView struct {
 	Selected          int
 	FieldEditing      bool
 	FieldInput        string
+	PassphraseConfirm bool
 	PasswordConfirm   bool
 	DeleteConfirmOpen bool
 	DeleteName        string
@@ -1438,8 +1445,11 @@ func updateTUIRequestHistory(
 		}
 	}
 	for _, connection := range active {
+		if strings.TrimSpace(connection.ID) == "" {
+			continue
+		}
 		index, exists := indexByID[connection.ID]
-		if exists && connection.ID != "" {
+		if exists {
 			updated[index].tuiConnection = connection
 			updated[index].LastSeen = now
 			updated[index].Active = true
@@ -1451,9 +1461,7 @@ func updateTUIRequestHistory(
 			LastSeen:      now,
 			Active:        true,
 		})
-		if connection.ID != "" {
-			indexByID[connection.ID] = len(updated) - 1
-		}
+		indexByID[connection.ID] = len(updated) - 1
 	}
 	sort.SliceStable(updated, func(i, j int) bool {
 		return updated[i].LastSeen.After(updated[j].LastSeen)
@@ -1553,15 +1561,17 @@ func refreshTUISSH(snapshot *tuiSnapshot) {
 	snapshot.SSHProfiles = make([]tuiSSHProfile, 0, len(views))
 	for _, view := range views {
 		snapshot.SSHProfiles = append(snapshot.SSHProfiles, tuiSSHProfile{
-			Name:        view.Name,
-			Destination: view.Destination,
-			Port:        view.Port,
-			LocalPort:   view.LocalPort,
-			Identity:    view.Identity,
-			PasswordSet: view.PasswordSet,
-			Connected:   view.Connected,
-			SocksPort:   view.SocksPort,
-			Options:     append([]string(nil), view.Options...),
+			Name:          view.Name,
+			Destination:   view.Destination,
+			Port:          view.Port,
+			LocalPort:     view.LocalPort,
+			Identity:      view.Identity,
+			PassphraseSet: view.PassphraseSet,
+			PasswordSet:   view.PasswordSet,
+			Connected:     view.Connected,
+			Ready:         view.Ready,
+			SocksPort:     view.SocksPort,
+			Options:       append([]string(nil), view.Options...),
 		})
 	}
 	snapshot.SelectedSSH = 0
@@ -3034,29 +3044,48 @@ func drawTUISSHForm(
 	rows := make([]struct {
 		label string
 		color string
-	}, 0, len(form.Options)+10)
+	}, 0, len(form.Options)+11)
 	rows = append(rows,
 		struct {
 			label string
 			color string
-		}{label: "Name         " + form.Name},
+		}{label: "Name                   " + form.Name},
 		struct {
 			label string
 			color string
-		}{label: "SSH exit     " + form.Destination},
+		}{label: "SSH host               " + form.Destination},
 		struct {
 			label string
 			color string
-		}{label: fmt.Sprintf("SSH port     %d", form.Port)},
+		}{label: fmt.Sprintf("SSH port               %d", form.Port)},
 		struct {
 			label string
 			color string
-		}{label: "Local SOCKS  " + formatTUISSHLocalPort(form.LocalPort)},
+		}{label: "Local SOCKS            " + formatTUISSHLocalPort(form.LocalPort)},
 		struct {
 			label string
 			color string
-		}{label: "Identity     " + cliDisplayValue(form.Identity)},
+		}{label: "Identity(private key)  " + cliDisplayValue(form.Identity)},
 	)
+	passphrase := "not saved · Enter set"
+	if form.PassphraseSet {
+		passphrase = "******** · Enter replace · c clear"
+	}
+	if form.ReadOnly && form.PassphraseSet {
+		passphrase = "******** · set · read only"
+	} else if form.ReadOnly {
+		passphrase = "not saved · read only"
+	}
+	if form.PassphraseChanged {
+		passphrase = "******** · replacement staged · c clear"
+	}
+	if form.PassphraseCleared {
+		passphrase = "clear on save · Enter set"
+	}
+	rows = append(rows, struct {
+		label string
+		color string
+	}{label: "Key passphrase         " + passphrase})
 	password := "not saved · Enter set"
 	if form.PasswordSet {
 		password = "******** · Enter replace · c clear"
@@ -3075,7 +3104,7 @@ func drawTUISSHForm(
 	rows = append(rows, struct {
 		label string
 		color string
-	}{label: "Password     " + password})
+	}{label: "SSH password           " + password})
 	for index, option := range form.Options {
 		rows = append(rows, struct {
 			label string
@@ -3118,10 +3147,15 @@ func drawTUISSHForm(
 	}{label: cancelLabel, color: tuiYellow})
 	if form.FieldEditing && form.Selected >= 0 && form.Selected < len(rows) {
 		label := "Value        " + form.FieldInput
-		if form.Selected == tuiSSHFormPasswordRow {
-			label = "Password     " + form.FieldInput
+		if form.Selected == tuiSSHFormPassphraseRow {
+			label = "Key passphrase         " + form.FieldInput
+			if form.PassphraseConfirm {
+				label = "Confirm passphrase     " + form.FieldInput
+			}
+		} else if form.Selected == tuiSSHFormPasswordRow {
+			label = "SSH password           " + form.FieldInput
 			if form.PasswordConfirm {
-				label = "Confirm      " + form.FieldInput
+				label = "Confirm password       " + form.FieldInput
 			}
 		}
 		rows[form.Selected].label = label
@@ -4434,7 +4468,7 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 		status := "DISCONNECTED"
 		endpoint := ""
 		color := tuiDim
-		if profile.Connected {
+		if profile.Connected && profile.Ready {
 			status = "CONNECTED"
 			configured := "auto"
 			if profile.LocalPort > 0 {
@@ -4446,17 +4480,23 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 				configured,
 			)
 			color = tuiGreen
+		} else if profile.Connected {
+			status = "BROKEN"
+			endpoint = fmt.Sprintf(
+				" · SOCKS5 127.0.0.1:%d unavailable",
+				profile.SocksPort,
+			)
+			color = tuiRed
 		} else if profile.LocalPort > 0 {
 			endpoint = fmt.Sprintf(" · local 127.0.0.1:%d", profile.LocalPort)
 		} else {
 			endpoint = " · local auto"
 		}
-		auth := "agent/key"
-		if profile.PasswordSet {
-			auth = "password ********"
-		} else if profile.Identity != "" {
-			auth = "key " + profile.Identity
-		}
+		auth := cliSSHAuthenticationLabel(
+			profile.Identity,
+			profile.PassphraseSet,
+			profile.PasswordSet,
+		)
 		row := fmt.Sprintf(
 			"%-18s %-12s %s:%d · %s%s",
 			truncateTUI(profile.Name, 18),

@@ -59,6 +59,43 @@ func TestFetchLatestCLIRelease(t *testing.T) {
 	}
 }
 
+func TestFetchLatestCLIReleaseRejectsInvalidResponseBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body io.Reader
+	}{
+		{
+			name: "trailing JSON",
+			body: strings.NewReader(
+				`{"tag_name":"v1.2.3"} {"tag_name":"v9.9.9"}`,
+			),
+		},
+		{
+			name: "oversized metadata",
+			body: io.LimitReader(zeroReader{}, cliUpdateMaxMetadataBytes+1),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(
+				writer http.ResponseWriter,
+				request *http.Request,
+			) {
+				_, _ = io.Copy(writer, test.body)
+			}))
+			defer server.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if _, err := fetchLatestCLIRelease(
+				ctx,
+				server.Client(),
+				server.URL,
+			); err == nil {
+				t.Fatal("invalid GitHub response was accepted")
+			}
+		})
+	}
+}
+
 func TestCLIVersionComparison(t *testing.T) {
 	tests := []struct {
 		latest  string
@@ -71,6 +108,13 @@ func TestCLIVersionComparison(t *testing.T) {
 		{latest: "0.3.2", current: "0.3.3", newer: false},
 		{latest: "1.0.0", current: "1.0.0-beta.1", newer: true},
 		{latest: "1.0.0-beta.1", current: "1.0.0", newer: false},
+		{latest: "1.0.0-beta.10", current: "1.0.0-beta.2", newer: true},
+		{latest: "1.0.0-beta.2", current: "1.0.0-beta.10", newer: false},
+		{latest: "1.0.0-rc.1", current: "1.0.0-beta.11", newer: true},
+		{latest: "1.0.0-alpha.1", current: "1.0.0-alpha", newer: true},
+		{latest: "1.0.0-01", current: "1.0.0-1", newer: false},
+		{latest: "1.0.0+", current: "0.9.0", newer: false},
+		{latest: "01.0.0", current: "0.9.0", newer: false},
 		{latest: "invalid", current: "0.3.3", newer: false},
 	}
 	for _, test := range tests {

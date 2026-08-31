@@ -157,6 +157,40 @@ func TestTUIServiceShutdownWritesACKBeforeSignallingExit(t *testing.T) {
 	}
 }
 
+func TestReadTUIServiceRequestRejectsTrailingJSON(t *testing.T) {
+	request, err := json.Marshal(tuiServiceRequest{
+		ProtocolVersion: tuiServiceProtocolVersion,
+		RequestID:       "one-request",
+		Action:          "status",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = append(request, []byte(` {"action":"shutdown"}`)...)
+	if _, err := readTUIServiceRequest(bytes.NewReader(request)); err == nil {
+		t.Fatal("multiple JSON values were accepted as one Backend request")
+	}
+}
+
+func TestReadTUIServiceRequestRejectsOversizedFrame(t *testing.T) {
+	request := io.MultiReader(
+		strings.NewReader(`{"action":"status","padding":"`),
+		io.LimitReader(zeroReader{}, tuiServiceRequestMaxBytes),
+	)
+	if _, err := readTUIServiceRequest(request); err == nil {
+		t.Fatal("oversized Backend request was accepted")
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(data []byte) (int, error) {
+	for index := range data {
+		data[index] = 'x'
+	}
+	return len(data), nil
+}
+
 func TestTUIServiceShutdownDoesNotExitWhenACKWriteFails(t *testing.T) {
 	directory := t.TempDir()
 	shutdownCalled := false

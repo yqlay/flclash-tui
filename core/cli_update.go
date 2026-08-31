@@ -186,11 +186,21 @@ func fetchLatestCLIRelease(
 			strings.TrimSpace(string(body)),
 		)
 	}
+	metadata, err := io.ReadAll(io.LimitReader(
+		response.Body,
+		cliUpdateMaxMetadataBytes+1,
+	))
+	if err != nil {
+		return cliRelease{}, err
+	}
+	if len(metadata) > cliUpdateMaxMetadataBytes {
+		return cliRelease{}, fmt.Errorf(
+			"GitHub release metadata exceeds %d bytes",
+			cliUpdateMaxMetadataBytes,
+		)
+	}
 	var release cliRelease
-	decoder := json.NewDecoder(
-		io.LimitReader(response.Body, cliUpdateMaxMetadataBytes),
-	)
-	if err := decoder.Decode(&release); err != nil {
+	if err := json.Unmarshal(metadata, &release); err != nil {
 		return cliRelease{}, err
 	}
 	if release.Draft {
@@ -221,13 +231,19 @@ func parseCLIVersion(value string) (cliSemanticVersion, bool) {
 	if value == "" {
 		return version, false
 	}
+	if strings.Count(value, "+") > 1 {
+		return version, false
+	}
 	if index := strings.IndexByte(value, '+'); index >= 0 {
+		if !validCLIVersionIdentifiers(value[index+1:], false) {
+			return version, false
+		}
 		value = value[:index]
 	}
 	if index := strings.IndexByte(value, '-'); index >= 0 {
 		version.prerelease = value[index+1:]
 		value = value[:index]
-		if version.prerelease == "" {
+		if !validCLIVersionIdentifiers(version.prerelease, true) {
 			return cliSemanticVersion{}, false
 		}
 	}
@@ -237,12 +253,34 @@ func parseCLIVersion(value string) (cliSemanticVersion, bool) {
 	}
 	for index, part := range parts {
 		number, err := strconv.Atoi(part)
-		if err != nil || number < 0 {
+		if err != nil || number < 0 ||
+			(len(part) > 1 && part[0] == '0') {
 			return cliSemanticVersion{}, false
 		}
 		version.numbers[index] = number
 	}
 	return version, true
+}
+
+func validCLIVersionIdentifiers(value string, rejectNumericLeadingZero bool) bool {
+	if value == "" {
+		return false
+	}
+	for _, identifier := range strings.Split(value, ".") {
+		if identifier == "" ||
+			(rejectNumericLeadingZero && len(identifier) > 1 &&
+				identifier[0] == '0' && cliVersionIdentifierNumeric(identifier)) {
+			return false
+		}
+		for _, character := range identifier {
+			if (character < '0' || character > '9') &&
+				(character < 'A' || character > 'Z') &&
+				(character < 'a' || character > 'z') && character != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func isNewerCLIVersion(latest, current string) bool {
@@ -265,7 +303,67 @@ func isNewerCLIVersion(latest, current string) bool {
 	if currentVersion.prerelease == "" {
 		return false
 	}
-	return latestVersion.prerelease > currentVersion.prerelease
+	return compareCLIPPrerelease(
+		latestVersion.prerelease,
+		currentVersion.prerelease,
+	) > 0
+}
+
+func compareCLIPPrerelease(left, right string) int {
+	leftParts := strings.Split(left, ".")
+	rightParts := strings.Split(right, ".")
+	limit := min(len(leftParts), len(rightParts))
+	for index := 0; index < limit; index++ {
+		leftPart := leftParts[index]
+		rightPart := rightParts[index]
+		leftNumeric := cliVersionIdentifierNumeric(leftPart)
+		rightNumeric := cliVersionIdentifierNumeric(rightPart)
+		switch {
+		case leftNumeric && rightNumeric:
+			if len(leftPart) != len(rightPart) {
+				if len(leftPart) < len(rightPart) {
+					return -1
+				}
+				return 1
+			}
+			if leftPart < rightPart {
+				return -1
+			}
+			if leftPart > rightPart {
+				return 1
+			}
+		case leftNumeric:
+			return -1
+		case rightNumeric:
+			return 1
+		default:
+			if leftPart < rightPart {
+				return -1
+			}
+			if leftPart > rightPart {
+				return 1
+			}
+		}
+	}
+	if len(leftParts) < len(rightParts) {
+		return -1
+	}
+	if len(leftParts) > len(rightParts) {
+		return 1
+	}
+	return 0
+}
+
+func cliVersionIdentifierNumeric(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func selectCLIUpdateAsset(

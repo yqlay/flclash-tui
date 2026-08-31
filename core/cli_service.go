@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -517,15 +518,22 @@ func (c *tuiServiceClient) shutdownAndWait(timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
+	return c.shutdownPIDAndWait(status.PID, timeout)
+}
+
+func (c *tuiServiceClient) shutdownPIDAndWait(
+	pid int,
+	timeout time.Duration,
+) error {
 	if err := c.shutdown(); err != nil {
 		return err
 	}
-	if waitForTUIServiceExit(c, status.PID, timeout) {
+	if waitForTUIServiceExit(c, pid, timeout) {
 		return nil
 	}
 	return fmt.Errorf(
 		"Backend PID %d did not exit within %s",
-		status.PID,
+		pid,
 		timeout,
 	)
 }
@@ -619,14 +627,16 @@ func ensureTUIService(
 		); pathErr == nil {
 			paths.configPath = status.ConfigPath
 		}
-		if err := client.shutdown(); err != nil {
+		if err := client.shutdownPIDAndWait(
+			status.PID,
+			tuiServiceShutdownTimeout,
+		); err != nil {
 			return nil, tuiServiceStatus{}, fmt.Errorf(
 				"stop outdated Backend %s: %w",
 				status.Version,
 				err,
 			)
 		}
-		waitForTUIServiceExit(client, status.PID, 3*time.Second)
 		if err := spawnTUIService(paths, testURL, !explicitConfig); err != nil {
 			return waitForCompetingTUIService(
 				client,
@@ -674,17 +684,15 @@ func ensureTUIService(
 		if legacyStatus.HomeDir != "" {
 			paths.homeDir = legacyStatus.HomeDir
 		}
-		if err := legacyClient.shutdown(); err != nil {
+		if err := legacyClient.shutdownPIDAndWait(
+			legacyStatus.PID,
+			tuiServiceShutdownTimeout,
+		); err != nil {
 			return nil, tuiServiceStatus{}, fmt.Errorf(
 				"stop legacy background service: %w",
 				err,
 			)
 		}
-		waitForTUIServiceExit(
-			legacyClient,
-			legacyStatus.PID,
-			3*time.Second,
-		)
 		if err := spawnTUIService(paths, testURL, !explicitConfig); err != nil {
 			return waitForCompetingTUIService(
 				client,
@@ -1333,9 +1341,8 @@ func serveTUIServiceConnection(
 ) {
 	defer connection.Close()
 	_ = connection.SetDeadline(time.Now().Add(10 * time.Second))
-	var request tuiServiceRequest
-	limited := io.LimitReader(connection, tuiServiceRequestMaxBytes+1)
-	if decodeErr := json.NewDecoder(bufio.NewReader(limited)).Decode(&request); decodeErr != nil {
+	request, decodeErr := readTUIServiceRequest(connection)
+	if decodeErr != nil {
 		_ = json.NewEncoder(connection).Encode(tuiServiceStatus{
 			OK:    false,
 			Error: decodeErr.Error(),
@@ -1369,6 +1376,32 @@ func serveTUIServiceConnection(
 		_ = connection.Close()
 		runtime.signalShutdown()
 	}
+}
+
+func readTUIServiceRequest(reader io.Reader) (tuiServiceRequest, error) {
+	limited := &io.LimitedReader{
+		R: reader,
+		N: tuiServiceRequestMaxBytes + 1,
+	}
+	data, err := bufio.NewReader(limited).ReadBytes('\n')
+	if int64(len(data)) > tuiServiceRequestMaxBytes || limited.N == 0 {
+		return tuiServiceRequest{}, fmt.Errorf(
+			"Backend request exceeds %d bytes",
+			tuiServiceRequestMaxBytes,
+		)
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return tuiServiceRequest{}, err
+	}
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return tuiServiceRequest{}, io.ErrUnexpectedEOF
+	}
+	var request tuiServiceRequest
+	if err := json.Unmarshal(data, &request); err != nil {
+		return tuiServiceRequest{}, err
+	}
+	return request, nil
 }
 
 func reloadTUIServiceConfig(

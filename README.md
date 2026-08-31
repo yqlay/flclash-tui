@@ -52,6 +52,9 @@ flclash ssh add home user@host --password --local-port 1080
 flclash ssh connect home
 flc ssh curl https://example.com
 
+# 加密私钥；也可同时保存私钥口令和 SSH 登录密码
+flclash ssh add school user@host --identity ~/.ssh/id_ed25519 --passphrase --password
+
 # 让其他支持 SOCKS5 的本机程序使用同一隧道
 ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
 
@@ -60,7 +63,7 @@ flclash ssh test home
 flclash ssh disconnect home
 ```
 
-SSH 配置也可以直接在 TUI 的 **SSH** 页面新增、查看、编辑、删除和测试。已连接配置为只读，先断开再修改。
+SSH 配置也可以直接在 TUI 的 **SSH** 页面新增、查看、编辑、删除和测试。`Key passphrase` 是私钥口令，`SSH password` 是服务器登录密码，两者可同时设置；已连接配置为只读，先断开再修改。
 
 ## 常用命令
 
