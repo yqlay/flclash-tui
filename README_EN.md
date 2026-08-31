@@ -1,30 +1,16 @@
 # FlClash TUI
 
-[中文首页](README.md) · [Full CLI/TUI reference](CLI_LINUX.md) · [Releases](https://github.com/yqlay/flclash-tui/releases)
+[中文首页](README.md) · [Full documentation](CLI_LINUX.md) · [Releases](https://github.com/yqlay/flclash-tui/releases)
 
 [![Release](https://img.shields.io/github/v/release/yqlay/flclash-tui?style=flat-square)](https://github.com/yqlay/flclash-tui/releases)
 [![Downloads](https://img.shields.io/github/downloads/yqlay/flclash-tui/total?style=flat-square)](https://github.com/yqlay/flclash-tui/releases)
 [![License](https://img.shields.io/github/license/yqlay/flclash-tui?style=flat-square)](LICENSE)
 
-FlClash TUI is a Linux terminal proxy manager for Mihomo/Clash configurations, SSH sessions, and headless servers. It provides a full-screen TUI, a scriptable CLI, and `flc` for proxying one command at a time.
-
-This is an unofficial terminal-focused derivative of [FlClash](https://github.com/chen08209/FlClash), not an official FlClash or Mihomo release. See [NOTICE](NOTICE) and [LICENSE](LICENSE).
-
-## Highlights
-
-- Nine TUI pages, including independent SSH management and a Dashboard with a white dotted baseline plus blue upload, green download, and cyan-overlap live traffic curves.
-- Selectable route tests and non-blocking lower-right notifications; `Ctrl+N` opens framed history/details, and feedback is also written to Logs.
-- One Backend per Linux user, safely shared by multiple TUI/CLI frontends.
-- `q` exits and cleans up only the current TUI; `Ctrl+C` stops the frontend, Backend, and Core after process/socket cleanup completes.
-- Default `silent` mode keeps ordinary programs direct while `flc COMMAND` uses an authenticated local proxy.
-- Independent SSH SOCKS5 profiles; `flc ssh` sends a local command through an SSH server without depending on Mihomo or a subscription.
-- Subscription URL and local YAML imports, atomic Profile writes, and rollback on failure.
-- Connection History survives Backend restarts and supports state, text, and count filters.
-- Native AMD64/ARM64 Debian packages and portable archives through one architecture-aware installer.
+A Mihomo/Clash terminal proxy manager for Linux, SSH, and headless servers. Run `flclash` for the full-screen TUI or `flc COMMAND` to proxy only one command.
 
 ## Install
 
-The recommended installer detects AMD64/ARM64, selects the native Debian or portable package, and verifies GitHub's SHA-256 asset digest:
+The installer detects AMD64/ARM64 and selects a Debian or portable package:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh | bash
@@ -36,16 +22,7 @@ Force a portable installation:
 curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh | bash -s -- --method portable
 ```
 
-Packages can also be downloaded manually from [Releases](https://github.com/yqlay/flclash-tui/releases).
-
-Build from source:
-
-```bash
-git clone --recurse-submodules https://github.com/yqlay/flclash-tui.git
-cd flclash-tui
-make cli-linux
-./dist/flclash
-```
+Packages are also available from [Releases](https://github.com/yqlay/flclash-tui/releases).
 
 ## Quick start
 
@@ -53,68 +30,55 @@ make cli-linux
 flclash
 ```
 
-1. In **Profiles**, choose `Import subscription URL` or `Import local YAML file`.
-2. Select the imported Profile and press Enter to activate it.
-3. Choose a proxy group and node in **Proxies**.
-4. In the default silent mode, run:
+1. Open **Profiles** and import a subscription URL or local YAML file.
+2. Select the Profile and press Enter to activate it.
+3. Open **Proxies** and select a proxy group and node.
+4. The default mode is `silent`; use `flc` for commands that need the proxy:
 
 ```bash
 flc curl https://example.com
 flc git clone https://github.com/owner/repository.git
-flclash ssh add school user@server --password
-flclash ssh connect school
-flc ssh curl https://example.com
+flc sh -c 'curl -s https://example.com | jq .'
 ```
 
-For desktop applications, switch to `rule`, `global`, or `direct` before enabling **System proxy**. On headless systems, prefer `flc`, application-specific proxy settings, or TUN.
+For desktop applications, switch to `rule` or `global` and enable **System proxy** on the Dashboard. On headless systems, use `flc`, application-specific proxy settings, or TUN.
 
-## Three distinct states
+## SSH proxy
 
-- **Backend** coordinates Profile transactions, History, Core lifecycle, and System proxy changes for one user.
-- **Core** is Mihomo and its traffic listeners; a running Backend does not imply a running Core.
-- **System proxy** is a Linux desktop preference, not the listener itself, and has no effect on applications that ignore it.
+Run FlClash only on the machine whose traffic needs proxying. This example sends local traffic through the network exit of `user@host`:
 
-The displayed **Proxy port** is Mihomo's `mixed-port`, accepting HTTP and SOCKS5 on one port. Native modes and silent mode's authenticated FLC listener share the current runtime port. System proxy remains `DISABLED · locked by silent mode` in silent mode.
+```bash
+flclash ssh add home user@host --password --local-port 1080
+flclash ssh connect home
+flc ssh curl https://example.com
+
+# Reuse the tunnel from another local SOCKS5-aware application
+ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
+
+flclash ssh list
+flclash ssh test home
+flclash ssh disconnect home
+```
+
+SSH profiles can also be added, viewed, edited, deleted, and tested from the TUI **SSH** page. A connected profile is read-only; disconnect it before editing.
 
 ## Common commands
 
 ```bash
-flclash
 flclash status
-flclash core start|stop|restart
-flclash backend status|stop|restart
-flclash exit                       # stop frontends, Backend, Core, and SSH tunnels
 flclash mode rule|global|direct|silent
 flclash port [PORT|off]
 flclash sys status|on|off
 flclash tun status|user on|system on|off
-
 flclash profile import URL
 flclash profile import-file /path/to/config.yaml
-flclash profile list
-
-flclash history show --state active --search example --limit 20
-flclash history clear
 flclash logs --lines 100 --follow
-
-flclash ssh add NAME user@host --password
-flclash ssh connect NAME
-flclash ssh list|status|disconnect
-flc ssh COMMAND                    # use the manually opened tunnel
-flc ssh -u NAME COMMAND            # temporary tunnel, closed afterwards
+flclash history show --limit 20
+flclash exit                       # stop frontends, Backend, Core, and SSH
 ```
 
-See [CLI_LINUX.md](CLI_LINUX.md) for commands, TUI keys, silent/FLC behavior, TUN, History, logs, data paths, and external Core mode. Runtime help is available through `flclash --help`, `flclash COMMAND --help`, and `flc --help`.
+In the TUI, `q` exits only the current frontend, `Ctrl+C` exits everything, `Ctrl+N` opens notification details, and `?` shows all keys.
 
-## Data and security
+See [CLI_LINUX.md](CLI_LINUX.md) for all commands, TUN, Profiles, History, logs, data paths, and troubleshooting. Runtime help is available through `flclash --help`, `flclash COMMAND --help`, and `flc --help`.
 
-- Default data directory: `~/.config/flclash/`.
-- Backend and Core use user-private Unix sockets.
-- The silent-mode FLC listener is loopback-only and uses temporary credentials.
-- Internal `.flclash-*-runtime-*.yaml` files are hidden from user Profiles.
-- SSH profiles use a separate mode-`0600` `.flclash-ssh.json`; passwords are always shown as `********`.
-- Logs do not record subscription URLs, YAML contents, FLC credentials, or SSH passwords.
-
-## Credits
-
-Thanks to [FlClash](https://github.com/chen08209/FlClash), [Mihomo](https://github.com/MetaCubeX/mihomo), and their contributors.
+This is an unofficial terminal derivative of [FlClash](https://github.com/chen08209/FlClash). See [NOTICE](NOTICE) and [LICENSE](LICENSE).

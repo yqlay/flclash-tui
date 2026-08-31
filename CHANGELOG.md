@@ -1,3 +1,18 @@
+## FlClash TUI v0.5.14
+
+- Add native TUI forms for SSH profile creation and editing, including masked
+  passwords, OpenSSH options, fixed or automatic local SOCKS5 ports, and
+  visible confirmation-based deletion.
+- Add confirmation-based deletion for non-active subscription and local
+  Profiles, with Backend revision checks, metadata cleanup, and rollback.
+- Make connected SSH profiles read-only until disconnected, reject concurrent
+  stale edits, and safely switch profiles that share one fixed local port with
+  restoration of the previous tunnel on failure.
+- Harden SSH tunnel cleanup, complete-exit behavior, compact TUI rendering, and
+  Profile selection after deletion; expand lifecycle and failure-path tests.
+- Simplify the Chinese and English README pages around installation and common
+  usage, with detailed behavior retained in `CLI_LINUX.md`.
+
 ## FlClash TUI v0.5.13
 
 - Fix silent-mode Core stop/start by explicitly dropping the private custom

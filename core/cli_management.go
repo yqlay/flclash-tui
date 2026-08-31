@@ -1084,7 +1084,7 @@ func completionCommand(args []string) error {
 		{"mode", "rule global direct silent"},
 		{"port", "off"},
 		{"flc", "status select test env ssh"},
-		{"ssh", "add edit delete list show connect disconnect status test"},
+		{"ssh", "add edit delete list show connect disconnect status test --port --local-port --identity --password --clear-password --option"},
 		{"net", "show refresh delay speed"},
 		{"status", "--json --watch"},
 		{"backend", "start stop restart status logs clients"},

@@ -67,6 +67,64 @@ func TestTUIServiceRuntimeRejectsStaleRevision(t *testing.T) {
 	}
 }
 
+func TestTUIServiceRuntimeDeletesProfileAndLinkedMetadata(t *testing.T) {
+	directory := t.TempDir()
+	activePath := filepath.Join(directory, "config.yaml")
+	targetPath := filepath.Join(directory, "school.yaml")
+	for _, path := range []string{activePath, targetPath} {
+		if err := os.WriteFile(path, []byte(defaultTUIConfig), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := rememberTUISubscriptionSource(
+		directory,
+		targetPath,
+		"https://secret.example/subscription-token",
+	); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newTUIServiceRuntime(
+		cliPaths{homeDir: directory, configPath: activePath},
+		defaultCLITestURL,
+		filepath.Join(directory, "core.sock"),
+		nil,
+		nil,
+	)
+	revision := uint64(1)
+	status := runtime.handle(tuiServiceRequest{
+		ProtocolVersion:  tuiServiceProtocolVersion,
+		RequestID:        "delete-profile",
+		ExpectedRevision: &revision,
+		Action:           "delete_profile",
+		ConfigPath:       targetPath,
+	})
+	if !status.OK || status.Revision != 2 {
+		t.Fatalf("delete Profile response = %+v", status)
+	}
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("deleted Profile still exists: %v", err)
+	}
+	if _, err := loadTUISubscriptionSource(directory, targetPath); err == nil ||
+		!strings.Contains(err.Error(), "not linked") {
+		t.Fatalf("deleted Profile metadata remains: %v", err)
+	}
+
+	revision = status.Revision
+	status = runtime.handle(tuiServiceRequest{
+		ProtocolVersion:  tuiServiceProtocolVersion,
+		RequestID:        "delete-active-profile",
+		ExpectedRevision: &revision,
+		Action:           "delete_profile",
+		ConfigPath:       activePath,
+	})
+	if status.OK || !strings.Contains(status.Error, "active profile") {
+		t.Fatalf("active Profile deletion response = %+v", status)
+	}
+	if _, err := os.Stat(activePath); err != nil {
+		t.Fatalf("active Profile was removed: %v", err)
+	}
+}
+
 func TestTUIServiceRuntimeDeduplicatesRequestID(t *testing.T) {
 	runtime := newTestTUIServiceRuntime(t)
 	request := tuiServiceRequest{

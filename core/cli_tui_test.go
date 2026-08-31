@@ -201,6 +201,69 @@ func TestTUINotificationRenderingFitsEveryPositiveTerminalSize(t *testing.T) {
 	}
 }
 
+func TestTUIProfileDeleteConfirmationOverridesCompactNavigation(t *testing.T) {
+	paths := cliPaths{configPath: "/tmp/flclash/config.yaml"}
+	for _, size := range []struct {
+		width  int
+		height int
+	}{
+		{width: 40, height: 10},
+		{width: 64, height: 14},
+		{width: 87, height: 17},
+		{width: 88, height: 18},
+		{width: 120, height: 30},
+	} {
+		snapshot := populatedTUISnapshot(tuiPageProfiles)
+		snapshot.FocusSidebar = true
+		snapshot.ProfileDelete = tuiProfileDeleteView{
+			Open: true,
+			Name: "school.yaml",
+			Kind: "subscription",
+		}
+		output := renderTUIAtSize(
+			snapshot,
+			paths,
+			"private Unix socket",
+			true,
+			true,
+			size.width,
+			size.height,
+		)
+		plain := stripTUIANSI(output)
+		if !strings.Contains(plain, "Delete Profile") ||
+			!strings.Contains(plain, "Delete school.yaml") {
+			t.Fatalf(
+				"Profile confirmation was hidden at %dx%d:\n%s",
+				size.width,
+				size.height,
+				plain,
+			)
+		}
+		lines := strings.Split(output, "\n")
+		if len(lines) != size.height {
+			t.Fatalf(
+				"Profile confirmation at %dx%d has %d lines, want %d",
+				size.width,
+				size.height,
+				len(lines),
+				size.height,
+			)
+		}
+		for lineNumber, line := range lines {
+			if got := tuiDisplayWidth(stripTUIANSI(line)); got != size.width {
+				t.Fatalf(
+					"Profile confirmation at %dx%d line %d has width %d, want %d",
+					size.width,
+					size.height,
+					lineNumber,
+					got,
+					size.width,
+				)
+			}
+		}
+	}
+}
+
 type tuiImmediateQuitModel struct{}
 
 func (tuiImmediateQuitModel) Init() tea.Cmd {
@@ -1124,6 +1187,13 @@ func TestTUIProfileRenameKeyAndHintAreVisible(t *testing.T) {
 	if !ok || updateKey != tuiKeyUpdateProfile {
 		t.Fatalf("U key = (%v, %v)", updateKey, ok)
 	}
+	deleteKey, ok := tuiKeyFromTea(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune{'x'},
+	})
+	if !ok || deleteKey != tuiKeyCloseConnections {
+		t.Fatalf("x key = (%v, %v)", deleteKey, ok)
+	}
 	snapshot := tuiSnapshot{
 		Page:         tuiPageProfiles,
 		SelectedRow:  0,
@@ -1137,10 +1207,22 @@ func TestTUIProfileRenameKeyAndHintAreVisible(t *testing.T) {
 	var output strings.Builder
 	drawTUIProfiles(&output, snapshot, 110, 24)
 	plain := stripTUIANSI(output.String())
-	for _, hint := range []string{"U refresh", "F2/u rename", "F2 rename"} {
+	for _, hint := range []string{
+		"U refresh",
+		"F2/u rename",
+		"F2 rename",
+		"x delete",
+	} {
 		if !strings.Contains(plain, hint) {
 			t.Fatalf("profiles view does not contain %q:\n%s", hint, plain)
 		}
+	}
+	snapshot.Profiles[0].Current = true
+	output.Reset()
+	drawTUIProfiles(&output, snapshot, 110, 24)
+	plain = stripTUIANSI(output.String())
+	if !strings.Contains(plain, "x locked") {
+		t.Fatalf("active Profile does not explain deletion lock:\n%s", plain)
 	}
 }
 
@@ -2576,6 +2658,23 @@ func TestTUIRefreshKeepsNewerTrafficHistory(t *testing.T) {
 	}
 }
 
+func TestTUIRefreshSelectsImportWhenLastProfileDisappears(t *testing.T) {
+	current := tuiSnapshot{
+		SelectedRow: 0,
+		Profiles: []tuiProfile{{
+			Name: "deleted.yaml",
+			Path: "/tmp/deleted.yaml",
+		}},
+	}
+	merged := mergeTUIRefresh(current, tuiSnapshot{})
+	if merged.SelectedRow != tuiProfileImportSubscriptionRow {
+		t.Fatalf(
+			"empty Profile refresh selected row %d, want subscription import",
+			merged.SelectedRow,
+		)
+	}
+}
+
 func TestTUITrafficStreamOutlivesControllerRequestTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter,
@@ -3535,6 +3634,118 @@ func TestTUIUnlinkedProfileDoesNotPretendToRefreshSubscription(t *testing.T) {
 	}
 	if !strings.Contains(model.snapshot.Status, "not linked to a subscription") {
 		t.Fatalf("unlinked profile status = %q", model.snapshot.Status)
+	}
+}
+
+func TestTUIProfileDeleteValidationAndTransaction(t *testing.T) {
+	directory := t.TempDir()
+	activePath := filepath.Join(directory, "config.yaml")
+	targetPath := filepath.Join(directory, "school.yaml")
+	for _, path := range []string{activePath, targetPath} {
+		if err := os.WriteFile(path, []byte(defaultTUIConfig), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	model := newTUIModel(
+		controllerClient{},
+		cliPaths{homeDir: directory, configPath: activePath},
+		nil,
+		true,
+	)
+	model.snapshot.Page = tuiPageProfiles
+	model.snapshot.FocusSidebar = false
+	model.snapshot.SelectedRow = tuiProfileImportSubscriptionRow
+	model.beginProfileDeleteConfirm()
+	if model.profileDeleteOpen || !strings.Contains(model.snapshot.Status, "saved Profile") {
+		t.Fatalf("import row deletion status = %q", model.snapshot.Status)
+	}
+	model.snapshot.Profiles = []tuiProfile{{
+		Name:    "config.yaml",
+		Path:    activePath,
+		Current: true,
+	}}
+	model.snapshot.SelectedRow = 0
+	model.beginProfileDeleteConfirm()
+	if model.profileDeleteOpen || !strings.Contains(model.snapshot.Status, "active Profile") {
+		t.Fatalf("active Profile deletion status = %q", model.snapshot.Status)
+	}
+	model.snapshot.Profiles = []tuiProfile{{
+		Name:            "school.yaml",
+		Path:            targetPath,
+		SubscriptionURL: "https://secret.example/subscription-token",
+	}}
+	model.beginProfileDeleteConfirm()
+	if model.profileDeleteOpen || !strings.Contains(model.snapshot.Status, "managed Backend") {
+		t.Fatalf("unmanaged Profile deletion status = %q", model.snapshot.Status)
+	}
+
+	socketDirectory := t.TempDir()
+	socketPath := filepath.Join(socketDirectory, tuiServiceSocketFilename)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requests := make(chan tuiServiceRequest, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		var request tuiServiceRequest
+		if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr != nil {
+			return
+		}
+		requests <- request
+		if request.Action == "delete_profile" {
+			_ = os.Remove(request.ConfigPath)
+		}
+		_ = json.NewEncoder(connection).Encode(tuiServiceStatus{
+			OK:         true,
+			Revision:   2,
+			ConfigPath: activePath,
+		})
+	}()
+	model.service = newTUIServiceClientAt(socketDirectory)
+	model.backendRevision = 1
+	model.beginProfileDeleteConfirm()
+	if !model.profileDeleteOpen || model.profileDeleteKind != "subscription" {
+		t.Fatalf("Profile confirmation state = %+v", model.snapshot.ProfileDelete)
+	}
+	confirmation := stripTUIANSI(model.View())
+	if !strings.Contains(confirmation, "Delete school.yaml (subscription)?") ||
+		strings.Contains(confirmation, "subscription-token") {
+		t.Fatalf("unsafe or incomplete Profile confirmation:\n%s", confirmation)
+	}
+	_, cancelCommand := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cancelCommand != nil || model.profileDeleteOpen {
+		t.Fatal("Profile deletion confirmation did not cancel in place")
+	}
+	if _, err := os.Stat(targetPath); err != nil {
+		t.Fatalf("cancelled Profile deletion changed the file: %v", err)
+	}
+	model.beginProfileDeleteConfirm()
+	_, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command == nil || model.profileDeleteOpen {
+		t.Fatal("Profile confirmation did not schedule deletion")
+	}
+	rawMessage := command()
+	message, ok := rawMessage.(tuiOperationResultMsg)
+	if !ok {
+		t.Fatalf("Profile deletion result type = %T", rawMessage)
+	}
+	_, _ = model.Update(message)
+	request := <-requests
+	if request.Action != "delete_profile" || request.ConfigPath != targetPath ||
+		request.ExpectedRevision == nil || *request.ExpectedRevision != 1 {
+		t.Fatalf("Profile deletion request = %+v", request)
+	}
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("deleted Profile still exists: %v", err)
+	}
+	if !strings.Contains(model.snapshot.Status, "Profile deleted: school.yaml") {
+		t.Fatalf("Profile deletion status = %q", model.snapshot.Status)
 	}
 }
 

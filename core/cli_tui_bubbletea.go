@@ -99,8 +99,10 @@ type tuiEditorResultMsg struct {
 }
 
 type tuiSSHCommandResultMsg struct {
-	action string
-	err    error
+	action       string
+	status       string
+	selectedName string
+	err          error
 }
 
 type tuiInputMode byte
@@ -162,6 +164,28 @@ type tuiModel struct {
 	notificationDetailOpen bool
 	notificationSelected   int
 	notificationScroll     int
+	sshFormOpen            bool
+	sshFormExisting        bool
+	sshFormReadOnly        bool
+	sshFormOriginalName    string
+	sshFormFingerprint     string
+	sshForm                cliSSHProfile
+	sshFormSelected        int
+	sshFormFieldEditing    bool
+	sshFormInput           []rune
+	sshFormCursor          int
+	sshFormSelectAll       bool
+	sshFormAddingOption    bool
+	sshFormPasswordChanged bool
+	sshFormPasswordCleared bool
+	sshFormPasswordConfirm bool
+	sshFormPasswordFirst   string
+	sshDeleteConfirmOpen   bool
+	sshDeleteName          string
+	profileDeleteOpen      bool
+	profileDeletePath      string
+	profileDeleteName      string
+	profileDeleteKind      string
 }
 
 func newTUIModel(
@@ -591,9 +615,22 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		})
 	case tuiSSHCommandResultMsg:
 		m.busy = false
+		if message.err == nil && (message.action == "add" || message.action == "edit") {
+			m.resetSSHForm()
+		}
 		refreshTUISSH(&m.snapshot)
+		if message.selectedName != "" {
+			for index, profile := range m.snapshot.SSHProfiles {
+				if strings.EqualFold(profile.Name, message.selectedName) {
+					m.snapshot.SelectedSSH = index
+					break
+				}
+			}
+		}
 		if message.err != nil {
 			m.snapshot.Status = "SSH " + message.action + " failed: " + message.err.Error()
+		} else if message.status != "" {
+			m.snapshot.Status = message.status
 		} else {
 			m.snapshot.Status = "SSH " + message.action + " complete"
 		}
@@ -602,8 +639,17 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.String() == "ctrl+n" || m.notificationDetailOpen {
 			return m, m.handleTeaKey(message)
 		}
+		if m.profileDeleteOpen {
+			return m, m.handleProfileDeleteConfirm(message)
+		}
 		if m.inputMode != tuiInputNone {
 			return m, m.handleInput(message)
+		}
+		if m.sshDeleteConfirmOpen {
+			return m, m.handleSSHDeleteConfirm(message)
+		}
+		if m.sshFormOpen {
+			return m, m.handleSSHForm(message)
 		}
 		if m.modeSelectionOpen {
 			return m, m.handleModeSelection(message)
@@ -687,6 +733,12 @@ func tuiKeyAllowedWhileBusy(key tuiKey) bool {
 
 func (m *tuiModel) View() string {
 	snapshot := m.snapshot
+	snapshot.SSHForm = m.sshFormView()
+	snapshot.ProfileDelete = tuiProfileDeleteView{
+		Open: m.profileDeleteOpen,
+		Name: m.profileDeleteName,
+		Kind: m.profileDeleteKind,
+	}
 	snapshot.Notifications = append(
 		[]tuiNotification(nil),
 		m.notifications...,
@@ -730,6 +782,40 @@ func (m *tuiModel) View() string {
 		m.width,
 		m.height,
 	)
+}
+
+func (m *tuiModel) sshFormView() tuiSSHFormView {
+	view := tuiSSHFormView{
+		Open:              m.sshFormOpen,
+		Existing:          m.sshFormExisting,
+		ReadOnly:          m.sshFormReadOnly,
+		Name:              m.sshForm.Name,
+		Destination:       m.sshForm.Destination,
+		Port:              m.sshForm.Port,
+		LocalPort:         m.sshForm.LocalPort,
+		Identity:          m.sshForm.Identity,
+		PasswordSet:       m.sshForm.Password != "",
+		PasswordChanged:   m.sshFormPasswordChanged,
+		PasswordCleared:   m.sshFormPasswordCleared,
+		Options:           append([]string(nil), m.sshForm.Options...),
+		Selected:          m.sshFormSelected,
+		FieldEditing:      m.sshFormFieldEditing,
+		PasswordConfirm:   m.sshFormPasswordConfirm,
+		DeleteConfirmOpen: m.sshDeleteConfirmOpen,
+		DeleteName:        m.sshDeleteName,
+	}
+	if m.sshFormFieldEditing {
+		value := m.sshFormInput
+		if m.sshFormSelected == tuiSSHFormPasswordRow {
+			value = []rune(strings.Repeat("•", len(m.sshFormInput)))
+		}
+		view.FieldInput = tuiInputViewport(
+			value,
+			m.sshFormCursor,
+			maxTUIWidth(m.width-48, 16),
+		)
+	}
+	return view
 }
 
 func (m *tuiModel) inputPresentation() (string, string) {
@@ -1046,6 +1132,9 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	if !importSelected && selectedProfilePath == "" {
 		updated.SelectedRow = clampTUISelection(current.SelectedRow, len(updated.Profiles))
 	}
+	if !importSelected && len(updated.Profiles) == 0 {
+		updated.SelectedRow = tuiProfileImportSubscriptionRow
+	}
 	return updated
 }
 
@@ -1166,7 +1255,11 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		m.snapshot.ShowHelp = !m.snapshot.ShowHelp
 	case tuiKeyCloseConnections:
 		if m.snapshot.Page == tuiPageSSH {
-			return m.runSelectedSSHCommand("delete")
+			m.beginSSHDeleteConfirm()
+			return nil
+		} else if m.snapshot.Page == tuiPageProfiles {
+			m.beginProfileDeleteConfirm()
+			return nil
 		} else if m.snapshot.Page == tuiPageRequests {
 			if m.service != nil {
 				return m.startOperation(func(state *tuiOperationState) {
@@ -1215,7 +1308,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		}
 	case tuiKeyCloseConnection:
 		if m.snapshot.Page == tuiPageSSH {
-			return m.runSelectedSSHCommand("test")
+			return m.runSelectedSSHAction("test")
 		}
 		if m.snapshot.Page == tuiPageDashboard {
 			return m.testDashboardDelay()
@@ -1266,7 +1359,8 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeyEdit:
 		switch m.snapshot.Page {
 		case tuiPageSSH:
-			return m.runSelectedSSHCommand("edit")
+			m.beginSSHForm(true)
+			return nil
 		case tuiPageProfiles:
 			if m.snapshot.SelectedRow < 0 ||
 				m.snapshot.SelectedRow >= len(m.snapshot.Profiles) {
@@ -1290,7 +1384,8 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		}
 	case tuiKeyNewProfile:
 		if m.snapshot.Page == tuiPageSSH {
-			return m.runSSHCommand("add")
+			m.beginSSHForm(false)
+			return nil
 		} else if m.snapshot.Page == tuiPageProfiles {
 			m.beginInput(tuiInputSubscription)
 		} else if m.snapshot.Page == tuiPageDashboard {
@@ -2321,9 +2416,9 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			return nil
 		}
 		if m.snapshot.SSHProfiles[m.snapshot.SelectedSSH].Connected {
-			return m.runSelectedSSHCommand("disconnect")
+			return m.runSelectedSSHAction("disconnect")
 		}
-		return m.runSelectedSSHCommand("connect")
+		return m.runSelectedSSHAction("connect")
 	case tuiPageTools:
 		return m.selectTUISetting(m.snapshot.SelectedTool)
 	case tuiPageMaintenance:
@@ -2927,36 +3022,679 @@ func (m *tuiModel) startEditor(path string) tea.Cmd {
 	})
 }
 
-func (m *tuiModel) runSelectedSSHCommand(action string) tea.Cmd {
+func (m *tuiModel) runSelectedSSHAction(action string) tea.Cmd {
 	if m.snapshot.SelectedSSH < 0 ||
 		m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
 		m.snapshot.Status = "Select an SSH profile first"
 		return nil
 	}
-	return m.runSSHCommand(action, m.snapshot.SSHProfiles[m.snapshot.SelectedSSH].Name)
-}
-
-func (m *tuiModel) runSSHCommand(args ...string) tea.Cmd {
 	if m.busy {
 		m.snapshot.Status = "Another operation is still running"
 		return nil
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		m.snapshot.Status = "SSH command failed: " + err.Error()
+	name := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH].Name
+	m.busy = true
+	m.snapshot.Status = "SSH " + action + " " + name + "..."
+	return func() tea.Msg {
+		message := tuiSSHCommandResultMsg{action: action, selectedName: name}
+		switch action {
+		case "connect":
+			state, alreadyConnected, err := connectCLISSHProfile(name)
+			message.err = err
+			if err == nil {
+				prefix := "connected"
+				if alreadyConnected {
+					prefix = "already connected"
+				}
+				message.status = fmt.Sprintf(
+					"SSH %s %s · SOCKS5 127.0.0.1:%d",
+					state.Name,
+					prefix,
+					state.Port,
+				)
+			}
+		case "disconnect":
+			state, disconnected, err := disconnectCLISSHProfile(name)
+			message.err = err
+			if err == nil {
+				if disconnected {
+					message.status = "SSH " + state.Name + " disconnected"
+				} else {
+					message.status = "No persistent SSH tunnel is open"
+				}
+			}
+		case "test":
+			state, latency, err := testCLISSHProfile(name)
+			message.err = err
+			if err == nil {
+				message.status = fmt.Sprintf(
+					"SSH %s ready · SOCKS5 127.0.0.1:%d · TCP %s",
+					state.Name,
+					state.Port,
+					latency,
+				)
+			}
+		default:
+			message.err = fmt.Errorf("unsupported TUI SSH action %q", action)
+		}
+		return message
+	}
+}
+
+func (m *tuiModel) beginSSHForm(existing bool) {
+	profile := cliSSHProfile{Port: 22}
+	originalName := ""
+	readOnly := false
+	fingerprint := ""
+	if existing {
+		if m.snapshot.SelectedSSH < 0 ||
+			m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
+			m.snapshot.Status = "Select an SSH profile first"
+			return
+		}
+		selected := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
+		originalName = selected.Name
+		loaded, err := loadCLISSHProfile(originalName)
+		if err != nil {
+			m.snapshot.Status = "SSH edit failed: " + err.Error()
+			return
+		}
+		profile = loaded
+		profile.Options = append([]string(nil), loaded.Options...)
+		connected, err := cliSSHProfileConnected(originalName)
+		if err != nil {
+			m.snapshot.Status = "SSH edit failed: " + err.Error()
+			return
+		}
+		readOnly = connected
+		fingerprint, err = cliSSHProfileFingerprint(loaded)
+		if err != nil {
+			m.snapshot.Status = "SSH edit failed: " + err.Error()
+			return
+		}
+	}
+	m.sshFormOpen = true
+	m.sshFormExisting = existing
+	m.sshFormReadOnly = readOnly
+	m.sshFormOriginalName = originalName
+	m.sshFormFingerprint = fingerprint
+	m.sshForm = profile
+	m.sshFormSelected = tuiSSHFormNameRow
+	m.sshFormFieldEditing = false
+	m.sshFormPasswordChanged = false
+	m.sshFormPasswordCleared = false
+	m.sshFormPasswordConfirm = false
+	m.sshFormPasswordFirst = ""
+	m.sshFormAddingOption = false
+	if readOnly {
+		m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
+	} else {
+		m.snapshot.Status = "Local traffic → SSH host exit · ↑↓/Tab select · Enter edit/confirm · Esc cancel"
+	}
+}
+
+func (m *tuiModel) resetSSHForm() {
+	m.sshFormOpen = false
+	m.sshFormExisting = false
+	m.sshFormReadOnly = false
+	m.sshFormOriginalName = ""
+	m.sshFormFingerprint = ""
+	m.sshForm = cliSSHProfile{}
+	m.sshFormSelected = 0
+	m.sshFormFieldEditing = false
+	m.sshFormInput = nil
+	m.sshFormCursor = 0
+	m.sshFormSelectAll = false
+	m.sshFormAddingOption = false
+	m.sshFormPasswordChanged = false
+	m.sshFormPasswordCleared = false
+	m.sshFormPasswordConfirm = false
+	m.sshFormPasswordFirst = ""
+}
+
+func (m *tuiModel) sshFormAddOptionRow() int {
+	return tuiSSHFormOptionStartRow + len(m.sshForm.Options)
+}
+
+func (m *tuiModel) sshFormSaveRow() int {
+	return m.sshFormAddOptionRow() + 1
+}
+
+func (m *tuiModel) sshFormDeleteRow() int {
+	if !m.sshFormExisting {
+		return -1
+	}
+	return m.sshFormSaveRow() + 1
+}
+
+func (m *tuiModel) sshFormCancelRow() int {
+	if m.sshFormExisting {
+		return m.sshFormSaveRow() + 2
+	}
+	return m.sshFormSaveRow() + 1
+}
+
+func (m *tuiModel) sshFormRowCount() int {
+	return m.sshFormCancelRow() + 1
+}
+
+func (m *tuiModel) beginSSHFormFieldEdit() {
+	if m.sshFormReadOnly {
+		m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
+		return
+	}
+	value := ""
+	switch m.sshFormSelected {
+	case tuiSSHFormNameRow:
+		value = m.sshForm.Name
+	case tuiSSHFormDestinationRow:
+		value = m.sshForm.Destination
+	case tuiSSHFormPortRow:
+		value = strconv.Itoa(m.sshForm.Port)
+	case tuiSSHFormLocalPortRow:
+		value = "auto"
+		if m.sshForm.LocalPort > 0 {
+			value = strconv.Itoa(m.sshForm.LocalPort)
+		}
+	case tuiSSHFormIdentityRow:
+		value = m.sshForm.Identity
+	case tuiSSHFormPasswordRow:
+		m.sshFormPasswordConfirm = false
+		m.sshFormPasswordFirst = ""
+	default:
+		optionIndex := m.sshFormSelected - tuiSSHFormOptionStartRow
+		if optionIndex < 0 || optionIndex >= len(m.sshForm.Options) {
+			return
+		}
+		value = m.sshForm.Options[optionIndex]
+	}
+	m.sshFormFieldEditing = true
+	m.sshFormInput = []rune(value)
+	m.sshFormCursor = len(m.sshFormInput)
+	m.sshFormSelectAll = value != ""
+	m.snapshot.Status = "Editing SSH field · Enter confirm · Esc cancel"
+}
+
+func (m *tuiModel) cancelSSHFormFieldEdit() {
+	if m.sshFormAddingOption {
+		optionIndex := m.sshFormSelected - tuiSSHFormOptionStartRow
+		if optionIndex >= 0 && optionIndex < len(m.sshForm.Options) {
+			m.sshForm.Options = append(
+				m.sshForm.Options[:optionIndex],
+				m.sshForm.Options[optionIndex+1:]...,
+			)
+		}
+	}
+	m.sshFormFieldEditing = false
+	m.sshFormInput = nil
+	m.sshFormCursor = 0
+	m.sshFormSelectAll = false
+	m.sshFormAddingOption = false
+	m.sshFormPasswordConfirm = false
+	m.sshFormPasswordFirst = ""
+}
+
+func (m *tuiModel) commitSSHFormField() bool {
+	value := string(m.sshFormInput)
+	switch m.sshFormSelected {
+	case tuiSSHFormNameRow:
+		m.sshForm.Name = strings.TrimSpace(value)
+	case tuiSSHFormDestinationRow:
+		m.sshForm.Destination = strings.TrimSpace(value)
+	case tuiSSHFormPortRow:
+		port, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || port < 1 || port > 65535 {
+			m.snapshot.Status = "SSH port must be between 1 and 65535"
+			return false
+		}
+		m.sshForm.Port = port
+	case tuiSSHFormLocalPortRow:
+		port, err := parseCLISSHLocalPort(value)
+		if err != nil {
+			m.snapshot.Status = err.Error()
+			return false
+		}
+		m.sshForm.LocalPort = port
+	case tuiSSHFormIdentityRow:
+		m.sshForm.Identity = strings.TrimSpace(value)
+	case tuiSSHFormPasswordRow:
+		if value == "" {
+			m.snapshot.Status = "Password must not be empty; press c outside editing to clear it"
+			return false
+		}
+		if !m.sshFormPasswordConfirm {
+			m.sshFormPasswordFirst = value
+			m.sshFormPasswordConfirm = true
+			m.sshFormInput = nil
+			m.sshFormCursor = 0
+			m.sshFormSelectAll = false
+			m.snapshot.Status = "Confirm the new SSH password · Enter confirm · Esc cancel"
+			return false
+		}
+		if value != m.sshFormPasswordFirst {
+			m.sshFormPasswordConfirm = false
+			m.sshFormPasswordFirst = ""
+			m.sshFormInput = nil
+			m.sshFormCursor = 0
+			m.snapshot.Status = "Passwords do not match; enter the new password again"
+			return false
+		}
+		m.sshForm.Password = value
+		m.sshFormPasswordChanged = true
+		m.sshFormPasswordCleared = false
+	default:
+		optionIndex := m.sshFormSelected - tuiSSHFormOptionStartRow
+		value = strings.TrimSpace(value)
+		if optionIndex < 0 || optionIndex >= len(m.sshForm.Options) {
+			return false
+		}
+		if err := validateCLISSHOption(value); err != nil {
+			m.snapshot.Status = "SSH option invalid: " + err.Error()
+			return false
+		}
+		m.sshForm.Options[optionIndex] = value
+		m.sshFormAddingOption = false
+	}
+	m.cancelSSHFormFieldEdit()
+	m.snapshot.Status = "SSH profile form · select Save to commit"
+	return true
+}
+
+func (m *tuiModel) handleSSHForm(message tea.KeyMsg) tea.Cmd {
+	if m.sshFormFieldEditing {
+		return m.handleSSHFormFieldInput(message)
+	}
+	if message.Type == tea.KeyRunes && len(message.Runes) == 1 && message.Runes[0] == 'q' {
+		m.resetSSHForm()
+		return m.handleKey(tuiKeyQuit)
+	}
+	if m.busy {
+		if message.Type == tea.KeyCtrlC {
+			m.resetSSHForm()
+			return m.handleKey(tuiKeyInterrupt)
+		}
+		m.snapshot.Status = "SSH profile save is still running"
 		return nil
 	}
-	commandArgs := append([]string{"ssh"}, args...)
-	command := exec.Command(executable, commandArgs...)
-	command.Stdin = os.Stdin
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
+	switch message.Type {
+	case tea.KeyCtrlC:
+		m.resetSSHForm()
+		return m.handleKey(tuiKeyInterrupt)
+	case tea.KeyEsc:
+		m.resetSSHForm()
+		m.snapshot.Status = "SSH profile changes cancelled"
+		return nil
+	case tea.KeyUp, tea.KeyShiftTab:
+		m.sshFormSelected = wrapTUIIndex(
+			m.sshFormSelected,
+			-1,
+			m.sshFormRowCount(),
+		)
+		return nil
+	case tea.KeyDown, tea.KeyTab:
+		m.sshFormSelected = wrapTUIIndex(
+			m.sshFormSelected,
+			1,
+			m.sshFormRowCount(),
+		)
+		return nil
+	case tea.KeyEnter:
+		return m.activateSSHFormRow()
+	case tea.KeyDelete:
+		return m.deleteSelectedSSHFormOption()
+	case tea.KeyRunes:
+		if len(message.Runes) == 1 {
+			switch message.Runes[0] {
+			case 'c':
+				if m.sshFormSelected == tuiSSHFormPasswordRow {
+					if m.sshFormReadOnly {
+						m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
+						return nil
+					}
+					m.sshForm.Password = ""
+					m.sshFormPasswordChanged = false
+					m.sshFormPasswordCleared = true
+					m.snapshot.Status = "Saved SSH password will be cleared when the form is saved"
+				}
+			case 'x':
+				return m.deleteSelectedSSHFormOption()
+			}
+		}
+	}
+	return nil
+}
+
+func (m *tuiModel) activateSSHFormRow() tea.Cmd {
+	if m.sshFormReadOnly {
+		switch m.sshFormSelected {
+		case m.sshFormDeleteRow():
+			m.beginSSHDeleteConfirmForName(m.sshFormOriginalName)
+		case m.sshFormCancelRow():
+			m.resetSSHForm()
+			m.snapshot.Status = "SSH profile details closed"
+		default:
+			m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
+		}
+		return nil
+	}
+	switch m.sshFormSelected {
+	case m.sshFormAddOptionRow():
+		m.sshForm.Options = append(m.sshForm.Options, "")
+		m.sshFormSelected = tuiSSHFormOptionStartRow + len(m.sshForm.Options) - 1
+		m.sshFormAddingOption = true
+		m.beginSSHFormFieldEdit()
+		return nil
+	case m.sshFormSaveRow():
+		return m.saveSSHForm()
+	case m.sshFormDeleteRow():
+		m.beginSSHDeleteConfirmForName(m.sshFormOriginalName)
+		return nil
+	case m.sshFormCancelRow():
+		m.resetSSHForm()
+		m.snapshot.Status = "SSH profile changes cancelled"
+		return nil
+	default:
+		m.beginSSHFormFieldEdit()
+		return nil
+	}
+}
+
+func (m *tuiModel) deleteSelectedSSHFormOption() tea.Cmd {
+	if m.sshFormReadOnly {
+		m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
+		return nil
+	}
+	optionIndex := m.sshFormSelected - tuiSSHFormOptionStartRow
+	if optionIndex < 0 || optionIndex >= len(m.sshForm.Options) {
+		return nil
+	}
+	m.sshForm.Options = append(
+		m.sshForm.Options[:optionIndex],
+		m.sshForm.Options[optionIndex+1:]...,
+	)
+	if m.sshFormSelected >= m.sshFormRowCount() {
+		m.sshFormSelected = m.sshFormRowCount() - 1
+	}
+	m.snapshot.Status = "SSH option removed from the form; select Save to commit"
+	return nil
+}
+
+func (m *tuiModel) saveSSHForm() tea.Cmd {
+	if m.sshFormReadOnly {
+		m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
+		return nil
+	}
+	profile := m.sshForm
+	profile.Name = strings.TrimSpace(profile.Name)
+	profile.Destination = strings.TrimSpace(profile.Destination)
+	profile.Identity = strings.TrimSpace(profile.Identity)
+	if err := validateCLISSHProfile(profile); err != nil {
+		m.snapshot.Status = "SSH profile invalid: " + err.Error()
+		return nil
+	}
+	existing := m.sshFormExisting
+	originalName := m.sshFormOriginalName
+	expectedFingerprint := m.sshFormFingerprint
 	m.busy = true
-	action := strings.Join(args, " ")
-	m.snapshot.Status = "SSH " + action + "..."
-	return tea.ExecProcess(command, func(err error) tea.Msg {
-		return tuiSSHCommandResultMsg{action: action, err: err}
-	})
+	m.snapshot.Status = "Saving SSH profile " + profile.Name + "..."
+	return func() tea.Msg {
+		var err error
+		action := "add"
+		if existing {
+			action = "edit"
+			err = replaceCLISSHProfile(
+				originalName,
+				expectedFingerprint,
+				profile,
+			)
+		} else {
+			err = addCLISSHProfile(profile)
+		}
+		status := ""
+		if err == nil {
+			status = "SSH profile " + profile.Name + " saved"
+		}
+		return tuiSSHCommandResultMsg{
+			action:       action,
+			status:       status,
+			selectedName: profile.Name,
+			err:          err,
+		}
+	}
+}
+
+func (m *tuiModel) handleSSHFormFieldInput(message tea.KeyMsg) tea.Cmd {
+	switch message.Type {
+	case tea.KeyCtrlC:
+		m.resetSSHForm()
+		return m.handleKey(tuiKeyInterrupt)
+	case tea.KeyEsc:
+		m.cancelSSHFormFieldEdit()
+		m.snapshot.Status = "SSH field edit cancelled"
+	case tea.KeyEnter:
+		m.commitSSHFormField()
+	case tea.KeyBackspace, tea.KeyCtrlH:
+		if m.sshFormSelectAll {
+			m.clearSSHFormInput()
+		} else if m.sshFormCursor > 0 {
+			m.sshFormInput = append(
+				m.sshFormInput[:m.sshFormCursor-1],
+				m.sshFormInput[m.sshFormCursor:]...,
+			)
+			m.sshFormCursor--
+		}
+	case tea.KeyDelete:
+		if m.sshFormSelectAll {
+			m.clearSSHFormInput()
+		} else if m.sshFormCursor < len(m.sshFormInput) {
+			m.sshFormInput = append(
+				m.sshFormInput[:m.sshFormCursor],
+				m.sshFormInput[m.sshFormCursor+1:]...,
+			)
+		}
+	case tea.KeyLeft:
+		if m.sshFormSelectAll {
+			m.sshFormCursor = 0
+			m.sshFormSelectAll = false
+		} else if m.sshFormCursor > 0 {
+			m.sshFormCursor--
+		}
+	case tea.KeyRight:
+		if m.sshFormSelectAll {
+			m.sshFormCursor = len(m.sshFormInput)
+			m.sshFormSelectAll = false
+		} else if m.sshFormCursor < len(m.sshFormInput) {
+			m.sshFormCursor++
+		}
+	case tea.KeyHome, tea.KeyCtrlA:
+		m.sshFormCursor = 0
+		m.sshFormSelectAll = false
+	case tea.KeyEnd, tea.KeyCtrlE:
+		m.sshFormCursor = len(m.sshFormInput)
+		m.sshFormSelectAll = false
+	case tea.KeyCtrlU:
+		m.clearSSHFormInput()
+	case tea.KeyRunes:
+		limit := 4096
+		if m.sshFormSelected == tuiSSHFormNameRow {
+			limit = 64
+		} else if m.sshFormSelected == tuiSSHFormDestinationRow {
+			limit = 512
+		} else if m.sshFormSelected == tuiSSHFormPortRow {
+			limit = 5
+		} else if m.sshFormSelected == tuiSSHFormLocalPortRow {
+			limit = 5
+		}
+		if m.sshFormSelectAll {
+			m.clearSSHFormInput()
+		}
+		for _, value := range message.Runes {
+			if len(m.sshFormInput) >= limit {
+				break
+			}
+			if m.sshFormSelected == tuiSSHFormPortRow && (value < '0' || value > '9') {
+				continue
+			}
+			if m.sshFormSelected == tuiSSHFormLocalPortRow &&
+				!((value >= '0' && value <= '9') ||
+					(value >= 'a' && value <= 'z') ||
+					(value >= 'A' && value <= 'Z')) {
+				continue
+			}
+			m.sshFormInput = append(m.sshFormInput, 0)
+			copy(
+				m.sshFormInput[m.sshFormCursor+1:],
+				m.sshFormInput[m.sshFormCursor:],
+			)
+			m.sshFormInput[m.sshFormCursor] = value
+			m.sshFormCursor++
+		}
+	}
+	return nil
+}
+
+func (m *tuiModel) clearSSHFormInput() {
+	m.sshFormInput = nil
+	m.sshFormCursor = 0
+	m.sshFormSelectAll = false
+}
+
+func (m *tuiModel) beginSSHDeleteConfirm() {
+	if m.snapshot.SelectedSSH < 0 ||
+		m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
+		m.snapshot.Status = "Select an SSH profile first"
+		return
+	}
+	m.beginSSHDeleteConfirmForName(
+		m.snapshot.SSHProfiles[m.snapshot.SelectedSSH].Name,
+	)
+}
+
+func (m *tuiModel) beginSSHDeleteConfirmForName(name string) {
+	m.sshDeleteName = name
+	m.sshDeleteConfirmOpen = true
+	m.snapshot.Status = "Confirm SSH profile deletion · Enter confirm · Esc cancel"
+}
+
+func (m *tuiModel) handleSSHDeleteConfirm(message tea.KeyMsg) tea.Cmd {
+	switch message.Type {
+	case tea.KeyCtrlC:
+		m.sshDeleteConfirmOpen = false
+		m.sshDeleteName = ""
+		return m.handleKey(tuiKeyInterrupt)
+	case tea.KeyEsc:
+		m.sshDeleteConfirmOpen = false
+		m.sshDeleteName = ""
+		m.snapshot.Status = "SSH profile deletion cancelled"
+	case tea.KeyEnter:
+		name := m.sshDeleteName
+		m.sshDeleteConfirmOpen = false
+		m.sshDeleteName = ""
+		if m.sshFormOpen {
+			m.resetSSHForm()
+		}
+		m.busy = true
+		m.snapshot.Status = "Deleting SSH profile " + name + "..."
+		return func() tea.Msg {
+			err := deleteCLISSHProfile(name)
+			status := ""
+			if err == nil {
+				status = "SSH profile " + name + " deleted"
+			}
+			return tuiSSHCommandResultMsg{
+				action: "delete",
+				status: status,
+				err:    err,
+			}
+		}
+	case tea.KeyRunes:
+		if len(message.Runes) == 1 && message.Runes[0] == 'q' {
+			m.sshDeleteConfirmOpen = false
+			m.sshDeleteName = ""
+			return m.handleKey(tuiKeyQuit)
+		}
+	}
+	return nil
+}
+
+func (m *tuiModel) beginProfileDeleteConfirm() {
+	if m.snapshot.SelectedRow < 0 ||
+		m.snapshot.SelectedRow >= len(m.snapshot.Profiles) {
+		m.snapshot.Status = "Select a saved Profile before deleting"
+		return
+	}
+	profile := m.snapshot.Profiles[m.snapshot.SelectedRow]
+	if profile.Current {
+		m.snapshot.Status = "Cannot delete the active Profile; activate another one first"
+		return
+	}
+	if m.service == nil {
+		m.snapshot.Status = "Profile deletion requires the managed Backend"
+		return
+	}
+	m.profileDeleteOpen = true
+	m.profileDeletePath = profile.Path
+	m.profileDeleteName = profile.Name
+	m.profileDeleteKind = "local"
+	if profile.SubscriptionURL != "" {
+		m.profileDeleteKind = "subscription"
+	}
+	m.snapshot.Status = "Confirm Profile deletion · Enter confirm · Esc cancel"
+}
+
+func (m *tuiModel) resetProfileDeleteConfirm() {
+	m.profileDeleteOpen = false
+	m.profileDeletePath = ""
+	m.profileDeleteName = ""
+	m.profileDeleteKind = ""
+}
+
+func (m *tuiModel) handleProfileDeleteConfirm(message tea.KeyMsg) tea.Cmd {
+	switch message.Type {
+	case tea.KeyCtrlC:
+		m.resetProfileDeleteConfirm()
+		return m.handleKey(tuiKeyInterrupt)
+	case tea.KeyEsc:
+		m.resetProfileDeleteConfirm()
+		m.snapshot.Status = "Profile deletion cancelled"
+	case tea.KeyEnter:
+		path := m.profileDeletePath
+		name := m.profileDeleteName
+		selected := m.snapshot.SelectedRow
+		service := m.service
+		m.resetProfileDeleteConfirm()
+		return m.startOperation(func(state *tuiOperationState) {
+			if service == nil {
+				state.snapshot.Status = "Profile deletion requires the managed Backend"
+				return
+			}
+			if !prepareTUIBackendRevision(state, service) {
+				return
+			}
+			status, err := service.deleteProfile(path, state.backendRevision)
+			if err != nil {
+				state.snapshot.Status = "Profile deletion failed: " + err.Error()
+				return
+			}
+			applyTUIOperationServiceStatus(state, status)
+			refreshTUIProfiles(&state.snapshot, state.paths)
+			if len(state.snapshot.Profiles) == 0 {
+				state.snapshot.SelectedRow = tuiProfileImportSubscriptionRow
+			} else {
+				state.snapshot.SelectedRow = clampTUISelection(
+					selected,
+					len(state.snapshot.Profiles),
+				)
+			}
+			state.snapshot.Status = "Profile deleted: " + name
+		})
+	case tea.KeyRunes:
+		if len(message.Runes) == 1 && message.Runes[0] == 'q' {
+			m.resetProfileDeleteConfirm()
+			return m.handleKey(tuiKeyQuit)
+		}
+	}
+	return nil
 }
 
 func (m *tuiModel) beginInput(mode tuiInputMode) {

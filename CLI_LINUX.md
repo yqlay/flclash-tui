@@ -165,20 +165,30 @@ flc sh -c 'curl -s https://example.com | jq .'
 ### Independent SSH command proxy
 
 SSH profiles and tunnels are independent of Mihomo, subscriptions, Core state,
-and the normal `flc` proxy. FlClash creates a loopback-only OpenSSH dynamic
-SOCKS5 forward and injects `socks5h://127.0.0.1:PORT` into the local child
-command's upper- and lower-case proxy environment:
+and the normal `flc` proxy. The machine running FlClash is always the traffic
+source and the configured SSH host is the network exit. FlClash creates a
+loopback-only OpenSSH dynamic SOCKS5 forward and injects
+`socks5h://127.0.0.1:PORT` into the local child command's upper- and lower-case
+proxy environment. For example, if FlClash runs only on B and the profile points
+to A, B's selected traffic exits through A; A only needs an SSH server:
 
 ```bash
-flclash ssh add school user@B --port 2222 --password
-flclash ssh connect school
+flclash ssh add home user@A --port 2222 --local-port 1080 --password
+flclash ssh connect home
 flc ssh curl https://example.com
 
-flc ssh -u school git ls-remote https://github.com/owner/repository.git
+flc ssh -u home git ls-remote https://github.com/owner/repository.git
 flclash ssh list
-flclash ssh test school
-flclash ssh disconnect school
+flclash ssh test home
+ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
+flclash ssh disconnect home
 ```
+
+`--local-port PORT` gives persistent connections a stable loopback SOCKS5
+address for other local applications. Use `--local-port auto` to return to
+automatic allocation. Temporary `flc ssh -u` tunnels always use an automatic
+port, so they cannot steal the persistent application endpoint. Fixed-port
+conflicts fail closed instead of silently choosing another port.
 
 `flc ssh COMMAND` requires the one persistent tunnel opened from the TUI or
 `flclash ssh connect`. `-u NAME` creates a separate temporary tunnel for that
@@ -191,6 +201,23 @@ stored separately in mode-`0600` `.flclash-ssh.json`; list/status/TUI/log output
 only exposes `password_set` or `********`. Key files, ssh-agent, and safe
 `--option KEY=VALUE` OpenSSH settings are also supported.
 
+The SSH TUI page performs every management action without suspending or leaving
+the full-screen interface. Press `n` to open the add form or `e` to edit the
+selected profile. In the form, use `Up/Down` or `Tab` to select a row and
+`Enter` to edit or confirm it. Password replacement is entered twice and stays
+masked; `c` stages password removal. OpenSSH options are separate rows: use the
+add row to create one and `x` to remove the selected option. Select Save to
+commit or press `Esc` to discard the form. Deletion also stays in the TUI and
+requires `Enter` confirmation; `Esc` cancels it.
+
+A connected SSH profile opens as `CONNECTED · READ ONLY`; disconnect it before
+editing. `flclash ssh edit` enforces the same rule. Selecting another profile
+is an explicit tunnel switch: FlClash stops the previous tunnel before starting
+the new one, which also permits profiles to share one fixed local SOCKS5 port.
+If the new tunnel fails, FlClash attempts to restore the previous tunnel and
+reports both errors if restoration also fails. Concurrent editors are rejected
+instead of silently overwriting a newer profile.
+
 Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availability, the new listener, old-listener closure, and managed System proxy are checked, with rollback on failure. Listener recreation is not a zero-gap handoff.
 
 ## TUI pages and keys
@@ -198,7 +225,7 @@ Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availa
 ```text
 1 Dashboard     Core/System proxy/TUN/Mode/Proxy port/network/memory/30-sample traffic chart
 2 Proxies       groups/nodes/Providers, selection, delay and speed tests
-3 Profiles      import URL/local YAML, activate, update, rename, edit
+3 Profiles      import URL/local YAML, activate, update, rename, edit, delete non-active
 4 SSH            independent profiles, connect/disconnect, add/edit/delete/test
 5 History        persistent shared active and recent connection history
 6 Connections    current Core connections and close actions
@@ -215,7 +242,7 @@ r / R           refresh / reload config         ?             help
 d / v           page-scoped delay / speed       n             network/import
 Ctrl+N          notification history/details
 S / c / t / m   System proxy/Core/TUN/mode list p, +, -       Proxy port
-U, F2/u, e      update/rename/edit Profile      x             clear/close all
+U, F2/u, e      update/rename/edit Profile      x             delete Profile/SSH; clear page data
 q               exit only this TUI               Ctrl+C        exit TUIs + Backend + Core + SSH
 ```
 

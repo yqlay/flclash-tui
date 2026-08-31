@@ -208,10 +208,49 @@ type tuiSSHProfile struct {
 	Name        string
 	Destination string
 	Port        int
+	LocalPort   int
 	Identity    string
 	PasswordSet bool
+	Options     []string
 	Connected   bool
 	SocksPort   int
+}
+
+const (
+	tuiSSHFormNameRow = iota
+	tuiSSHFormDestinationRow
+	tuiSSHFormPortRow
+	tuiSSHFormLocalPortRow
+	tuiSSHFormIdentityRow
+	tuiSSHFormPasswordRow
+	tuiSSHFormOptionStartRow
+)
+
+type tuiSSHFormView struct {
+	Open              bool
+	Existing          bool
+	ReadOnly          bool
+	Name              string
+	Destination       string
+	Port              int
+	LocalPort         int
+	Identity          string
+	PasswordSet       bool
+	PasswordChanged   bool
+	PasswordCleared   bool
+	Options           []string
+	Selected          int
+	FieldEditing      bool
+	FieldInput        string
+	PasswordConfirm   bool
+	DeleteConfirmOpen bool
+	DeleteName        string
+}
+
+type tuiProfileDeleteView struct {
+	Open bool
+	Name string
+	Kind string
 }
 
 const (
@@ -277,6 +316,8 @@ type tuiSnapshot struct {
 	NotificationDetailOpen bool
 	NotificationSelected   int
 	NotificationScroll     int
+	SSHForm                tuiSSHFormView
+	ProfileDelete          tuiProfileDeleteView
 }
 
 type trafficSnapshot struct {
@@ -1515,10 +1556,12 @@ func refreshTUISSH(snapshot *tuiSnapshot) {
 			Name:        view.Name,
 			Destination: view.Destination,
 			Port:        view.Port,
+			LocalPort:   view.LocalPort,
 			Identity:    view.Identity,
 			PasswordSet: view.PasswordSet,
 			Connected:   view.Connected,
 			SocksPort:   view.SocksPort,
+			Options:     append([]string(nil), view.Options...),
 		})
 	}
 	snapshot.SelectedSSH = 0
@@ -2597,6 +2640,9 @@ func renderTUICompact(
 	var page string
 	switch {
 	case snapshot.NotificationDetailOpen ||
+		snapshot.ProfileDelete.Open ||
+		snapshot.SSHForm.DeleteConfirmOpen ||
+		snapshot.SSHForm.Open ||
 		snapshot.SelectionTitle != "" ||
 		snapshot.InputTitle != "":
 		page = tuiRenderPage(
@@ -2856,6 +2902,12 @@ func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) stri
 	var b strings.Builder
 	if snapshot.NotificationDetailOpen {
 		drawTUINotificationDetails(&b, snapshot, width, height)
+	} else if snapshot.ProfileDelete.Open {
+		drawTUIProfileDeleteConfirm(&b, snapshot.ProfileDelete, width)
+	} else if snapshot.SSHForm.DeleteConfirmOpen {
+		drawTUISSHDeleteConfirm(&b, snapshot.SSHForm, width)
+	} else if snapshot.SSHForm.Open {
+		drawTUISSHForm(&b, snapshot.SSHForm, width, height)
 	} else if snapshot.SelectionTitle != "" {
 		drawTUISelection(&b, snapshot, width)
 	} else if snapshot.InputTitle != "" {
@@ -2924,6 +2976,175 @@ func drawTUIInput(b *strings.Builder, snapshot tuiSnapshot, width int) {
 	if snapshot.InputHint != "" {
 		tuiEmptyPanel(b, "Input help", snapshot.InputHint, width)
 	}
+}
+
+func drawTUISSHDeleteConfirm(
+	b *strings.Builder,
+	form tuiSSHFormView,
+	width int,
+) {
+	tuiTitle(b, "Delete SSH profile", "Enter confirm · Esc cancel", width)
+	tuiRow(
+		b,
+		"Delete "+form.DeleteName+"? This also disconnects its active tunnel.",
+		width,
+		true,
+		tuiRed,
+	)
+	tuiEndPanel(b, width)
+}
+
+func drawTUIProfileDeleteConfirm(
+	b *strings.Builder,
+	profile tuiProfileDeleteView,
+	width int,
+) {
+	tuiTitle(b, "Delete Profile", "Enter confirm · Esc cancel", width)
+	tuiRow(
+		b,
+		"Delete "+profile.Name+" ("+profile.Kind+")? The saved YAML and linked metadata will be removed.",
+		width,
+		true,
+		tuiRed,
+	)
+	tuiEndPanel(b, width)
+}
+
+func drawTUISSHForm(
+	b *strings.Builder,
+	form tuiSSHFormView,
+	width,
+	height int,
+) {
+	title := "Add SSH profile"
+	subtitle := "↑↓/Tab select · Enter edit/confirm · x remove option · Esc cancel"
+	if form.Existing {
+		title = "Edit SSH profile"
+	}
+	if form.ReadOnly {
+		title = "SSH profile details · CONNECTED · READ ONLY"
+		subtitle = "↑↓ select · disconnect before editing · Esc close"
+	}
+	tuiTitle(
+		b,
+		title,
+		subtitle,
+		width,
+	)
+	rows := make([]struct {
+		label string
+		color string
+	}, 0, len(form.Options)+10)
+	rows = append(rows,
+		struct {
+			label string
+			color string
+		}{label: "Name         " + form.Name},
+		struct {
+			label string
+			color string
+		}{label: "SSH exit     " + form.Destination},
+		struct {
+			label string
+			color string
+		}{label: fmt.Sprintf("SSH port     %d", form.Port)},
+		struct {
+			label string
+			color string
+		}{label: "Local SOCKS  " + formatTUISSHLocalPort(form.LocalPort)},
+		struct {
+			label string
+			color string
+		}{label: "Identity     " + cliDisplayValue(form.Identity)},
+	)
+	password := "not saved · Enter set"
+	if form.PasswordSet {
+		password = "******** · Enter replace · c clear"
+	}
+	if form.ReadOnly && form.PasswordSet {
+		password = "******** · set · read only"
+	} else if form.ReadOnly {
+		password = "not saved · read only"
+	}
+	if form.PasswordChanged {
+		password = "******** · replacement staged · c clear"
+	}
+	if form.PasswordCleared {
+		password = "clear on save · Enter set"
+	}
+	rows = append(rows, struct {
+		label string
+		color string
+	}{label: "Password     " + password})
+	for index, option := range form.Options {
+		rows = append(rows, struct {
+			label string
+			color string
+		}{label: fmt.Sprintf("Option %-3d   %s", index+1, option)})
+	}
+	addOptionLabel := "+ Add OpenSSH option (KEY=VALUE)"
+	addOptionColor := tuiCyan
+	saveLabel := "Save profile"
+	saveColor := tuiGreen
+	if form.ReadOnly {
+		addOptionLabel = "Options are read only while connected"
+		addOptionColor = tuiDim
+		saveLabel = "Save unavailable · disconnect before editing"
+		saveColor = tuiDim
+	}
+	rows = append(rows,
+		struct {
+			label string
+			color string
+		}{label: addOptionLabel, color: addOptionColor},
+		struct {
+			label string
+			color string
+		}{label: saveLabel, color: saveColor},
+	)
+	if form.Existing {
+		rows = append(rows, struct {
+			label string
+			color string
+		}{label: "Delete profile", color: tuiRed})
+	}
+	cancelLabel := "Cancel"
+	if form.ReadOnly {
+		cancelLabel = "Close details"
+	}
+	rows = append(rows, struct {
+		label string
+		color string
+	}{label: cancelLabel, color: tuiYellow})
+	if form.FieldEditing && form.Selected >= 0 && form.Selected < len(rows) {
+		label := "Value        " + form.FieldInput
+		if form.Selected == tuiSSHFormPasswordRow {
+			label = "Password     " + form.FieldInput
+			if form.PasswordConfirm {
+				label = "Confirm      " + form.FieldInput
+			}
+		}
+		rows[form.Selected].label = label
+	}
+	limit := maxTUIWidth(height-4, 1)
+	start, end := tuiVisibleRange(len(rows), form.Selected, limit)
+	for index := start; index < end; index++ {
+		tuiRow(
+			b,
+			rows[index].label,
+			width,
+			index == form.Selected,
+			rows[index].color,
+		)
+	}
+	tuiEndPanel(b, width)
+}
+
+func formatTUISSHLocalPort(port int) string {
+	if port <= 0 {
+		return "auto"
+	}
+	return "127.0.0.1:" + strconv.Itoa(port)
 }
 
 const (
@@ -3412,8 +3633,8 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 		"Sections       1-9 open directly · Tab changes focus · [/] changes proxy view",
 		"Dashboard      d rule-route latency (5 samples) · v Cloudflare 4-stream speed · n refresh",
 		"Proxies        Enter nodes · d node RTT (5 samples) · v node speed · Esc groups",
-		"Profiles       Enter activate · U refresh subscription · F2/u rename · e edit · n import",
-		"SSH            Enter connect/disconnect · n add · e edit · x delete · t test",
+		"Profiles       Enter activate · U refresh · F2/u rename · e edit · n import · x delete",
+		"SSH            Enter connect/disconnect · n add · e edit · x delete · d test",
 		"History        x clears shared history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
 		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
@@ -4124,7 +4345,7 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 		b,
 		"Profiles",
 		fmt.Sprintf(
-			"%d available · Enter activate · U refresh linked · e edit · F2/u rename",
+			"%d available · Enter activate · U refresh linked · e edit · F2/u rename · x delete",
 			len(snapshot.Profiles),
 		),
 		width,
@@ -4165,18 +4386,18 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 		if profile.Current {
 			if index == snapshot.SelectedRow && !snapshot.FocusSidebar {
 				if profile.SubscriptionURL != "" {
-					label += "  [active · U refresh · e edit]"
+					label += "  [active · U refresh · e edit · x locked]"
 				} else {
-					label += "  [active · local · e edit]"
+					label += "  [active · local · e edit · x locked]"
 				}
 			} else {
 				label += "  [active]"
 			}
 		} else if index == snapshot.SelectedRow && !snapshot.FocusSidebar {
 			if profile.SubscriptionURL != "" {
-				label += "  [Enter activate · U refresh · e edit · F2 rename]"
+				label += "  [Enter activate · U refresh · e edit · F2 rename · x delete]"
 			} else {
-				label += "  [Enter activate · local · e edit · F2 rename]"
+				label += "  [Enter activate · local · e edit · F2 rename · x delete]"
 			}
 		}
 		tuiRow(
@@ -4194,7 +4415,7 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 	tuiTitle(
 		b,
 		"SSH",
-		"Independent SOCKS5 · Enter connect/disconnect · n add · e edit · x delete · d test",
+		"Local traffic → SSH host exit · Enter connect/disconnect · n add · e edit · x delete · d test",
 		width,
 	)
 	if len(snapshot.SSHProfiles) == 0 {
@@ -4215,8 +4436,20 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 		color := tuiDim
 		if profile.Connected {
 			status = "CONNECTED"
-			endpoint = fmt.Sprintf(" · SOCKS5 127.0.0.1:%d", profile.SocksPort)
+			configured := "auto"
+			if profile.LocalPort > 0 {
+				configured = strconv.Itoa(profile.LocalPort)
+			}
+			endpoint = fmt.Sprintf(
+				" · SOCKS5 127.0.0.1:%d · configured %s",
+				profile.SocksPort,
+				configured,
+			)
 			color = tuiGreen
+		} else if profile.LocalPort > 0 {
+			endpoint = fmt.Sprintf(" · local 127.0.0.1:%d", profile.LocalPort)
+		} else {
+			endpoint = " · local auto"
 		}
 		auth := "agent/key"
 		if profile.PasswordSet {
