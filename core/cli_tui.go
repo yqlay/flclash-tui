@@ -216,6 +216,7 @@ type tuiSSHProfile struct {
 	Connected     bool
 	Ready         bool
 	SocksPort     int
+	StartedAt     time.Time
 }
 
 const (
@@ -278,6 +279,27 @@ type tuiSnapshot struct {
 	Logs                   []string
 	Profiles               []tuiProfile
 	SSHProfiles            []tuiSSHProfile
+	SSHDetailOpen          bool
+	SelectedSSHDetail      int
+	SSHNetwork             tuiNetworkInfo
+	SSHDelay               tuiDelayResult
+	SSHSpeed               tuiSpeedResult
+	SSHTraffic             trafficSnapshot
+	SSHTrafficHistory      []trafficSnapshot
+	SSHTotalTraffic        trafficSnapshot
+	SSHConnections         int64
+	HistoryQuery           string
+	HistoryFilter          string
+	HistoryDetailOpen      bool
+	ConnectionsQuery       string
+	ConnectionsDetailOpen  bool
+	LogsQuery              string
+	LogsLevel              string
+	LogDetailOpen          bool
+	SelectedLog            int
+	DangerConfirmOpen      bool
+	DangerConfirmTitle     string
+	DangerConfirmMessage   string
 	Providers              []tuiProvider
 	Settings               tuiSettings
 	Network                tuiNetworkInfo
@@ -1571,6 +1593,7 @@ func refreshTUISSH(snapshot *tuiSnapshot) {
 			Connected:     view.Connected,
 			Ready:         view.Ready,
 			SocksPort:     view.SocksPort,
+			StartedAt:     view.StartedAt,
 			Options:       append([]string(nil), view.Options...),
 		})
 	}
@@ -2306,6 +2329,8 @@ const (
 	tuiKeyPageUp
 	tuiKeyPageDown
 	tuiKeyNotifications
+	tuiKeySearch
+	tuiKeyFilter
 )
 
 func readTUIKeys(reader io.Reader, keys chan<- tuiKey) {
@@ -2912,6 +2937,8 @@ func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) stri
 	var b strings.Builder
 	if snapshot.NotificationDetailOpen {
 		drawTUINotificationDetails(&b, snapshot, width, height)
+	} else if snapshot.DangerConfirmOpen {
+		drawTUIDangerConfirm(&b, snapshot, width)
 	} else if snapshot.ProfileDelete.Open {
 		drawTUIProfileDeleteConfirm(&b, snapshot.ProfileDelete, width)
 	} else if snapshot.SSHForm.DeleteConfirmOpen {
@@ -2962,6 +2989,15 @@ func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) stri
 		drawTUIProxies(&b, snapshot, width, height)
 	}
 	return b.String()
+}
+
+func drawTUIDangerConfirm(b *strings.Builder, snapshot tuiSnapshot, width int) {
+	tuiTitle(b, snapshot.DangerConfirmTitle, "Enter confirm · Esc cancel", width)
+	for _, line := range tuiWrapText(snapshot.DangerConfirmMessage, maxTUIWidth(width-4, 1)) {
+		tuiRow(b, line, width, false, tuiYellow)
+	}
+	tuiRow(b, "This operation cannot be undone in the current session.", width, false, tuiRed)
+	tuiEndPanel(b, width)
 }
 
 func drawTUISelection(b *strings.Builder, snapshot tuiSnapshot, width int) {
@@ -4113,26 +4149,41 @@ func formatTUIUintBytes(value uint64) string {
 }
 
 func drawTUIRequests(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
+	if snapshot.HistoryDetailOpen {
+		drawTUIRequestDetail(b, snapshot, width)
+		return
+	}
+	indexes := matchedTUIRequestIndexes(snapshot)
+	active := 0
+	var upload, download int64
+	for _, request := range snapshot.Requests {
+		if request.Active {
+			active++
+		}
+		upload += request.Upload
+		download += request.Download
+	}
 	tuiTitle(
 		b,
 		"History",
-		fmt.Sprintf("%d shared entries · active and completed · x clear", len(snapshot.Requests)),
+		fmt.Sprintf("%d/%d shown · %d active · ↑%s ↓%s · / search · f filter:%s · Enter detail · x clear", len(indexes), len(snapshot.Requests), active, formatBytes(upload), formatBytes(download), tuiDefaultValue(snapshot.HistoryFilter, "all")),
 		width,
 	)
-	if len(snapshot.Requests) == 0 {
-		tuiRow(b, "No connection history captured by Backend", width, false, tuiDim)
+	if len(indexes) == 0 {
+		tuiRow(b, "No matching connection history", width, false, tuiDim)
 		tuiEndPanel(b, width)
 		return
 	}
 	limit := maxTUIWidth((height-3)/2, 1)
 	start, end := tuiVisibleRange(
-		len(snapshot.Requests),
-		snapshot.SelectedRequest,
+		len(indexes),
+		findTUIInt(indexes, snapshot.SelectedRequest),
 		limit,
 	)
 	rows := 0
 	for index := start; index < end && rows < height-3; index++ {
-		request := snapshot.Requests[index]
+		actualIndex := indexes[index]
+		request := snapshot.Requests[actualIndex]
 		host := request.Host
 		if host == "" {
 			host = request.ID
@@ -4155,7 +4206,7 @@ func drawTUIRequests(b *strings.Builder, snapshot tuiSnapshot, width, height int
 			b,
 			row,
 			width,
-			index == snapshot.SelectedRequest && !snapshot.FocusSidebar,
+			actualIndex == snapshot.SelectedRequest && !snapshot.FocusSidebar,
 			color,
 		)
 		rows++
@@ -4182,17 +4233,28 @@ func drawTUIRequests(b *strings.Builder, snapshot tuiSnapshot, width, height int
 }
 
 func drawTUIConnections(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
-	tuiTitle(b, "Connections", fmt.Sprintf("%d active", len(snapshot.Connections)), width)
-	if len(snapshot.Connections) == 0 {
-		tuiRow(b, "No active connections", width, false, tuiDim)
+	if snapshot.ConnectionsDetailOpen {
+		drawTUIConnectionDetail(b, snapshot, width)
+		return
+	}
+	indexes := matchedTUIConnectionIndexes(snapshot)
+	var upload, download int64
+	for _, connection := range snapshot.Connections {
+		upload += connection.Upload
+		download += connection.Download
+	}
+	tuiTitle(b, "Connections", fmt.Sprintf("%d/%d active · ↑%s ↓%s · / search · Enter detail · d close · x close all", len(indexes), len(snapshot.Connections), formatBytes(upload), formatBytes(download)), width)
+	if len(indexes) == 0 {
+		tuiRow(b, "No matching active connections", width, false, tuiDim)
 		tuiEndPanel(b, width)
 		return
 	}
 	limit := maxTUIWidth((height-3)/2, 1)
-	start, end := tuiVisibleRange(len(snapshot.Connections), snapshot.SelectedConnection, limit)
+	start, end := tuiVisibleRange(len(indexes), findTUIInt(indexes, snapshot.SelectedConnection), limit)
 	rows := 0
 	for index := start; index < end; index++ {
-		connection := snapshot.Connections[index]
+		actualIndex := indexes[index]
+		connection := snapshot.Connections[actualIndex]
 		if rows >= height-3 {
 			break
 		}
@@ -4201,7 +4263,7 @@ func drawTUIConnections(b *strings.Builder, snapshot tuiSnapshot, width, height 
 			label = connection.ID
 		}
 		row := fmt.Sprintf("%-32s %-7s %-18s ↑%-9s ↓%-9s", truncateTUI(label, 32), connection.Network, truncateTUI(connection.Chain, 18), formatBytes(connection.Upload), formatBytes(connection.Download))
-		tuiRow(b, row, width, index == snapshot.SelectedConnection && !snapshot.FocusSidebar, "")
+		tuiRow(b, row, width, actualIndex == snapshot.SelectedConnection && !snapshot.FocusSidebar, "")
 		rows++
 		if (connection.Process != "" || connection.UID != 0) && rows < height-3 {
 			process := connection.Process
@@ -4220,14 +4282,208 @@ func drawTUIConnections(b *strings.Builder, snapshot tuiSnapshot, width, height 
 }
 
 func drawTUILogs(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
-	tuiTitle(b, "Logs", "latest events · e export · x clear", width)
-	limit := maxTUIWidth(height-3, 1)
-	start := maxTUIIndex(len(snapshot.Logs) - limit)
-	for _, line := range snapshot.Logs[start:] {
-		tuiRow(b, line, width, false, tuiDim)
+	if snapshot.LogDetailOpen {
+		drawTUILogDetail(b, snapshot, width)
+		return
 	}
-	if len(snapshot.Logs) == 0 {
-		tuiRow(b, "No logs captured yet", width, false, tuiDim)
+	indexes := matchedTUILogIndexes(snapshot)
+	tuiTitle(b, "Logs", fmt.Sprintf("%d/%d shown · backend + TUI · / search · f level:%s · Enter detail · e export · x clear", len(indexes), len(snapshot.Logs), tuiDefaultValue(snapshot.LogsLevel, "ALL")), width)
+	limit := maxTUIWidth(height-3, 1)
+	selectedPosition := findTUIInt(indexes, snapshot.SelectedLog)
+	if selectedPosition < 0 && len(indexes) > 0 {
+		selectedPosition = len(indexes) - 1
+	}
+	start, end := tuiVisibleRange(len(indexes), selectedPosition, limit)
+	for position := start; position < end; position++ {
+		index := indexes[position]
+		tuiRow(b, snapshot.Logs[index], width, index == snapshot.SelectedLog && !snapshot.FocusSidebar, tuiLogLineColor(snapshot.Logs[index]))
+	}
+	if len(indexes) == 0 {
+		tuiRow(b, "No matching logs captured", width, false, tuiDim)
+	}
+	tuiEndPanel(b, width)
+}
+
+func tuiDefaultValue(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func findTUIInt(values []int, wanted int) int {
+	for index, value := range values {
+		if value == wanted {
+			return index
+		}
+	}
+	return -1
+}
+
+func matchedTUIRequestIndexes(snapshot tuiSnapshot) []int {
+	query := strings.ToLower(strings.TrimSpace(snapshot.HistoryQuery))
+	filter := strings.ToLower(tuiDefaultValue(snapshot.HistoryFilter, "all"))
+	indexes := make([]int, 0, len(snapshot.Requests))
+	for index, request := range snapshot.Requests {
+		if filter == "active" && !request.Active || filter == "completed" && request.Active {
+			continue
+		}
+		haystack := strings.ToLower(strings.Join([]string{
+			request.ID, request.Host, request.Process, request.ProcessPath,
+			request.Network, request.Chain,
+		}, " "))
+		if query == "" || strings.Contains(haystack, query) {
+			indexes = append(indexes, index)
+		}
+	}
+	return indexes
+}
+
+func matchedTUIConnectionIndexes(snapshot tuiSnapshot) []int {
+	query := strings.ToLower(strings.TrimSpace(snapshot.ConnectionsQuery))
+	indexes := make([]int, 0, len(snapshot.Connections))
+	for index, connection := range snapshot.Connections {
+		haystack := strings.ToLower(strings.Join([]string{
+			connection.ID, connection.Host, connection.Process, connection.ProcessPath,
+			connection.Network, connection.Chain,
+		}, " "))
+		if query == "" || strings.Contains(haystack, query) {
+			indexes = append(indexes, index)
+		}
+	}
+	return indexes
+}
+
+func matchedTUILogIndexes(snapshot tuiSnapshot) []int {
+	query := strings.ToLower(strings.TrimSpace(snapshot.LogsQuery))
+	level := strings.ToUpper(tuiDefaultValue(snapshot.LogsLevel, "ALL"))
+	indexes := make([]int, 0, len(snapshot.Logs))
+	for index, line := range snapshot.Logs {
+		upperLine := strings.ToUpper(line)
+		if level != "ALL" &&
+			!strings.Contains(upperLine, " "+level+" ") &&
+			!strings.Contains(upperLine, "LEVEL="+level) {
+			continue
+		}
+		if query == "" || strings.Contains(strings.ToLower(line), query) {
+			indexes = append(indexes, index)
+		}
+	}
+	return indexes
+}
+
+func firstTUIRequestMatch(snapshot tuiSnapshot) int {
+	indexes := matchedTUIRequestIndexes(snapshot)
+	if len(indexes) == 0 {
+		return 0
+	}
+	return indexes[0]
+}
+
+func firstTUIConnectionMatch(snapshot tuiSnapshot) int {
+	indexes := matchedTUIConnectionIndexes(snapshot)
+	if len(indexes) == 0 {
+		return 0
+	}
+	return indexes[0]
+}
+
+func firstTUILogMatch(snapshot tuiSnapshot) int {
+	indexes := matchedTUILogIndexes(snapshot)
+	if len(indexes) == 0 {
+		return 0
+	}
+	return indexes[len(indexes)-1]
+}
+
+func moveTUIRequestMatch(snapshot *tuiSnapshot, delta int) {
+	indexes := matchedTUIRequestIndexes(*snapshot)
+	if len(indexes) == 0 {
+		return
+	}
+	position := findTUIInt(indexes, snapshot.SelectedRequest)
+	snapshot.SelectedRequest = indexes[wrapTUIIndex(position, delta, len(indexes))]
+}
+
+func moveTUIConnectionMatch(snapshot *tuiSnapshot, delta int) {
+	indexes := matchedTUIConnectionIndexes(*snapshot)
+	if len(indexes) == 0 {
+		return
+	}
+	position := findTUIInt(indexes, snapshot.SelectedConnection)
+	snapshot.SelectedConnection = indexes[wrapTUIIndex(position, delta, len(indexes))]
+}
+
+func moveTUILogMatch(snapshot *tuiSnapshot, delta int) {
+	indexes := matchedTUILogIndexes(*snapshot)
+	if len(indexes) == 0 {
+		return
+	}
+	position := findTUIInt(indexes, snapshot.SelectedLog)
+	if position < 0 {
+		position = len(indexes) - 1
+	}
+	snapshot.SelectedLog = indexes[wrapTUIIndex(position, delta, len(indexes))]
+}
+
+func tuiLogLineColor(line string) string {
+	upper := strings.ToUpper(line)
+	switch {
+	case strings.Contains(upper, " ERROR ") || strings.Contains(upper, "LEVEL=ERROR"):
+		return tuiRed
+	case strings.Contains(upper, " WARN ") || strings.Contains(upper, "LEVEL=WARNING") || strings.Contains(upper, "LEVEL=WARN"):
+		return tuiYellow
+	case strings.Contains(upper, " INFO ") || strings.Contains(upper, "LEVEL=INFO"):
+		return tuiCyan
+	default:
+		return tuiDim
+	}
+}
+
+func drawTUIRequestDetail(b *strings.Builder, snapshot tuiSnapshot, width int) {
+	if snapshot.SelectedRequest < 0 || snapshot.SelectedRequest >= len(snapshot.Requests) {
+		tuiEmptyPanel(b, "History detail", "Entry is no longer available · Esc to return", width)
+		return
+	}
+	request := snapshot.Requests[snapshot.SelectedRequest]
+	tuiTitle(b, "History detail", "Esc returns to list", width)
+	tuiRow(b, "State         "+map[bool]string{true: "ACTIVE", false: "COMPLETED"}[request.Active], width, false, tuiGreen)
+	drawTUIConnectionFields(b, request.tuiConnection, width)
+	tuiRow(b, "First seen    "+request.FirstSeen.Format(time.RFC3339), width, false, "")
+	tuiRow(b, "Last seen     "+request.LastSeen.Format(time.RFC3339), width, false, "")
+	tuiEndPanel(b, width)
+}
+
+func drawTUIConnectionDetail(b *strings.Builder, snapshot tuiSnapshot, width int) {
+	if snapshot.SelectedConnection < 0 || snapshot.SelectedConnection >= len(snapshot.Connections) {
+		tuiEmptyPanel(b, "Connection detail", "Connection has closed · Esc to return", width)
+		return
+	}
+	tuiTitle(b, "Connection detail", "d close selected · Esc returns to list", width)
+	drawTUIConnectionFields(b, snapshot.Connections[snapshot.SelectedConnection], width)
+	tuiEndPanel(b, width)
+}
+
+func drawTUIConnectionFields(b *strings.Builder, connection tuiConnection, width int) {
+	tuiRow(b, "Host          "+cliDisplayValue(connection.Host), width, false, tuiCyan)
+	tuiRow(b, "Network       "+cliDisplayValue(connection.Network), width, false, "")
+	tuiRow(b, "Route         "+cliDisplayValue(connection.Chain), width, false, "")
+	tuiRow(b, "Process       "+cliDisplayValue(connection.Process), width, false, "")
+	tuiRow(b, "Process path  "+cliDisplayValue(connection.ProcessPath), width, false, tuiDim)
+	tuiRow(b, fmt.Sprintf("UID           %d", connection.UID), width, false, "")
+	tuiRow(b, fmt.Sprintf("Traffic       ↑ %s   ↓ %s", formatBytes(connection.Upload), formatBytes(connection.Download)), width, false, "")
+	tuiRow(b, "ID            "+connection.ID, width, false, tuiDim)
+}
+
+func drawTUILogDetail(b *strings.Builder, snapshot tuiSnapshot, width int) {
+	if snapshot.SelectedLog < 0 || snapshot.SelectedLog >= len(snapshot.Logs) {
+		tuiEmptyPanel(b, "Log detail", "Entry is no longer available · Esc to return", width)
+		return
+	}
+	line := snapshot.Logs[snapshot.SelectedLog]
+	tuiTitle(b, "Log detail", "full entry · Esc returns to list", width)
+	for _, wrapped := range tuiWrapText(line, maxTUIWidth(width-4, 1)) {
+		tuiRow(b, wrapped, width, false, tuiLogLineColor(line))
 	}
 	tuiEndPanel(b, width)
 }
@@ -4446,10 +4702,14 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 }
 
 func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
+	if snapshot.SSHDetailOpen {
+		drawTUISSHDashboard(b, snapshot, width, height)
+		return
+	}
 	tuiTitle(
 		b,
 		"SSH",
-		"Local traffic → SSH host exit · Enter connect/disconnect · n add · e edit · x delete · d test",
+		"Local traffic → SSH host exit · Enter Dashboard · n add · e edit · x delete · d test",
 		width,
 	)
 	if len(snapshot.SSHProfiles) == 0 {
@@ -4514,6 +4774,68 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 			color,
 		)
 	}
+	tuiEndPanel(b, width)
+}
+
+func drawTUISSHDashboard(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
+	if snapshot.SelectedSSH < 0 || snapshot.SelectedSSH >= len(snapshot.SSHProfiles) {
+		tuiEmptyPanel(b, "SSH Dashboard", "Selected SSH profile is unavailable · Esc to return", width)
+		return
+	}
+	profile := snapshot.SSHProfiles[snapshot.SelectedSSH]
+	status := "DISCONNECTED · Enter to connect"
+	statusColor := tuiDim
+	if profile.Connected && profile.Ready {
+		status = fmt.Sprintf("CONNECTED · SOCKS5 127.0.0.1:%d · Enter to disconnect", profile.SocksPort)
+		statusColor = tuiGreen
+	} else if profile.Connected {
+		status = "BROKEN · Enter to reconnect"
+		statusColor = tuiRed
+	}
+	tuiTitle(b, "SSH Dashboard · "+profile.Name, "Esc profiles · Enter controls selected item", width)
+	tuiRow(b, "Tunnel        "+status, width, snapshot.SelectedSSHDetail == 0 && !snapshot.FocusSidebar, statusColor)
+	tuiRow(b, "SSH host      "+profile.Destination+":"+strconv.Itoa(profile.Port), width, false, tuiCyan)
+	tuiEndPanel(b, width)
+
+	publicIP := "Not checked · press n"
+	if snapshot.SSHNetwork.Loading {
+		publicIP = "Checking through SSH exit..."
+	} else if snapshot.SSHNetwork.PublicIP != "" {
+		publicIP = snapshot.SSHNetwork.PublicIP
+		if snapshot.SSHNetwork.Country != "" {
+			publicIP += "  [" + snapshot.SSHNetwork.Country + "]"
+		}
+	} else if snapshot.SSHNetwork.Error != "" {
+		publicIP = "Unavailable · " + snapshot.SSHNetwork.Error
+	}
+	networkSubtitle := "SOCKS5 SSH route · d RTT×5 · v CF speed · n refresh"
+	if !snapshot.SSHNetwork.CheckedAt.IsZero() {
+		networkSubtitle += " · checked " + snapshot.SSHNetwork.CheckedAt.Format("15:04:05")
+	}
+	tuiTitle(b, "Network detection", networkSubtitle, width)
+	tuiRow(b, "Public IP     "+publicIP, width, snapshot.SelectedSSHDetail == 1 && !snapshot.FocusSidebar, tuiCyan)
+	tuiRow(b, "Intranet IP   "+cliDisplayValue(snapshot.SSHNetwork.IntranetIP), width, false, tuiGreen)
+	tuiRow(b, "SSH route     "+tuiDashboardDelayLabel(snapshot.SSHDelay), width, snapshot.SelectedSSHDetail == 2 && !snapshot.FocusSidebar, tuiCyan)
+	tuiRow(b, "Cloudflare DL "+tuiSpeedResultLabel(snapshot.SSHSpeed), width, snapshot.SelectedSSHDetail == 3 && !snapshot.FocusSidebar, tuiGreen)
+	tuiEndPanel(b, width)
+
+	plotHeight := minTUI(maxTUIWidth(height-25, 3), 6)
+	chart := buildTUITrafficChart(snapshot.SSHTrafficHistory, maxTUIWidth(width-4, 1), plotHeight)
+	tuiTrafficTitle(b, snapshot.SSHTraffic, chart.peak, width)
+	for _, line := range chart.lines {
+		writeTUIAnsiRow(b, line, width)
+	}
+	tuiEndPanel(b, width)
+
+	uptime := "not connected"
+	if profile.Connected && !profile.StartedAt.IsZero() {
+		uptime = time.Since(profile.StartedAt).Round(time.Second).String()
+	}
+	tuiTitle(b, "Overview", "SSH relay metering · live status", width)
+	tuiRow(b, fmt.Sprintf("Traffic total ↑ %s   ↓ %s", formatBytes(snapshot.SSHTotalTraffic.Up), formatBytes(snapshot.SSHTotalTraffic.Down)), width, false, "")
+	tuiRow(b, fmt.Sprintf("Connections   %d active", snapshot.SSHConnections), width, false, "")
+	tuiRow(b, "Uptime        "+uptime, width, false, "")
+	tuiRow(b, "Scope         only traffic through this SSH SOCKS5 port", width, false, tuiDim)
 	tuiEndPanel(b, width)
 }
 

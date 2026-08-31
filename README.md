@@ -63,7 +63,9 @@ flclash ssh test home
 flclash ssh disconnect home
 ```
 
-SSH 配置也可以直接在 TUI 的 **SSH** 页面新增、查看、编辑、删除和测试。`Key passphrase` 是私钥口令，`SSH password` 是服务器登录密码，两者可同时设置；已连接配置为只读，先断开再修改。
+SSH 配置也可以直接在 TUI 的 **SSH** 页面管理。列表按 Enter 进入独立 Dashboard，可查看 SSH 出口 IP、延迟、下载速度、活动连接以及该 SSH SOCKS5 端口的实时/累计流量；统计不依赖 root 或 eBPF。`Key passphrase` 是私钥口令，`SSH password` 是服务器登录密码，两者可同时设置；已连接配置为只读，先断开再修改。
+
+History、Connections 和 Logs 页面支持 `/` 搜索、Enter 查看完整详情；History 可按 `f` 筛选状态，Logs 可按 `f` 筛选级别。清空记录或关闭连接前会要求确认，Logs 同时显示 Backend 持久日志和当前 TUI 事件。
 
 ## 常用命令
 

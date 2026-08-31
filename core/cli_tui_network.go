@@ -167,13 +167,17 @@ func detectTUINetwork(proxyPort int) tuiNetworkInfo {
 }
 
 func detectTUINetworkRoute(proxyURL, routeLabel string) tuiNetworkInfo {
+	return detectTUINetworkWithClient(newTUINetworkHTTPClient(proxyURL), routeLabel)
+}
+
+func detectTUINetworkWithClient(client *http.Client, routeLabel string) tuiNetworkInfo {
 	info := tuiNetworkInfo{
 		IntranetIP: detectTUIIntranetIP(),
 		Route:      routeLabel,
 		CheckedAt:  time.Now(),
 	}
 	result := detectTUIPublicIP(
-		newTUINetworkHTTPClient(proxyURL),
+		client,
 		tuiPublicIPSources,
 	)
 	if result.Err != nil {

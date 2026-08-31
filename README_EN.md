@@ -63,7 +63,9 @@ flclash ssh test home
 flclash ssh disconnect home
 ```
 
-SSH profiles can also be added, viewed, edited, deleted, and tested from the TUI **SSH** page. `Key passphrase` unlocks the private key and `SSH password` authenticates to the server; both may be set. A connected profile is read-only; disconnect it before editing.
+SSH profiles can also be managed from the TUI **SSH** page. Enter opens a per-profile Dashboard with the SSH exit IP, latency, download speed, active connections, and live/cumulative traffic for that SSH SOCKS5 port. Metering requires neither root nor eBPF. `Key passphrase` unlocks the private key and `SSH password` authenticates to the server; both may be set. A connected profile is read-only; disconnect it before editing.
+
+History, Connections, and Logs support `/` search and Enter for full details. `f` filters History state or log level. Destructive clears and connection closes require confirmation; Logs combine persistent Backend records with current TUI events.
 
 ## Common commands
 

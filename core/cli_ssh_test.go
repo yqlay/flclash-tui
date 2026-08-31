@@ -329,7 +329,49 @@ func TestTUISSHPageDistinguishesBrokenSOCKSListener(t *testing.T) {
 	}
 }
 
-func TestTUIEnterReconnectsBrokenSSHProfile(t *testing.T) {
+func TestTUISSHDashboardShowsExitTestsAndRelayTraffic(t *testing.T) {
+	output := stripTUIANSI(renderTUIAtSize(
+		tuiSnapshot{
+			Page:              tuiPageSSH,
+			SSHDetailOpen:     true,
+			SSHConnections:    2,
+			SSHTraffic:        trafficSnapshot{Up: 1024, Down: 2048},
+			SSHTotalTraffic:   trafficSnapshot{Up: 4096, Down: 8192},
+			SSHTrafficHistory: []trafficSnapshot{{Up: 1024, Down: 2048}},
+			SSHNetwork:        tuiNetworkInfo{PublicIP: "203.0.113.8", Country: "SG"},
+			SSHProfiles: []tuiSSHProfile{{
+				Name:        "school",
+				Destination: "student@example.edu",
+				Port:        22,
+				Connected:   true,
+				Ready:       true,
+				SocksPort:   1080,
+				StartedAt:   time.Now().Add(-time.Minute),
+			}},
+		},
+		cliPaths{},
+		"private Unix socket",
+		true,
+		false,
+		180,
+		40,
+	))
+	for _, expected := range []string{
+		"SSH Dashboard · school",
+		"SOCKS5 127.0.0.1:1080",
+		"203.0.113.8  [SG]",
+		"Cloudflare DL",
+		"Live traffic",
+		"2 active",
+		"only traffic through this SSH SOCKS5 port",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("SSH Dashboard does not contain %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestTUIEnterOpensDashboardThenReconnectsBrokenSSHProfile(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.snapshot.Page = tuiPageSSH
 	model.snapshot.FocusSidebar = false
@@ -338,9 +380,13 @@ func TestTUIEnterReconnectsBrokenSSHProfile(t *testing.T) {
 		Connected: true,
 		Ready:     false,
 	}}
+	_ = model.selectCurrent()
+	if !model.sshDetailOpen {
+		t.Fatal("SSH list Enter did not open the profile Dashboard")
+	}
 	command := model.selectCurrent()
 	if command == nil || model.snapshot.Status != "SSH connect school..." {
-		t.Fatalf("broken SSH Enter action = command:%t status:%q", command != nil, model.snapshot.Status)
+		t.Fatalf("broken SSH Dashboard action = command:%t status:%q", command != nil, model.snapshot.Status)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 
 	"github.com/metacubex/mihomo/component/proxydialer"
 	"github.com/metacubex/mihomo/tunnel"
+	"golang.org/x/net/proxy"
 )
 
 const (
@@ -366,6 +367,29 @@ func newTUIRouteHTTPClient(proxyURL string) (*http.Client, func(), error) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = http.ProxyURL(parsedProxyURL)
+	configureTUIHTTP1Transport(transport)
+	client := &http.Client{Transport: transport}
+	return client, transport.CloseIdleConnections, nil
+}
+
+func newTUISOCKSHTTPClient(port int) (*http.Client, func(), error) {
+	if port < 1 || port > 65535 {
+		return nil, nil, errors.New("SSH SOCKS5 listener is unavailable")
+	}
+	dialer, err := proxy.SOCKS5(
+		"tcp",
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		nil,
+		proxy.Direct,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+		return dialer.Dial(network, address)
+	}
 	configureTUIHTTP1Transport(transport)
 	client := &http.Client{Transport: transport}
 	return client, transport.CloseIdleConnections, nil

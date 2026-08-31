@@ -1923,6 +1923,12 @@ func TestTUILogExportAndClear(t *testing.T) {
 	if command := model.handleKey(tuiKeyCloseConnections); command != nil {
 		t.Fatal("clearing logs unexpectedly started an asynchronous command")
 	}
+	if !model.dangerConfirmOpen {
+		t.Fatal("clearing logs did not require confirmation")
+	}
+	if command := model.handleDangerConfirm(tea.KeyMsg{Type: tea.KeyEnter}); command != nil {
+		t.Fatal("confirmed local log clear unexpectedly started an asynchronous command")
+	}
 	if len(model.snapshot.Logs) != 0 || len(cliLogSnapshot()) != 0 {
 		t.Fatal("clearing logs left captured entries behind")
 	}
@@ -1948,6 +1954,28 @@ func TestCLIApplicationLogRedactsURLsAndDataDirectory(t *testing.T) {
 		t.Fatalf("application log did not mark redaction: %q", line)
 	}
 	clearTUILogs()
+}
+
+func TestTUIPersistentLogsCanBeReadAndCleared(t *testing.T) {
+	directory := t.TempDir()
+	appendCLIApplicationLog(directory, "INFO", "first", "one")
+	appendCLIApplicationLog(directory, "ERROR", "second", "two")
+	logs := readTUIPersistentLogs(directory, 10)
+	if len(logs) != 2 || !strings.Contains(logs[0], "first") || !strings.Contains(logs[1], "second") {
+		t.Fatalf("persistent logs = %v", logs)
+	}
+	if err := os.WriteFile(filepath.Join(directory, tuiServiceLogFilename)+".1", []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearTUIPersistentLogs(directory); err != nil {
+		t.Fatal(err)
+	}
+	if logs := readTUIPersistentLogs(directory, 10); len(logs) != 0 {
+		t.Fatalf("cleared persistent logs = %v", logs)
+	}
+	if _, err := os.Stat(filepath.Join(directory, tuiServiceLogFilename) + ".1"); !os.IsNotExist(err) {
+		t.Fatalf("rotated log was not removed: %v", err)
+	}
 }
 
 func TestTUIEditKeyIsPageScoped(t *testing.T) {
@@ -2006,6 +2034,12 @@ func TestTUIRequestsCanBeClearedWithoutClosingConnections(t *testing.T) {
 
 	if command := model.handleKey(tuiKeyCloseConnections); command != nil {
 		t.Fatal("clearing request history unexpectedly called the controller")
+	}
+	if !model.dangerConfirmOpen {
+		t.Fatal("clearing request history did not require confirmation")
+	}
+	if command := model.handleDangerConfirm(tea.KeyMsg{Type: tea.KeyEnter}); command != nil {
+		t.Fatal("confirmed local History clear unexpectedly called the controller")
 	}
 	if len(model.snapshot.Requests) != 0 {
 		t.Fatalf("request history was not cleared: %+v", model.snapshot.Requests)

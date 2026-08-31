@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,6 +122,51 @@ func clearTUILogs() {
 	cliLogMu.Lock()
 	defer cliLogMu.Unlock()
 	cliLogs = nil
+}
+
+func readTUIPersistentLogs(homeDir string, limit int) []string {
+	if limit <= 0 {
+		limit = 500
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
+	path := filepath.Join(homeDir, tuiServiceLogFilename)
+	cliPersistentLogMu.Lock()
+	defer cliPersistentLogMu.Unlock()
+	lines := make([]string, 0, limit)
+	for _, candidate := range []string{path + ".1", path} {
+		data, err := os.ReadFile(candidate)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if strings.TrimSpace(line) != "" {
+				lines = append(lines, line)
+			}
+		}
+	}
+	if len(lines) > limit {
+		lines = lines[len(lines)-limit:]
+	}
+	return append([]string(nil), lines...)
+}
+
+func clearTUIPersistentLogs(homeDir string) error {
+	path := filepath.Join(homeDir, tuiServiceLogFilename)
+	cliPersistentLogMu.Lock()
+	defer cliPersistentLogMu.Unlock()
+	var clearErr error
+	if err := os.Remove(path + ".1"); err != nil && !os.IsNotExist(err) {
+		clearErr = errors.Join(clearErr, err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		clearErr = errors.Join(clearErr, err)
+	} else {
+		clearErr = errors.Join(clearErr, file.Close())
+	}
+	return clearErr
 }
 
 func nextHandle(action *Action, result ActionResult) bool {

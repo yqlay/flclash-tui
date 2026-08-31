@@ -136,6 +136,9 @@ func (r *tuiServiceRuntime) handle(
 		status = r.historyStatus(request.RequestID)
 	case "connections":
 		status = r.connectionsStatus(request.RequestID)
+	case "logs":
+		status = r.snapshot(request.RequestID)
+		status.Logs = readTUIPersistentLogs(r.paths.homeDir, request.LogLimit)
 	case "watch":
 		status = r.watch(request)
 	case "speed_proxy":
@@ -144,7 +147,7 @@ func (r *tuiServiceRuntime) handle(
 		status = r.testRoute(request)
 	case "start", "stop", "reload", "apply_settings", "set_system_proxy", "set_tun", "flc_proxy",
 		"close_connection", "close_all_connections",
-		"set_mode", "set_flc_outbound", "select_proxy", "clear_history", "put_profile",
+		"set_mode", "set_flc_outbound", "select_proxy", "clear_history", "clear_logs", "put_profile",
 		"rename_profile", "delete_profile", "link_profile", "backup_profile",
 		"restore_profile", "shutdown":
 		status = r.mutate(request)
@@ -300,6 +303,9 @@ func (r *tuiServiceRuntime) mutate(
 		changed, err = r.selectProxy(request.ProxyGroup, request.ProxyName)
 	case "clear_history":
 		changed, err = r.clearPersistentHistory()
+	case "clear_logs":
+		err = clearTUIPersistentLogs(r.paths.homeDir)
+		changed = err == nil
 	case "close_connection":
 		if strings.TrimSpace(request.ConnectionID) == "" {
 			err = errors.New("connection ID is required")

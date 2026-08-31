@@ -10,6 +10,7 @@ require (
 	github.com/metacubex/mihomo v0.0.0-00010101000000-000000000000
 	github.com/sirupsen/logrus v1.9.4
 	golang.org/x/exp v0.0.0-20240904232852-e7e105dedf7e
+	golang.org/x/net v0.56.0
 	golang.org/x/sync v0.21.0
 	golang.org/x/sys v0.46.0
 	golang.org/x/term v0.44.0
@@ -150,7 +151,6 @@ require (
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/mod v0.37.0 // indirect
-	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/oauth2 v0.24.0 // indirect
 	golang.org/x/text v0.39.0 // indirect
 	golang.org/x/time v0.10.0 // indirect

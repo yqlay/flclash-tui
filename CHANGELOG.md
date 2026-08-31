@@ -1,3 +1,23 @@
+## FlClash TUI v0.5.16
+
+- Add a rootless Go SOCKS5 metering relay for persistent SSH tunnels, keeping
+  the configured application port stable while hiding the OpenSSH upstream
+  port and measuring live/cumulative upload, download, and active connections.
+- Add a per-profile SSH Dashboard with tunnel control, SSH-exit public IP,
+  five-sample route latency, Cloudflare download speed, a 30-sample traffic
+  chart, cumulative traffic, active connections, and uptime.
+- Keep temporary `flc ssh -u` tunnels direct and short-lived, preserve legacy
+  persistent tunnel compatibility, and clean up the relay when OpenSSH exits,
+  startup rolls back, a profile disconnects, or FlClash exits completely.
+- Upgrade the private Backend protocol to v5 and merge the persistent rotated
+  Backend log with current TUI events. Add log search, level filtering, live
+  refresh, full-entry details, export, and confirmed persistent clearing.
+- Expand History and Connections with traffic/activity summaries, text search,
+  state filtering, full details, and confirmation before clearing records or
+  closing selected/all connections.
+- Update the Chinese and English usage documentation and add SOCKS5 relay,
+  SSH Dashboard, persistent-log, filtering, detail, and confirmation tests.
+
 ## FlClash TUI v0.5.15
 
 - Keep complete exit progressing through frontend, Backend, Core, socket, and

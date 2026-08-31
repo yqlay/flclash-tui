@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -105,6 +106,30 @@ type tuiSSHCommandResultMsg struct {
 	err          error
 }
 
+type tuiSSHRelayStatsMsg struct {
+	name  string
+	stats cliSSHRelayStats
+	at    time.Time
+	err   error
+}
+
+type tuiSSHNetworkResultMsg struct {
+	name string
+	info tuiNetworkInfo
+}
+
+type tuiSSHDelayResultMsg struct {
+	name   string
+	result tuiDelayResult
+	err    error
+}
+
+type tuiSSHSpeedResultMsg struct {
+	name   string
+	result tuiSpeedResult
+	err    error
+}
+
 type tuiInputMode byte
 
 const (
@@ -114,6 +139,9 @@ const (
 	tuiInputSubscription
 	tuiInputProfileFile
 	tuiInputProfileName
+	tuiInputHistorySearch
+	tuiInputConnectionsSearch
+	tuiInputLogsSearch
 )
 
 var tuiTrafficModes = []string{
@@ -186,10 +214,20 @@ type tuiModel struct {
 	sshFormPasswordFirst     string
 	sshDeleteConfirmOpen     bool
 	sshDeleteName            string
+	sshDetailOpen            bool
+	sshLastStats             cliSSHRelayStats
+	sshLastStatsAt           time.Time
+	sshLastStatsName         string
 	profileDeleteOpen        bool
 	profileDeletePath        string
 	profileDeleteName        string
 	profileDeleteKind        string
+	dangerConfirmOpen        bool
+	dangerConfirmTitle       string
+	dangerConfirmMessage     string
+	dangerConfirmKey         tuiKey
+	dangerConfirmTarget      string
+	dangerConfirmed          bool
 }
 
 func newTUIModel(
@@ -377,6 +415,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.startRefresh(),
 			m.startNetworkCheck(false),
 			m.startMemoryRefresh(),
+			m.pollSelectedSSHRelay(),
 		)
 	case tuiReloadSignalMsg:
 		return m, m.handleKey(tuiKeyReload)
@@ -472,6 +511,64 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			Down: message.update.Traffic.DownTotal,
 		}
 		return m, m.waitTrafficUpdate()
+	case tuiSSHRelayStatsMsg:
+		if !m.sshDetailOpen || m.selectedSSHName() != message.name {
+			return m, nil
+		}
+		if message.err != nil {
+			m.snapshot.SSHTraffic = trafficSnapshot{}
+			m.snapshot.SSHConnections = 0
+			return m, nil
+		}
+		elapsed := message.at.Sub(m.sshLastStatsAt).Seconds()
+		traffic := trafficSnapshot{
+			UpTotal:   message.stats.Upload,
+			DownTotal: message.stats.Download,
+		}
+		if m.sshLastStatsName == message.name && elapsed > 0 {
+			traffic.Up = maxTUIInt64(0, int64(float64(message.stats.Upload-m.sshLastStats.Upload)/elapsed))
+			traffic.Down = maxTUIInt64(0, int64(float64(message.stats.Download-m.sshLastStats.Download)/elapsed))
+		}
+		m.sshLastStats = message.stats
+		m.sshLastStatsAt = message.at
+		m.sshLastStatsName = message.name
+		m.snapshot.SSHTraffic = traffic
+		m.snapshot.SSHTotalTraffic = trafficSnapshot{Up: message.stats.Upload, Down: message.stats.Download}
+		m.snapshot.SSHConnections = message.stats.Connections
+		m.snapshot.SSHTrafficHistory = appendTUITrafficHistory(m.snapshot.SSHTrafficHistory, traffic)
+		return m, nil
+	case tuiSSHNetworkResultMsg:
+		if m.selectedSSHName() == message.name {
+			m.snapshot.SSHNetwork = message.info
+			if message.info.Error != "" {
+				m.snapshot.Status = "SSH network detection failed: " + message.info.Error
+			} else {
+				m.snapshot.Status = "SSH exit network refreshed"
+			}
+		}
+		return m, nil
+	case tuiSSHDelayResultMsg:
+		if m.selectedSSHName() == message.name {
+			if message.err != nil {
+				m.snapshot.SSHDelay = tuiDelayResult{Error: message.err.Error()}
+				m.snapshot.Status = "SSH route delay failed: " + message.err.Error()
+			} else {
+				m.snapshot.SSHDelay = message.result
+				m.snapshot.Status = "SSH route delay: " + formatTUIDelay(message.result)
+			}
+		}
+		return m, nil
+	case tuiSSHSpeedResultMsg:
+		if m.selectedSSHName() == message.name {
+			if message.err != nil {
+				m.snapshot.SSHSpeed = tuiSpeedResult{Error: message.err.Error()}
+				m.snapshot.Status = "SSH route speed failed: " + message.err.Error()
+			} else {
+				m.snapshot.SSHSpeed = message.result
+				m.snapshot.Status = "SSH route speed: " + formatTUISpeed(message.result)
+			}
+		}
+		return m, nil
 	case tuiRefreshResultMsg:
 		if message.sequence != m.refreshSequence {
 			return m, nil
@@ -646,6 +743,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.profileDeleteOpen {
 			return m, m.handleProfileDeleteConfirm(message)
 		}
+		if m.dangerConfirmOpen {
+			return m, m.handleDangerConfirm(message)
+		}
 		if m.inputMode != tuiInputNone {
 			return m, m.handleInput(message)
 		}
@@ -684,7 +784,8 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 	}
 	if message.String() == "v" &&
 		(m.snapshot.Page == tuiPageDashboard ||
-			m.snapshot.Page == tuiPageProxies) {
+			m.snapshot.Page == tuiPageProxies ||
+			m.snapshot.Page == tuiPageSSH && m.sshDetailOpen) {
 		key = tuiKeySpeedTest
 	}
 	if key == tuiKeyNotifications {
@@ -737,6 +838,10 @@ func tuiKeyAllowedWhileBusy(key tuiKey) bool {
 
 func (m *tuiModel) View() string {
 	snapshot := m.snapshot
+	snapshot.SSHDetailOpen = m.sshDetailOpen
+	snapshot.DangerConfirmOpen = m.dangerConfirmOpen
+	snapshot.DangerConfirmTitle = m.dangerConfirmTitle
+	snapshot.DangerConfirmMessage = m.dangerConfirmMessage
 	snapshot.SSHForm = m.sshFormView()
 	snapshot.ProfileDelete = tuiProfileDeleteView{
 		Open: m.profileDeleteOpen,
@@ -839,6 +944,12 @@ func (m *tuiModel) inputPresentation() (string, string) {
 		return "Import local YAML", "Type an absolute, relative, or ~/ path"
 	case tuiInputProfileName:
 		return "Rename profile", "Type a file name; .yaml is added automatically"
+	case tuiInputHistorySearch:
+		return "Search History", "Match host, process, network, route, or connection ID"
+	case tuiInputConnectionsSearch:
+		return "Search Connections", "Match host, process, network, route, or connection ID"
+	case tuiInputLogsSearch:
+		return "Search Logs", "Case-insensitive text search; empty clears the search"
 	default:
 		return "Input", ""
 	}
@@ -953,6 +1064,13 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 			if status, err := service.history(); err == nil {
 				serviceStatus = &status
 				snapshot.Requests = append([]tuiRequest(nil), status.History...)
+			}
+			if status, err := service.logs(1000); err == nil {
+				localLogs := cliLogSnapshot()
+				snapshot.Logs = append(append([]string(nil), status.Logs...), localLogs...)
+				if len(snapshot.Logs) > 1500 {
+					snapshot.Logs = snapshot.Logs[len(snapshot.Logs)-1500:]
+				}
 			}
 		}
 		return tuiRefreshResultMsg{
@@ -1231,7 +1349,16 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			}
 		}
 	case tuiKeyBack:
-		if !m.snapshot.FocusSidebar &&
+		if m.snapshot.Page == tuiPageSSH && m.sshDetailOpen {
+			m.sshDetailOpen = false
+			m.snapshot.Status = "SSH profiles · Enter opens Dashboard"
+		} else if m.snapshot.Page == tuiPageRequests && m.snapshot.HistoryDetailOpen {
+			m.snapshot.HistoryDetailOpen = false
+		} else if m.snapshot.Page == tuiPageConnections && m.snapshot.ConnectionsDetailOpen {
+			m.snapshot.ConnectionsDetailOpen = false
+		} else if m.snapshot.Page == tuiPageLogs && m.snapshot.LogDetailOpen {
+			m.snapshot.LogDetailOpen = false
+		} else if !m.snapshot.FocusSidebar &&
 			m.snapshot.Page == tuiPageProxies &&
 			m.snapshot.ProxyView == tuiProxyViewGroups &&
 			m.snapshot.ProxyNodeFocus {
@@ -1262,6 +1389,30 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		})
 	case tuiKeyHelp:
 		m.snapshot.ShowHelp = !m.snapshot.ShowHelp
+	case tuiKeySearch:
+		switch m.snapshot.Page {
+		case tuiPageRequests:
+			m.beginInput(tuiInputHistorySearch)
+		case tuiPageConnections:
+			m.beginInput(tuiInputConnectionsSearch)
+		case tuiPageLogs:
+			m.beginInput(tuiInputLogsSearch)
+		}
+	case tuiKeyFilter:
+		switch m.snapshot.Page {
+		case tuiPageRequests:
+			filters := []string{"all", "active", "completed"}
+			current := findTUIString(filters, tuiDefaultValue(m.snapshot.HistoryFilter, "all"))
+			m.snapshot.HistoryFilter = filters[wrapTUIIndex(current, 1, len(filters))]
+			m.snapshot.SelectedRequest = firstTUIRequestMatch(m.snapshot)
+			m.snapshot.Status = "History filter: " + m.snapshot.HistoryFilter
+		case tuiPageLogs:
+			levels := []string{"ALL", "ERROR", "WARN", "INFO", "DEBUG"}
+			current := findTUIString(levels, tuiDefaultValue(m.snapshot.LogsLevel, "ALL"))
+			m.snapshot.LogsLevel = levels[wrapTUIIndex(current, 1, len(levels))]
+			m.snapshot.SelectedLog = firstTUILogMatch(m.snapshot)
+			m.snapshot.Status = "Log level filter: " + m.snapshot.LogsLevel
+		}
 	case tuiKeyCloseConnections:
 		if m.snapshot.Page == tuiPageSSH {
 			m.beginSSHDeleteConfirm()
@@ -1270,6 +1421,10 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			m.beginProfileDeleteConfirm()
 			return nil
 		} else if m.snapshot.Page == tuiPageRequests {
+			if !m.dangerConfirmed {
+				m.beginDangerConfirm("Clear shared History?", "Delete all persisted active and completed History entries from the Backend.", key)
+				return nil
+			}
 			if m.service != nil {
 				return m.startOperation(func(state *tuiOperationState) {
 					if !prepareTUIBackendRevision(state, m.service) {
@@ -1290,10 +1445,34 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			m.snapshot.SelectedRequest = 0
 			m.snapshot.Status = "History cleared"
 		} else if m.snapshot.Page == tuiPageLogs {
+			if !m.dangerConfirmed {
+				m.beginDangerConfirm("Clear shared logs?", "Delete the Backend log and its rotated backup, plus this TUI's in-memory log entries.", key)
+				return nil
+			}
+			if m.service != nil {
+				return m.startOperation(func(state *tuiOperationState) {
+					if !prepareTUIBackendRevision(state, m.service) {
+						return
+					}
+					status, err := m.service.clearLogs(state.backendRevision)
+					if err != nil {
+						state.snapshot.Status = "Clear logs failed: " + err.Error()
+						return
+					}
+					state.backendRevision = status.Revision
+					clearTUILogs()
+					state.snapshot.Logs = nil
+					state.snapshot.Status = "Shared logs cleared"
+				})
+			}
 			clearTUILogs()
 			m.snapshot.Logs = nil
 			m.snapshot.Status = "Logs cleared"
 		} else if m.snapshot.Page == tuiPageConnections {
+			if !m.dangerConfirmed {
+				m.beginDangerConfirm("Close all connections?", "Immediately close every active connection visible to this managed Core.", key)
+				return nil
+			}
 			return m.startOperation(func(state *tuiOperationState) {
 				var err error
 				if m.service != nil {
@@ -1317,6 +1496,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		}
 	case tuiKeyCloseConnection:
 		if m.snapshot.Page == tuiPageSSH {
+			if m.sshDetailOpen {
+				return m.testSelectedSSHDelay()
+			}
 			return m.runSelectedSSHAction("test")
 		}
 		if m.snapshot.Page == tuiPageDashboard {
@@ -1333,7 +1515,16 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		if m.snapshot.Page == tuiPageConnections &&
 			m.snapshot.SelectedConnection >= 0 &&
 			m.snapshot.SelectedConnection < len(m.snapshot.Connections) {
+			if !m.dangerConfirmed {
+				connection := m.snapshot.Connections[m.snapshot.SelectedConnection]
+				m.beginDangerConfirm("Close selected connection?", "Close "+cliDisplayValue(connection.Host)+" ("+connection.ID+").", key)
+				m.dangerConfirmTarget = connection.ID
+				return nil
+			}
 			connectionID := m.snapshot.Connections[m.snapshot.SelectedConnection].ID
+			if m.dangerConfirmTarget != "" {
+				connectionID = m.dangerConfirmTarget
+			}
 			return m.startOperation(func(state *tuiOperationState) {
 				var err error
 				if m.service != nil {
@@ -1393,6 +1584,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		}
 	case tuiKeyNewProfile:
 		if m.snapshot.Page == tuiPageSSH {
+			if m.sshDetailOpen {
+				return m.refreshSelectedSSHNetwork()
+			}
 			m.beginSSHForm(false)
 			return nil
 		} else if m.snapshot.Page == tuiPageProfiles {
@@ -1453,6 +1647,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeySpeedTest:
 		if m.snapshot.Page == tuiPageDashboard {
 			return m.testDashboardSpeed()
+		}
+		if m.snapshot.Page == tuiPageSSH && m.sshDetailOpen {
+			return m.testSelectedSSHSpeed()
 		}
 		if !m.snapshot.FocusSidebar &&
 			m.snapshot.Page == tuiPageProxies &&
@@ -1598,6 +1795,41 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	return nil
 }
 
+func (m *tuiModel) beginDangerConfirm(title, message string, key tuiKey) {
+	m.dangerConfirmOpen = true
+	m.dangerConfirmTitle = title
+	m.dangerConfirmMessage = message
+	m.dangerConfirmKey = key
+	m.snapshot.Status = title + " · Enter confirm · Esc cancel"
+}
+
+func (m *tuiModel) handleDangerConfirm(message tea.KeyMsg) tea.Cmd {
+	key, ok := tuiKeyFromTea(message)
+	if !ok {
+		return nil
+	}
+	switch key {
+	case tuiKeyQuit, tuiKeyInterrupt:
+		m.dangerConfirmOpen = false
+		return m.handleKey(key)
+	case tuiKeyBack:
+		m.dangerConfirmOpen = false
+		m.dangerConfirmTarget = ""
+		m.snapshot.Status = "Operation cancelled"
+		return nil
+	case tuiKeySelect:
+		action := m.dangerConfirmKey
+		m.dangerConfirmOpen = false
+		m.dangerConfirmed = true
+		command := m.handleKey(action)
+		m.dangerConfirmed = false
+		m.dangerConfirmTarget = ""
+		return command
+	default:
+		return nil
+	}
+}
+
 func (m *tuiModel) dashboardViewportLimit() int {
 	return maxTUIWidth(m.dashboardPageHeight()-3, 1)
 }
@@ -1639,11 +1871,15 @@ func (m *tuiModel) revealDashboardSelection() {
 func (m *tuiModel) moveSelection(delta int) {
 	switch m.snapshot.Page {
 	case tuiPageSSH:
-		m.snapshot.SelectedSSH = wrapTUIIndex(
-			m.snapshot.SelectedSSH,
-			delta,
-			len(m.snapshot.SSHProfiles),
-		)
+		if m.sshDetailOpen {
+			m.snapshot.SelectedSSHDetail = wrapTUIIndex(m.snapshot.SelectedSSHDetail, delta, 4)
+		} else {
+			m.snapshot.SelectedSSH = wrapTUIIndex(
+				m.snapshot.SelectedSSH,
+				delta,
+				len(m.snapshot.SSHProfiles),
+			)
+		}
 	case tuiPageProfiles:
 		moveTUIProfile(&m.snapshot, delta)
 		if m.snapshot.SelectedRow == tuiProfileImportSubscriptionRow {
@@ -1667,13 +1903,11 @@ func (m *tuiModel) moveSelection(delta int) {
 			}
 		}
 	case tuiPageConnections:
-		moveTUIConnection(&m.snapshot, delta)
+		moveTUIConnectionMatch(&m.snapshot, delta)
 	case tuiPageRequests:
-		m.snapshot.SelectedRequest = wrapTUIIndex(
-			m.snapshot.SelectedRequest,
-			delta,
-			len(m.snapshot.Requests),
-		)
+		moveTUIRequestMatch(&m.snapshot, delta)
+	case tuiPageLogs:
+		moveTUILogMatch(&m.snapshot, delta)
 	case tuiPageProxies:
 		if m.snapshot.ProxyView == tuiProxyViewProviders {
 			moveTUIProvider(&m.snapshot, delta)
@@ -2425,10 +2659,47 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			return nil
 		}
 		profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
-		if profile.Connected && profile.Ready {
-			return m.runSelectedSSHAction("disconnect")
+		if !m.sshDetailOpen {
+			m.sshDetailOpen = true
+			m.snapshot.SelectedSSHDetail = 0
+			m.resetSelectedSSHMetrics()
+			m.snapshot.Status = "SSH Dashboard · Enter controls selected row · Esc returns to profiles"
+			if profile.Connected && profile.Ready {
+				return tea.Batch(m.pollSelectedSSHRelay(), m.refreshSelectedSSHNetwork())
+			}
+			return nil
 		}
-		return m.runSelectedSSHAction("connect")
+		switch m.snapshot.SelectedSSHDetail {
+		case 0:
+			if profile.Connected && profile.Ready {
+				return m.runSelectedSSHAction("disconnect")
+			}
+			return m.runSelectedSSHAction("connect")
+		case 1:
+			return m.refreshSelectedSSHNetwork()
+		case 2:
+			return m.testSelectedSSHDelay()
+		case 3:
+			return m.testSelectedSSHSpeed()
+		}
+	case tuiPageRequests:
+		if len(matchedTUIRequestIndexes(m.snapshot)) == 0 {
+			m.snapshot.Status = "No matching History entry"
+			return nil
+		}
+		m.snapshot.HistoryDetailOpen = true
+	case tuiPageConnections:
+		if len(matchedTUIConnectionIndexes(m.snapshot)) == 0 {
+			m.snapshot.Status = "No matching active connection"
+			return nil
+		}
+		m.snapshot.ConnectionsDetailOpen = true
+	case tuiPageLogs:
+		if len(matchedTUILogIndexes(m.snapshot)) == 0 {
+			m.snapshot.Status = "No matching log entry"
+			return nil
+		}
+		m.snapshot.LogDetailOpen = true
 	case tuiPageTools:
 		return m.selectTUISetting(m.snapshot.SelectedTool)
 	case tuiPageMaintenance:
@@ -3088,6 +3359,114 @@ func (m *tuiModel) runSelectedSSHAction(action string) tea.Cmd {
 			message.err = fmt.Errorf("unsupported TUI SSH action %q", action)
 		}
 		return message
+	}
+}
+
+func (m *tuiModel) selectedSSHName() string {
+	if m.snapshot.SelectedSSH < 0 || m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
+		return ""
+	}
+	return m.snapshot.SSHProfiles[m.snapshot.SelectedSSH].Name
+}
+
+func (m *tuiModel) resetSelectedSSHMetrics() {
+	m.snapshot.SSHNetwork = tuiNetworkInfo{}
+	m.snapshot.SSHDelay = tuiDelayResult{}
+	m.snapshot.SSHSpeed = tuiSpeedResult{}
+	m.snapshot.SSHTraffic = trafficSnapshot{}
+	m.snapshot.SSHTrafficHistory = nil
+	m.snapshot.SSHTotalTraffic = trafficSnapshot{}
+	m.snapshot.SSHConnections = 0
+	m.sshLastStats = cliSSHRelayStats{}
+	m.sshLastStatsAt = time.Time{}
+	m.sshLastStatsName = ""
+}
+
+func (m *tuiModel) pollSelectedSSHRelay() tea.Cmd {
+	if !m.sshDetailOpen {
+		return nil
+	}
+	name := m.selectedSSHName()
+	if name == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		message := tuiSSHRelayStatsMsg{name: name, at: time.Now()}
+		state, active, err := activeCLIPersistentSSHTunnel()
+		if err != nil {
+			message.err = err
+			return message
+		}
+		if !active || !strings.EqualFold(state.Name, name) {
+			message.err = errors.New("SSH tunnel is disconnected")
+			return message
+		}
+		message.stats, message.err = queryCLISSHRelay(state, "status")
+		return message
+	}
+}
+
+func (m *tuiModel) selectedSSHHTTPClient() (
+	string,
+	*nethttp.Client,
+	func(),
+	error,
+) {
+	name := m.selectedSSHName()
+	if name == "" {
+		return "", nil, nil, errors.New("select an SSH profile first")
+	}
+	profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
+	if !profile.Connected || !profile.Ready || profile.SocksPort < 1 {
+		return name, nil, nil, errors.New("connect this SSH profile first")
+	}
+	client, closeClient, err := newTUISOCKSHTTPClient(profile.SocksPort)
+	return name, client, closeClient, err
+}
+
+func (m *tuiModel) refreshSelectedSSHNetwork() tea.Cmd {
+	name, client, closeClient, err := m.selectedSSHHTTPClient()
+	if err != nil {
+		m.snapshot.SSHNetwork = tuiNetworkInfo{Error: err.Error(), CheckedAt: time.Now()}
+		m.snapshot.Status = "SSH network detection failed: " + err.Error()
+		return nil
+	}
+	m.snapshot.SSHNetwork.Loading = true
+	return func() tea.Msg {
+		defer closeClient()
+		return tuiSSHNetworkResultMsg{
+			name: name,
+			info: detectTUINetworkWithClient(client, "SSH · "+name),
+		}
+	}
+}
+
+func (m *tuiModel) testSelectedSSHDelay() tea.Cmd {
+	name, client, closeClient, err := m.selectedSSHHTTPClient()
+	if err != nil {
+		m.snapshot.Status = "SSH route delay failed: " + err.Error()
+		return nil
+	}
+	m.snapshot.SSHDelay = tuiDelayResult{Testing: true}
+	testURL := m.tuiDelayTestURL()
+	return func() tea.Msg {
+		defer closeClient()
+		result, testErr := runTUIRouteDelayTest(context.Background(), client, testURL)
+		return tuiSSHDelayResultMsg{name: name, result: result, err: testErr}
+	}
+}
+
+func (m *tuiModel) testSelectedSSHSpeed() tea.Cmd {
+	name, client, closeClient, err := m.selectedSSHHTTPClient()
+	if err != nil {
+		m.snapshot.Status = "SSH route speed failed: " + err.Error()
+		return nil
+	}
+	m.snapshot.SSHSpeed = tuiSpeedResult{Testing: true}
+	return func() tea.Msg {
+		defer closeClient()
+		result, testErr := runTUIDownloadSpeedTest(context.Background(), client)
+		return tuiSSHSpeedResultMsg{name: name, result: result, err: testErr}
 	}
 }
 
@@ -3774,6 +4153,18 @@ func (m *tuiModel) beginInput(mode tuiInputMode) {
 		m.inputValue = []rune(name)
 		m.inputCursor = len(m.inputValue)
 		m.inputSelectAll = true
+	} else if mode == tuiInputHistorySearch {
+		m.inputValue = []rune(m.snapshot.HistoryQuery)
+		m.inputCursor = len(m.inputValue)
+		m.inputSelectAll = true
+	} else if mode == tuiInputConnectionsSearch {
+		m.inputValue = []rune(m.snapshot.ConnectionsQuery)
+		m.inputCursor = len(m.inputValue)
+		m.inputSelectAll = true
+	} else if mode == tuiInputLogsSearch {
+		m.inputValue = []rune(m.snapshot.LogsQuery)
+		m.inputCursor = len(m.inputValue)
+		m.inputSelectAll = true
 	}
 }
 
@@ -4094,6 +4485,21 @@ func (m *tuiModel) submitInput() tea.Cmd {
 	renameProfilePath := m.renameProfilePath
 	m.resetInput()
 	switch mode {
+	case tuiInputHistorySearch:
+		m.snapshot.HistoryQuery = value
+		m.snapshot.SelectedRequest = firstTUIRequestMatch(m.snapshot)
+		m.snapshot.Status = "History search updated"
+		return nil
+	case tuiInputConnectionsSearch:
+		m.snapshot.ConnectionsQuery = value
+		m.snapshot.SelectedConnection = firstTUIConnectionMatch(m.snapshot)
+		m.snapshot.Status = "Connections search updated"
+		return nil
+	case tuiInputLogsSearch:
+		m.snapshot.LogsQuery = value
+		m.snapshot.SelectedLog = firstTUILogMatch(m.snapshot)
+		m.snapshot.Status = "Log search updated"
+		return nil
 	case tuiInputMixedPort:
 		port, err := strconv.Atoi(value)
 		if err != nil || port < 0 || port > 65535 {
@@ -4631,6 +5037,10 @@ func tuiKeyFromTea(message tea.KeyMsg) (tuiKey, bool) {
 		return tuiKeyInterrupt, true
 	case "ctrl+n":
 		return tuiKeyNotifications, true
+	case "/":
+		return tuiKeySearch, true
+	case "f":
+		return tuiKeyFilter, true
 	case "r":
 		return tuiKeyRefresh, true
 	case "R":

@@ -54,27 +54,31 @@ type cliSSHConfig struct {
 }
 
 type cliSSHTunnelState struct {
-	Name        string    `json:"name"`
-	Destination string    `json:"destination"`
-	Port        int       `json:"port"`
-	ControlPath string    `json:"control_path"`
-	Kind        string    `json:"kind"`
-	StartedAt   time.Time `json:"started_at"`
-	StatePath   string    `json:"-"`
+	Name         string    `json:"name"`
+	Destination  string    `json:"destination"`
+	Port         int       `json:"port"`
+	UpstreamPort int       `json:"upstream_port,omitempty"`
+	ControlPath  string    `json:"control_path"`
+	RelayControl string    `json:"relay_control,omitempty"`
+	RelayPID     int       `json:"relay_pid,omitempty"`
+	Kind         string    `json:"kind"`
+	StartedAt    time.Time `json:"started_at"`
+	StatePath    string    `json:"-"`
 }
 
 type cliSSHProfileView struct {
-	Name          string   `json:"name"`
-	Destination   string   `json:"destination"`
-	Port          int      `json:"port"`
-	LocalPort     int      `json:"local_port,omitempty"`
-	Identity      string   `json:"identity,omitempty"`
-	Options       []string `json:"options,omitempty"`
-	PassphraseSet bool     `json:"identity_passphrase_set"`
-	PasswordSet   bool     `json:"password_set"`
-	Connected     bool     `json:"connected"`
-	Ready         bool     `json:"ready"`
-	SocksPort     int      `json:"socks_port,omitempty"`
+	Name          string    `json:"name"`
+	Destination   string    `json:"destination"`
+	Port          int       `json:"port"`
+	LocalPort     int       `json:"local_port,omitempty"`
+	Identity      string    `json:"identity,omitempty"`
+	Options       []string  `json:"options,omitempty"`
+	PassphraseSet bool      `json:"identity_passphrase_set"`
+	PasswordSet   bool      `json:"password_set"`
+	Connected     bool      `json:"connected"`
+	Ready         bool      `json:"ready"`
+	SocksPort     int       `json:"socks_port,omitempty"`
+	StartedAt     time.Time `json:"started_at,omitempty"`
 }
 
 type cliSSHProfileEdit struct {
@@ -176,7 +180,7 @@ func flcSSHCommand(args []string) error {
 	if !active {
 		return errors.New("no SSH tunnel is open; run `flclash ssh connect NAME` or use `flc ssh -u NAME COMMAND`")
 	}
-	if !cliSSHSOCKSReady(state.Port) {
+	if !cliSSHTunnelReady(state) {
 		return fmt.Errorf(
 			"SSH tunnel %q is connected but its SOCKS5 listener is unavailable; reconnect it before running a command",
 			state.Name,
@@ -773,6 +777,7 @@ var (
 	stopCLIStateTunnelForOperation           = stopCLIStateTunnel
 	updateCLISSHConfigForOperation           = updateCLISSHConfig
 	addCLISSHDynamicForwardForOperation      = addCLISSHDynamicForward
+	startCLISSHRelayForOperation             = startCLISSHRelay
 )
 
 func cliSSHProfileConnected(name string) (bool, error) {
@@ -798,7 +803,7 @@ func connectCLISSHProfile(name string) (cliSSHTunnelState, bool, error) {
 		return cliSSHTunnelState{}, false, err
 	}
 	if oldActive && strings.EqualFold(old.Name, profile.Name) {
-		if cliSSHSOCKSReady(old.Port) {
+		if cliSSHTunnelReady(old) {
 			return old, true, nil
 		}
 		if err := stopCLIStateTunnelForOperation(old); err != nil {
@@ -1224,8 +1229,9 @@ func loadCLISSHProfileViews() ([]cliSSHProfileView, error) {
 		}
 		if connected && strings.EqualFold(active.Name, profile.Name) {
 			view.Connected = true
-			view.Ready = cliSSHSOCKSReady(active.Port)
+			view.Ready = cliSSHTunnelReady(active)
 			view.SocksPort = active.Port
+			view.StartedAt = active.StartedAt
 		}
 		views = append(views, view)
 	}
@@ -1266,7 +1272,31 @@ func startCLISSHTunnel(profile cliSSHProfile, kind string) (cliSSHTunnelState, e
 		}
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d:%s", profile.Name, os.Getpid(), time.Now().UnixNano(), kind)))
 		controlPath := filepath.Join(runtimeDirectory, fmt.Sprintf("ctl-%x.sock", digest[:8]))
-		state := cliSSHTunnelState{Name: profile.Name, Destination: profile.Destination, Port: port, ControlPath: controlPath, Kind: kind, StartedAt: time.Now()}
+		upstreamPort := port
+		if kind == "persistent" {
+			upstreamPort, err = allocateCLISSHPort()
+			if err != nil {
+				return cliSSHTunnelState{}, err
+			}
+			for upstreamPort == port {
+				upstreamPort, err = allocateCLISSHPort()
+				if err != nil {
+					return cliSSHTunnelState{}, err
+				}
+			}
+		}
+		state := cliSSHTunnelState{
+			Name:         profile.Name,
+			Destination:  profile.Destination,
+			Port:         port,
+			UpstreamPort: upstreamPort,
+			ControlPath:  controlPath,
+			Kind:         kind,
+			StartedAt:    time.Now(),
+		}
+		if kind != "persistent" {
+			state.UpstreamPort = 0
+		}
 		args := cliSSHTunnelArguments(profile, controlPath)
 		args = append(args, profile.Destination)
 		command := exec.Command(sshPath, args...)
@@ -1300,6 +1330,24 @@ func startCLISSHTunnel(profile cliSSHProfile, kind string) (cliSSHTunnelState, e
 		if err := saveCLISSHTunnelState(state); err != nil {
 			_ = stopCLIStateTunnel(state)
 			return state, err
+		}
+		if kind == "persistent" {
+			deadline := time.Now().Add(5 * time.Second)
+			for !cliSSHSOCKSReady(state.UpstreamPort) && time.Now().Before(deadline) {
+				time.Sleep(25 * time.Millisecond)
+			}
+			if !cliSSHSOCKSReady(state.UpstreamPort) {
+				_ = stopCLIStateTunnel(state)
+				return state, fmt.Errorf("SSH tunnel %q upstream did not become ready", profile.Name)
+			}
+			if relayErr := startCLISSHRelayForOperation(&state); relayErr != nil {
+				_ = stopCLIStateTunnel(state)
+				return state, fmt.Errorf("start SSH traffic meter: %w", relayErr)
+			}
+			if err := saveCLISSHTunnelState(state); err != nil {
+				_ = stopCLIStateTunnel(state)
+				return state, err
+			}
 		}
 		deadline := time.Now().Add(15 * time.Second)
 		for time.Now().Before(deadline) {
@@ -1386,9 +1434,16 @@ func cliSSHDynamicForwardArguments(state cliSSHTunnelState) []string {
 	return []string{
 		"-S", state.ControlPath,
 		"-O", "forward",
-		"-D", net.JoinHostPort("127.0.0.1", strconv.Itoa(state.Port)),
+		"-D", net.JoinHostPort("127.0.0.1", strconv.Itoa(cliSSHUpstreamPort(state))),
 		state.Destination,
 	}
+}
+
+func cliSSHUpstreamPort(state cliSSHTunnelState) int {
+	if state.UpstreamPort > 0 {
+		return state.UpstreamPort
+	}
+	return state.Port
 }
 
 func cliSSHOptionConfigured(options []string, wantedKey string) bool {
@@ -1665,6 +1720,13 @@ func cliSSHTunnelAlive(sshPath string, state cliSSHTunnelState) bool {
 	if !cliSSHMasterAlive(sshPath, state) {
 		return false
 	}
+	return cliSSHTunnelReady(state)
+}
+
+func cliSSHTunnelReady(state cliSSHTunnelState) bool {
+	if state.RelayControl != "" || state.RelayPID > 0 || state.UpstreamPort > 0 && state.Kind == "persistent" {
+		return cliSSHSOCKSReady(cliSSHUpstreamPort(state)) && cliSSHRelayReady(state)
+	}
 	return cliSSHSOCKSReady(state.Port)
 }
 
@@ -1739,15 +1801,21 @@ func activeCLIPersistentSSHTunnel() (cliSSHTunnelState, bool, error) {
 	if cliSSHMasterAlive(sshPath, state) {
 		return state, true, nil
 	}
+	_ = stopCLISSHRelay(state)
 	_ = os.Remove(state.ControlPath)
 	_ = os.Remove(path)
 	return cliSSHTunnelState{}, false, nil
 }
 
 func stopCLIStateTunnel(state cliSSHTunnelState) error {
+	var cleanupErrors []error
+	if err := stopCLISSHRelay(state); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("stop SSH traffic meter: %w", err))
+	}
 	sshPath, err := exec.LookPath("ssh")
 	if err != nil {
-		return errors.New("OpenSSH client `ssh` is required to stop the SSH tunnel")
+		cleanupErrors = append(cleanupErrors, errors.New("OpenSSH client `ssh` is required to stop the SSH tunnel"))
+		return errors.Join(cleanupErrors...)
 	}
 	if cliSSHMasterAlive(sshPath, state) {
 		command := exec.Command(
@@ -1759,17 +1827,17 @@ func stopCLIStateTunnel(state cliSSHTunnelState) error {
 			state.Destination,
 		)
 		if err := command.Run(); err != nil && cliSSHMasterAlive(sshPath, state) {
-			return fmt.Errorf("stop SSH tunnel %q: %w", state.Name, err)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("stop SSH tunnel %q: %w", state.Name, err))
 		}
 		deadline := time.Now().Add(time.Second)
 		for cliSSHMasterAlive(sshPath, state) && time.Now().Before(deadline) {
 			time.Sleep(25 * time.Millisecond)
 		}
 		if cliSSHMasterAlive(sshPath, state) {
-			return fmt.Errorf("SSH tunnel %q did not stop", state.Name)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("SSH tunnel %q did not stop", state.Name))
+			return errors.Join(cleanupErrors...)
 		}
 	}
-	var cleanupErrors []error
 	if state.ControlPath != "" {
 		if err := os.Remove(state.ControlPath); err != nil && !os.IsNotExist(err) {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove SSH control socket: %w", err))

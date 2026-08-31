@@ -166,8 +166,9 @@ flc sh -c 'curl -s https://example.com | jq .'
 
 SSH profiles and tunnels are independent of Mihomo, subscriptions, Core state,
 and the normal `flc` proxy. The machine running FlClash is always the traffic
-source and the configured SSH host is the network exit. FlClash creates a
-loopback-only OpenSSH dynamic SOCKS5 forward and injects
+source and the configured SSH host is the network exit. For a persistent
+tunnel, FlClash exposes one loopback-only Go SOCKS5 relay and connects it to a
+hidden OpenSSH dynamic SOCKS5 forward. The relay injects
 `socks5h://127.0.0.1:PORT` into the local child command's upper- and lower-case
 proxy environment. For example, if FlClash runs only on B and the profile points
 to A, B's selected traffic exits through A; A only needs an SSH server:
@@ -192,6 +193,10 @@ address for other local applications. Use `--local-port auto` to return to
 automatic allocation. Temporary `flc ssh -u` tunnels always use an automatic
 port, so they cannot steal the persistent application endpoint. Fixed-port
 conflicts fail closed instead of silently choosing another port.
+The relay counts bytes and active connections as they pass through, so the SSH
+Dashboard can show 30-sample live traffic and cumulative totals without root,
+eBPF, packet capture, or changes to the remote SSH server. Temporary
+`flc ssh -u` tunnels remain direct and short-lived.
 
 `flc ssh COMMAND` requires the one persistent tunnel opened from the TUI or
 `flclash ssh connect`. `-u NAME` creates a separate temporary tunnel for that
@@ -211,8 +216,12 @@ to `known_hosts`, while a later key change is rejected. Set an explicit
 `StrictHostKeyChecking=...` profile option to override this policy.
 
 The SSH TUI page performs every management action without suspending or leaving
-the full-screen interface. Press `n` to open the add form or `e` to edit the
-selected profile. In the form, use `Up/Down` or `Tab` to select a row and
+the full-screen interface. Enter on a profile opens its Dashboard; the Tunnel
+row connects or disconnects, while `n`, `d`, and `v` check the SSH exit IP,
+five-sample route delay, and Cloudflare download speed. The Dashboard also
+shows relay-only live/cumulative traffic, active connections, and uptime. Esc
+returns to the profile list. In the list, press `n` to open the add form or `e`
+to edit the selected profile. In the form, use `Up/Down` or `Tab` to select a row and
 `Enter` to edit or confirm it. Key-passphrase and SSH-password replacements are
 entered twice and stay masked; `c` stages removal of the selected secret.
 OpenSSH options are separate rows: use the
@@ -236,10 +245,10 @@ Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availa
 1 Dashboard     Core/System proxy/TUN/Mode/Proxy port/network/memory/30-sample traffic chart
 2 Proxies       groups/nodes/Providers, selection, delay and speed tests
 3 Profiles      import URL/local YAML, activate, update, rename, edit, delete non-active
-4 SSH            independent profiles, connect/disconnect, add/edit/delete/test
-5 History        persistent shared active and recent connection history
-6 Connections    current Core connections and close actions
-7 Logs           Core and application events, export and clear
+4 SSH            profiles plus per-tunnel network/traffic Dashboard
+5 History        shared persistent flows, summaries, search/filter, details
+6 Connections    active flows, summaries, search, details, confirmed close actions
+7 Logs           persistent Backend + TUI events, search/filter/details/export/clear
 8 Settings       complete traffic/Core/System proxy settings
 9 Maintenance    YAML edit, backup/restore, Geo, traffic reset, update check
 ```
@@ -250,6 +259,7 @@ Enter           open/apply selected row        Esc           back
 r / R           refresh / reload config         ?             help
 [/]             Groups/Providers                PgUp/PgDn     Dashboard scroll
 d / v           page-scoped delay / speed       n             network/import
+/ / f           search / page-scoped filter
 Ctrl+N          notification history/details
 S / c / t / m   System proxy/Core/TUN/mode list p, +, -       Proxy port
 U, F2/u, e      update/rename/edit Profile      x             delete Profile/SSH; clear page data
@@ -274,7 +284,12 @@ message, Enter confirms it, and Esc returns to the unchanged underlying page.
 Notifications are also written to Logs; repeated progress for one operation
 updates and moves its existing history entry instead of creating duplicates.
 
-Application events use timestamped INFO/WARN/ERROR records. The TUI keeps the latest 500 entries; `flclash logs` reads the persistent Backend log, which rotates at 5 MiB and keeps one backup. Subscription URLs, YAML contents, and FLC credentials are not logged.
+Application events use timestamped INFO/WARN/ERROR records. The TUI reads the
+persistent Backend log and its rotated backup through the private versioned IPC,
+then merges current frontend events. The Backend log rotates at 5 MiB and keeps
+one backup. `/` searches text, `f` filters levels, Enter opens the full record,
+and clear removes both persistent files after confirmation. Subscription URLs,
+YAML contents, and FLC credentials are not logged.
 
 Selecting Mode, or pressing `m` on Dashboard/Settings, opens the `rule`, `silent`, `global`, and `direct` list before making any change. Use ↑/↓ or `w`/`s` and press Enter to confirm.
 

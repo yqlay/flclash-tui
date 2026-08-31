@@ -54,6 +54,8 @@ func dispatchCLI(program string, args []string) error {
 		return exitCommand(commandArgs)
 	case "_service":
 		return serviceCommand(commandArgs)
+	case "_ssh_relay":
+		return runCLISSHRelayCommand(commandArgs)
 	case "check", "validate":
 		return checkCommand(commandArgs)
 	case "proxy":

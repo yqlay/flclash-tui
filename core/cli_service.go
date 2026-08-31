@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	tuiServiceProtocolVersion = 4
+	tuiServiceProtocolVersion = 5
 	tuiServiceSocketFilename  = ".flclash-cli-service.sock"
 	tuiCoreSocketFilename     = ".flclash-cli-core.sock"
 	tuiServiceLogFilename     = "flclash-cli-service.log"
@@ -61,6 +61,7 @@ type tuiServiceRequest struct {
 	ConnectionID     string       `json:"connection_id,omitempty"`
 	AfterRevision    uint64       `json:"after_revision,omitempty"`
 	WatchTimeoutMS   int          `json:"watch_timeout_ms,omitempty"`
+	LogLimit         int          `json:"log_limit,omitempty"`
 }
 
 type tuiServiceStatus struct {
@@ -92,6 +93,7 @@ type tuiServiceStatus struct {
 	ResultPath          string          `json:"result_path,omitempty"`
 	History             []tuiRequest    `json:"history,omitempty"`
 	Connections         []tuiConnection `json:"connections,omitempty"`
+	Logs                []string        `json:"logs,omitempty"`
 	FrontendCount       int             `json:"frontend_count"`
 	Delay               int             `json:"delay,omitempty"`
 	DelayJitter         int             `json:"delay_jitter,omitempty"`
@@ -481,6 +483,17 @@ func (c *tuiServiceClient) flcProxy() (tuiServiceStatus, error) {
 
 func (c *tuiServiceClient) history() (tuiServiceStatus, error) {
 	return c.request("history", "")
+}
+
+func (c *tuiServiceClient) logs(limit int) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{Action: "logs", LogLimit: limit})
+}
+
+func (c *tuiServiceClient) clearLogs(revision uint64) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{
+		Action:           "clear_logs",
+		ExpectedRevision: &revision,
+	})
 }
 
 func (c *tuiServiceClient) clearHistory(
