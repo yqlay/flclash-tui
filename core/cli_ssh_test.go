@@ -524,7 +524,7 @@ func TestTUISSHDashboardShowsExitTestsAndRelayTraffic(t *testing.T) {
 		"SSH Dashboard · school",
 		"SOCKS5 127.0.0.1:1080",
 		"203.0.113.8  [SG]",
-		"Cloudflare DL",
+		"Managed CF DL",
 		"Live traffic",
 		"2 active",
 		"only traffic through this SSH SOCKS5 port",
@@ -1177,6 +1177,225 @@ func TestFLCSSHPersistentCommandRejectsBrokenSOCKSListener(t *testing.T) {
 	}
 	if runCalled {
 		t.Fatal("command ran while the persistent SSH SOCKS5 listener was unavailable")
+	}
+}
+
+func TestFLCSSHDirectFailsClosedWhenRemoteTunIsEnabled(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	previousActive := activeCLIPersistentSSHTunnelForCommand
+	previousProbe := probeCLISSHRemoteForCommand
+	previousRun := runCLICommandWithSSHProxyForCommand
+	runCalled := false
+	activeCLIPersistentSSHTunnelForCommand = func() (cliSSHTunnelState, bool, error) {
+		return cliSSHTunnelState{Name: "school", Port: port}, true, nil
+	}
+	probeCLISSHRemoteForCommand = func(cliSSHTunnelState) (cliSSHRemoteProbe, error) {
+		return cliSSHRemoteProbe{
+			ProtocolVersion: cliSSHRemoteProbeVersion,
+			Available:       true,
+			TunEnabled:      true,
+			Reason:          "FlClash transparent TUN is enabled",
+		}, nil
+	}
+	runCLICommandWithSSHProxyForCommand = func([]string, int) error {
+		runCalled = true
+		return nil
+	}
+	t.Cleanup(func() {
+		activeCLIPersistentSSHTunnelForCommand = previousActive
+		probeCLISSHRemoteForCommand = previousProbe
+		runCLICommandWithSSHProxyForCommand = previousRun
+	})
+	err = flcSSHCommand([]string{"-d", "curl", "https://example.com"})
+	if err == nil || !strings.Contains(err.Error(), "direct exit refused") {
+		t.Fatalf("direct command with remote TUN error = %v", err)
+	}
+	if runCalled {
+		t.Fatal("direct command ran while the remote TUN made it unsafe")
+	}
+}
+
+func TestFLCSSHDirectRunsOnlyAfterRemoteProbeAllowsIt(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	previousActive := activeCLIPersistentSSHTunnelForCommand
+	previousProbe := probeCLISSHRemoteForCommand
+	previousRun := runCLICommandWithSSHProxyForCommand
+	ran := false
+	activeCLIPersistentSSHTunnelForCommand = func() (cliSSHTunnelState, bool, error) {
+		return cliSSHTunnelState{Name: "school", Port: port}, true, nil
+	}
+	probeCLISSHRemoteForCommand = func(cliSSHTunnelState) (cliSSHRemoteProbe, error) {
+		return cliSSHRemoteProbe{
+			ProtocolVersion: cliSSHRemoteProbeVersion,
+			Available:       true,
+			DirectAllowed:   true,
+			Reason:          "FlClash TUN is off",
+		}, nil
+	}
+	runCLICommandWithSSHProxyForCommand = func(args []string, receivedPort int) error {
+		ran = receivedPort == port && len(args) == 2 && args[0] == "curl"
+		return nil
+	}
+	t.Cleanup(func() {
+		activeCLIPersistentSSHTunnelForCommand = previousActive
+		probeCLISSHRemoteForCommand = previousProbe
+		runCLICommandWithSSHProxyForCommand = previousRun
+	})
+	if err := flcSSHCommand([]string{"--direct", "curl", "https://example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if !ran {
+		t.Fatal("direct command did not run through the verified SSH SOCKS5 port")
+	}
+}
+
+func TestFLCSSHDirectTemporaryTunnelCleansUpAfterRejectedProbe(t *testing.T) {
+	configRoot := t.TempDir()
+	runtimeRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name: "school", Destination: "student@example.edu", Port: 22,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previousStart := startCLITransientSSHTunnelForCommand
+	previousStop := stopCLITransientSSHTunnelForCommand
+	previousProbe := probeCLISSHRemoteForCommand
+	previousRun := runCLICommandWithSSHProxyForCommand
+	stopped, ran := false, false
+	startCLITransientSSHTunnelForCommand = func(profile cliSSHProfile) (cliSSHTunnelState, error) {
+		return cliSSHTunnelState{Name: profile.Name, Port: 1080}, nil
+	}
+	stopCLITransientSSHTunnelForCommand = func(state cliSSHTunnelState) error {
+		stopped = state.Name == "school"
+		return nil
+	}
+	probeCLISSHRemoteForCommand = func(cliSSHTunnelState) (cliSSHRemoteProbe, error) {
+		return cliSSHRemoteProbe{ProtocolVersion: cliSSHRemoteProbeVersion, Available: true, TunEnabled: true}, nil
+	}
+	runCLICommandWithSSHProxyForCommand = func([]string, int) error {
+		ran = true
+		return nil
+	}
+	t.Cleanup(func() {
+		cliRuntimeDirectoryOverride = previousRuntime
+		startCLITransientSSHTunnelForCommand = previousStart
+		stopCLITransientSSHTunnelForCommand = previousStop
+		probeCLISSHRemoteForCommand = previousProbe
+		runCLICommandWithSSHProxyForCommand = previousRun
+	})
+	err := flcSSHCommand([]string{"-u", "school", "-d", "curl", "https://example.com"})
+	if err == nil || !strings.Contains(err.Error(), "direct exit refused") {
+		t.Fatalf("temporary direct command error = %v", err)
+	}
+	if !stopped || ran {
+		t.Fatalf("temporary direct lifecycle = stopped:%t ran:%t", stopped, ran)
+	}
+}
+
+func TestTUISSHDirectDashboardLabelsBlockedRemoteTun(t *testing.T) {
+	output := stripTUIANSI(renderTUIAtSize(
+		tuiSnapshot{
+			Page:              tuiPageSSH,
+			SSHDashboardFocus: true,
+			SSHDirectProbe: cliSSHRemoteProbe{
+				ProtocolVersion: cliSSHRemoteProbeVersion,
+				Available:       true,
+				TunEnabled:      true,
+				Reason:          "FlClash transparent TUN is enabled",
+			},
+			SSHProfiles: []tuiSSHProfile{{
+				Name: "school", Destination: "student@example.edu", Port: 22,
+				Connected: true, Ready: true, SocksPort: 1080,
+			}},
+		},
+		cliPaths{}, "private Unix socket", true, false, 180, 40,
+	))
+	for _, expected := range []string{
+		"B managed IP", "B direct exit", "BLOCKED · FlClash transparent TUN is enabled", "Direct CF DL",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("SSH direct Dashboard does not contain %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestTUISSHDashboardOrdersInetDirectAndManagedExitRows(t *testing.T) {
+	output := stripTUIANSI(renderTUIAtSize(
+		tuiSnapshot{
+			Page:              tuiPageSSH,
+			SSHDashboardFocus: true,
+			SSHNetwork: tuiNetworkInfo{
+				IntranetIP: "172.18.130.216 (eth7)",
+				PublicIP:   "198.51.100.10",
+				Country:    "HK",
+			},
+			SSHDirectProbe: cliSSHRemoteProbe{
+				ProtocolVersion: cliSSHRemoteProbeVersion,
+				Available:       true,
+				DirectAllowed:   true,
+				IntranetIP:      "192.168.1.20 (eth0)",
+				Reason:          "FlClash TUN is off",
+			},
+			SSHDirectNetwork: tuiNetworkInfo{
+				PublicIP: "203.0.113.20",
+				Country:  "SG",
+			},
+			SSHProfiles: []tuiSSHProfile{{
+				Name: "school", Destination: "student@example.edu", Port: 22,
+				Connected: true, Ready: true, SocksPort: 1080,
+			}},
+		},
+		cliPaths{}, "private Unix socket", true, false, 180, 40,
+	))
+	wantOrder := []string{
+		"A inet IP",
+		"B inet IP",
+		"B direct exit",
+		"B direct IP",
+		"Direct RTT",
+		"Direct CF DL",
+		"B managed IP",
+		"Managed RTT",
+		"Managed CF DL",
+	}
+	previous := -1
+	for _, label := range wantOrder {
+		position := strings.Index(output, label)
+		if position < 0 || position <= previous {
+			t.Fatalf("SSH Dashboard row %q is missing or out of order:\n%s", label, output)
+		}
+		previous = position
+	}
+	for _, expected := range []string{
+		"172.18.130.216 (eth7)",
+		"192.168.1.20 (eth0)",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("SSH Dashboard does not render %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestTUISSHDashboardDirectRowsRouteTestsToDirectExit(t *testing.T) {
+	for row := 0; row < tuiSSHDashboardRowCount; row++ {
+		wantDirect := row >= tuiSSHDashboardDirectExitRow &&
+			row <= tuiSSHDashboardDirectSpeedRow
+		if got := tuiSSHDashboardRowIsDirect(row); got != wantDirect {
+			t.Fatalf("SSH Dashboard row %d direct = %t, want %t", row, got, wantDirect)
+		}
 	}
 }
 

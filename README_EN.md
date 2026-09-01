@@ -52,6 +52,9 @@ flclash ssh add home host --user user --password --local-port 1080
 flclash ssh connect home
 flc ssh curl https://example.com
 
+# Follow host policy by default; direct mode requires the host FlClash TUN off
+flc ssh -d curl https://example.com
+
 # Encrypted private key; key passphrase and SSH password may both be saved
 flclash ssh add school host --user user --identity ~/.ssh/id_ed25519 --passphrase --password
 
@@ -63,7 +66,9 @@ flclash ssh test home
 flclash ssh disconnect home
 ```
 
-SSH profiles can also be managed from the TUI **SSH** page. Its main view keeps a bordered profile list and the selected profile's Dashboard visible together; Tab cycles focus through the sidebar, profile list, and Dashboard. Username and Host are separate fields, preventing accidental use of the current WSL username. Unencrypted keys need no passphrase; an encrypted key without a saved passphrase opens a masked one-time prompt inside the TUI. When a key and login password coexist, the specified key is tried first and the password is reserved for fallback or a required second factor. OpenSSH warnings go to Logs without corrupting the TUI. The Dashboard shows the SSH exit IP, latency, speed, active connections, and relay-only traffic.
+`flc ssh COMMAND` does not force a remote proxy port. After SSH decrypts on B, B's Clash, TUN, routing rules, or other network policy determines the exit. `flc ssh -d COMMAND` is a strict direct check: B must have compatible FlClash with a queryable Backend, and it refuses to run if B reports a transparent TUN, an unknown state, or an incompatible version.
+
+SSH profiles can also be managed from the TUI **SSH** page. Its main view keeps a bordered profile list and the selected profile's Dashboard visible together; Tab cycles focus through the sidebar, profile list, and Dashboard. Username and Host are separate fields, preventing accidental use of the current WSL username. Unencrypted keys need no passphrase; an encrypted key without a saved passphrase opens a masked one-time prompt inside the TUI. When a key and login password coexist, the specified key is tried first and the password is reserved for fallback or a required second factor. OpenSSH warnings go to Logs without corrupting the TUI. The Dashboard shows A and B inet IPs first, then the verified-direct exit followed by B-managed exit IP, latency, and speed; direct is visibly blocked while a transparent TUN is active.
 
 Under WSL, do not use a `/mnt/c/...` key that appears as mode `0777`; OpenSSH rejects it. Copy it into `~/.ssh/` and run `chmod 600 ~/.ssh/KEY` first.
 
@@ -84,7 +89,7 @@ flclash history show --limit 20
 flclash exit                       # stop frontends, Backend, Core, and SSH
 ```
 
-In the TUI, `q` exits only the current frontend, `Ctrl+C` exits everything, `Ctrl+N` opens notification details, and `?` shows all keys.
+In the TUI, `q` or closing its terminal exits only the current frontend and releases its record; `Ctrl+C` exits everything, `Ctrl+N` opens notification details, and `?` shows all keys.
 
 See [CLI_LINUX.md](CLI_LINUX.md) for all commands, TUN, Profiles, History, logs, data paths, and troubleshooting. Runtime help is available through `flclash --help`, `flclash COMMAND --help`, and `flc --help`.
 

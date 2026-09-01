@@ -153,19 +153,20 @@ func printFLCUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  flc COMMAND [ARG...]")
 	fmt.Fprintln(w, "  flc -- COMMAND [ARG...]")
-	fmt.Fprintln(w, "  flc ssh COMMAND [ARG...]")
-	fmt.Fprintln(w, "  flc ssh -u PROFILE COMMAND [ARG...]")
+	fmt.Fprintln(w, "  flc ssh [-d] COMMAND [ARG...]")
+	fmt.Fprintln(w, "  flc ssh [-d] -u PROFILE COMMAND [ARG...]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Examples:")
 	fmt.Fprintln(w, "  flc curl https://example.com")
 	fmt.Fprintln(w, "  flc wget https://example.com/file")
 	fmt.Fprintln(w, "  flc git clone https://github.com/owner/repository.git")
 	fmt.Fprintln(w, "  flc ssh curl https://example.com")
+	fmt.Fprintln(w, "  flc ssh -d curl https://example.com")
 	fmt.Fprintln(w, "  flc ssh -u school curl https://example.com")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "In silent mode flc uses an authenticated private listener; other modes use Proxy port.")
 	fmt.Fprintln(w, "flc fails closed when its proxy entry is unavailable; it never silently runs direct.")
-	fmt.Fprintln(w, "flc ssh is independent of Mihomo and uses an SSH SOCKS5 profile.")
+	fmt.Fprintln(w, "flc ssh uses an SSH SOCKS5 profile; -d fails closed if the SSH host has transparent FlClash TUN enabled.")
 }
 
 func isCLIHelpArg(value string) bool {

@@ -34,8 +34,60 @@ const (
 )
 
 type tuiTickMsg time.Time
-type tuiReloadSignalMsg struct{}
 type tuiInterruptSignalMsg struct{}
+type tuiTerminalExitSignalMsg struct{}
+
+// tuiTerminalInput preserves the terminal file descriptor Bubble Tea needs
+// for raw mode and cancellable reads while reporting EOF separately. Bubble
+// Tea deliberately treats EOF as a completed input reader, not as a request
+// to terminate the Program, which can otherwise leave a TUI alive after its
+// PTY disappears.
+type tuiTerminalInput struct {
+	file        *os.File
+	terminalEOF chan<- struct{}
+	eofOnce     sync.Once
+}
+
+func newTUITerminalInput(
+	file *os.File,
+	terminalEOF chan<- struct{},
+) *tuiTerminalInput {
+	return &tuiTerminalInput{
+		file:        file,
+		terminalEOF: terminalEOF,
+	}
+}
+
+func (input *tuiTerminalInput) Read(buffer []byte) (int, error) {
+	count, err := input.file.Read(buffer)
+	if errors.Is(err, io.EOF) {
+		input.eofOnce.Do(func() {
+			select {
+			case input.terminalEOF <- struct{}{}:
+			default:
+			}
+		})
+	}
+	return count, err
+}
+
+func (input *tuiTerminalInput) Write(buffer []byte) (int, error) {
+	return input.file.Write(buffer)
+}
+
+func (input *tuiTerminalInput) Close() error {
+	// Bubble Tea only requires this method to create its cancellable reader.
+	// It must not close process-wide stdin during normal TUI cleanup.
+	return nil
+}
+
+func (input *tuiTerminalInput) Fd() uintptr {
+	return input.file.Fd()
+}
+
+func (input *tuiTerminalInput) Name() string {
+	return input.file.Name()
+}
 
 type tuiServiceWatchMsg struct {
 	status tuiServiceStatus
@@ -114,20 +166,29 @@ type tuiSSHRelayStatsMsg struct {
 }
 
 type tuiSSHNetworkResultMsg struct {
-	name string
-	info tuiNetworkInfo
+	name   string
+	direct bool
+	info   tuiNetworkInfo
 }
 
 type tuiSSHDelayResultMsg struct {
 	name   string
+	direct bool
 	result tuiDelayResult
 	err    error
 }
 
 type tuiSSHSpeedResultMsg struct {
 	name   string
+	direct bool
 	result tuiSpeedResult
 	err    error
+}
+
+type tuiSSHDirectProbeResultMsg struct {
+	name  string
+	probe cliSSHRemoteProbe
+	err   error
 }
 
 type tuiInputMode byte
@@ -349,17 +410,24 @@ func runTUI(
 	model.startTrafficMonitor()
 	defer model.stopCoreMemoryMonitor()
 	defer model.stopTrafficMonitor()
-	program := tea.NewProgram(model, tuiProgramOptions()...)
-	sighup := make(chan os.Signal, 1)
-	signal.Notify(sighup, syscall.SIGHUP)
+	terminalEOF := make(chan struct{}, 1)
+	programOptions := append(
+		tuiProgramOptions(),
+		tea.WithInput(newTUITerminalInput(os.Stdin, terminalEOF)),
+	)
+	program := tea.NewProgram(model, programOptions...)
+	terminalExit := make(chan os.Signal, 1)
+	signal.Notify(terminalExit, syscall.SIGHUP, syscall.SIGTERM)
 	done := make(chan struct{})
 	go func() {
 		for {
 			select {
 			case <-interrupt:
 				program.Send(tuiInterruptSignalMsg{})
-			case <-sighup:
-				program.Send(tuiReloadSignalMsg{})
+			case <-terminalExit:
+				program.Send(tuiTerminalExitSignalMsg{})
+			case <-terminalEOF:
+				program.Send(tuiTerminalExitSignalMsg{})
 			case <-done:
 				return
 			}
@@ -368,7 +436,7 @@ func runTUI(
 
 	_, runErr := program.Run()
 	close(done)
-	signal.Stop(sighup)
+	signal.Stop(terminalExit)
 	model.shutdown()
 	logrus.SetOutput(os.Stdout)
 	if runErr != nil && !errors.Is(runErr, tea.ErrProgramKilled) {
@@ -436,10 +504,10 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.startMemoryRefresh(),
 			m.pollSelectedSSHRelay(),
 		)
-	case tuiReloadSignalMsg:
-		return m, m.handleKey(tuiKeyReload)
 	case tuiInterruptSignalMsg:
 		return m, m.handleKey(tuiKeyInterrupt)
+	case tuiTerminalExitSignalMsg:
+		return m, m.handleKey(tuiKeyQuit)
 	case tuiServiceWatchMsg:
 		if message.err != nil {
 			m.snapshot.Status = "Backend watch interrupted: " + message.err.Error()
@@ -559,33 +627,84 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tuiSSHNetworkResultMsg:
 		if m.selectedSSHName() == message.name {
-			m.snapshot.SSHNetwork = message.info
-			if message.info.Error != "" {
-				m.snapshot.Status = "SSH network detection failed: " + message.info.Error
+			if message.direct {
+				m.snapshot.SSHDirectNetwork = message.info
 			} else {
-				m.snapshot.Status = "SSH exit network refreshed"
+				m.snapshot.SSHNetwork = message.info
+			}
+			if message.info.Error != "" {
+				prefix := "SSH network detection"
+				if message.direct {
+					prefix = "SSH direct network detection"
+				}
+				m.snapshot.Status = prefix + " failed: " + message.info.Error
+			} else {
+				if message.direct {
+					m.snapshot.Status = "SSH direct exit network refreshed"
+				} else {
+					m.snapshot.Status = "SSH managed exit network refreshed"
+				}
 			}
 		}
 		return m, nil
+	case tuiSSHDirectProbeResultMsg:
+		if m.selectedSSHName() != message.name {
+			return m, nil
+		}
+		if message.err != nil {
+			m.snapshot.SSHDirectProbe = cliSSHRemoteProbe{Reason: message.err.Error()}
+			m.snapshot.SSHDirectNetwork = tuiNetworkInfo{Error: message.err.Error(), CheckedAt: time.Now()}
+			m.snapshot.Status = "SSH direct exit unavailable: " + message.err.Error()
+			return m, nil
+		}
+		m.snapshot.SSHDirectProbe = message.probe
+		if !message.probe.DirectAllowed {
+			reason := cliDisplayValue(message.probe.Reason)
+			m.snapshot.SSHDirectNetwork = tuiNetworkInfo{Error: reason, CheckedAt: time.Now()}
+			m.snapshot.Status = "SSH direct exit unavailable: " + reason
+			return m, nil
+		}
+		m.snapshot.Status = "SSH direct exit verified · testing its network path"
+		return m, m.refreshSelectedSSHNetworkFor(true)
 	case tuiSSHDelayResultMsg:
 		if m.selectedSSHName() == message.name {
 			if message.err != nil {
-				m.snapshot.SSHDelay = tuiDelayResult{Error: message.err.Error()}
-				m.snapshot.Status = "SSH route delay failed: " + message.err.Error()
+				if message.direct {
+					m.snapshot.SSHDirectDelay = tuiDelayResult{Error: message.err.Error()}
+					m.snapshot.Status = "SSH direct route delay failed: " + message.err.Error()
+				} else {
+					m.snapshot.SSHDelay = tuiDelayResult{Error: message.err.Error()}
+					m.snapshot.Status = "SSH managed route delay failed: " + message.err.Error()
+				}
 			} else {
-				m.snapshot.SSHDelay = message.result
-				m.snapshot.Status = "SSH route delay: " + formatTUIDelay(message.result)
+				if message.direct {
+					m.snapshot.SSHDirectDelay = message.result
+					m.snapshot.Status = "SSH direct route delay: " + formatTUIDelay(message.result)
+				} else {
+					m.snapshot.SSHDelay = message.result
+					m.snapshot.Status = "SSH managed route delay: " + formatTUIDelay(message.result)
+				}
 			}
 		}
 		return m, nil
 	case tuiSSHSpeedResultMsg:
 		if m.selectedSSHName() == message.name {
 			if message.err != nil {
-				m.snapshot.SSHSpeed = tuiSpeedResult{Error: message.err.Error()}
-				m.snapshot.Status = "SSH route speed failed: " + message.err.Error()
+				if message.direct {
+					m.snapshot.SSHDirectSpeed = tuiSpeedResult{Error: message.err.Error()}
+					m.snapshot.Status = "SSH direct route speed failed: " + message.err.Error()
+				} else {
+					m.snapshot.SSHSpeed = tuiSpeedResult{Error: message.err.Error()}
+					m.snapshot.Status = "SSH managed route speed failed: " + message.err.Error()
+				}
 			} else {
-				m.snapshot.SSHSpeed = message.result
-				m.snapshot.Status = "SSH route speed: " + formatTUISpeed(message.result)
+				if message.direct {
+					m.snapshot.SSHDirectSpeed = message.result
+					m.snapshot.Status = "SSH direct route speed: " + formatTUISpeed(message.result)
+				} else {
+					m.snapshot.SSHSpeed = message.result
+					m.snapshot.Status = "SSH managed route speed: " + formatTUISpeed(message.result)
+				}
 			}
 		}
 		return m, nil
@@ -1109,6 +1228,8 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 	m.refreshSequence++
 	sequence := m.refreshSequence
 	snapshot := m.snapshot
+	clearTUITransientRefreshStatus(&snapshot)
+	previousLogs := append([]string(nil), m.snapshot.Logs...)
 	client := m.client
 	paths := m.paths
 	service := m.service
@@ -1117,11 +1238,14 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 		refreshTUIProfiles(&snapshot, paths)
 		refreshTUISSH(&snapshot)
 		snapshot.Frontends, _ = listCLIFrontends()
+		refreshIssues := make([]string, 0, 2)
 		var serviceStatus *tuiServiceStatus
 		if service != nil {
 			if status, err := service.history(); err == nil {
 				serviceStatus = &status
 				snapshot.Requests = append([]tuiRequest(nil), status.History...)
+			} else {
+				refreshIssues = append(refreshIssues, "History: "+err.Error())
 			}
 			if status, err := service.logs(1000); err == nil {
 				localLogs := cliLogSnapshot()
@@ -1129,7 +1253,13 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 				if len(snapshot.Logs) > 1500 {
 					snapshot.Logs = snapshot.Logs[len(snapshot.Logs)-1500:]
 				}
+			} else {
+				snapshot.Logs = previousLogs
+				refreshIssues = append(refreshIssues, "Logs: "+err.Error())
 			}
+		}
+		if len(refreshIssues) > 0 && (snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Loading...") {
+			snapshot.Status = "Refresh incomplete · " + strings.Join(refreshIssues, " · ")
 		}
 		return tuiRefreshResultMsg{
 			sequence:      sequence,
@@ -1193,6 +1323,7 @@ func mergeTUIRefresh(current, refreshed tuiSnapshot) tuiSnapshot {
 		refreshed.Settings.SystemProxy = current.Settings.SystemProxy
 	}
 	if !tuiStatusIsControllerError(refreshed.Status) &&
+		!tuiStatusIsControllerError(current.Status) &&
 		current.Status != "" &&
 		current.Status != "Connected" &&
 		current.Status != "Loading..." {
@@ -1203,7 +1334,16 @@ func mergeTUIRefresh(current, refreshed tuiSnapshot) tuiSnapshot {
 
 func tuiStatusIsControllerError(status string) bool {
 	return strings.HasPrefix(status, "Controller unavailable:") ||
-		strings.HasPrefix(status, "Invalid controller response:")
+		strings.HasPrefix(status, "Invalid controller response:") ||
+		strings.HasPrefix(status, "Connections refresh failed:") ||
+		strings.HasPrefix(status, "Refresh incomplete ·") ||
+		strings.HasPrefix(status, "SSH profiles unavailable:")
+}
+
+func clearTUITransientRefreshStatus(snapshot *tuiSnapshot) {
+	if tuiStatusIsControllerError(snapshot.Status) {
+		snapshot.Status = "Loading..."
+	}
 }
 
 func mergeTUIOperation(current, result tuiSnapshot) tuiSnapshot {
@@ -1237,6 +1377,10 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	if current.SelectedRequest >= 0 && current.SelectedRequest < len(current.Requests) {
 		selectedRequestID = current.Requests[current.SelectedRequest].ID
 	}
+	selectedLog := ""
+	if current.SelectedLog >= 0 && current.SelectedLog < len(current.Logs) {
+		selectedLog = current.Logs[current.SelectedLog]
+	}
 	selectedProviderName := ""
 	if current.SelectedProvider >= 0 && current.SelectedProvider < len(current.Providers) {
 		selectedProviderName = current.Providers[current.SelectedProvider].Name
@@ -1267,6 +1411,10 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	updated.SSHNetwork = current.SSHNetwork
 	updated.SSHDelay = current.SSHDelay
 	updated.SSHSpeed = current.SSHSpeed
+	updated.SSHDirectProbe = current.SSHDirectProbe
+	updated.SSHDirectNetwork = current.SSHDirectNetwork
+	updated.SSHDirectDelay = current.SSHDirectDelay
+	updated.SSHDirectSpeed = current.SSHDirectSpeed
 	updated.SSHTraffic = current.SSHTraffic
 	updated.SSHTrafficHistory = append(
 		[]trafficSnapshot(nil),
@@ -1288,12 +1436,12 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	}
 	mergeTUIGroupDelays(current.Groups, updated.Groups)
 
-	updated.SelectedGroup = findTUIGroup(updated.Groups, selectedGroupName)
+	updated.SelectedGroup = findTUIGroupExact(updated.Groups, selectedGroupName)
 	if selectedGroupName == "" {
 		updated.SelectedGroup = clampTUISelection(current.SelectedGroup, len(updated.Groups))
 	}
 	if updated.SelectedGroup >= 0 && updated.SelectedGroup < len(updated.Groups) {
-		updated.SelectedNode = findTUIString(
+		updated.SelectedNode = findTUIStringExact(
 			updated.Groups[updated.SelectedGroup].Nodes,
 			selectedNodeName,
 		)
@@ -1303,6 +1451,12 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 				len(updated.Groups[updated.SelectedGroup].Nodes),
 			)
 		}
+		if updated.SelectedNode < 0 {
+			updated.ProxyNodeFocus = false
+		}
+	} else {
+		updated.SelectedNode = -1
+		updated.ProxyNodeFocus = false
 	}
 	updated.SelectedConnection = findTUIConnection(updated.Connections, selectedConnectionID)
 	if selectedConnectionID == "" {
@@ -1310,6 +1464,12 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 			current.SelectedConnection,
 			len(updated.Connections),
 		)
+		if current.ConnectionsDetailOpen {
+			updated.ConnectionsDetailOpen = false
+		}
+	}
+	if updated.SelectedConnection < 0 {
+		updated.ConnectionsDetailOpen = false
 	}
 	updated.SelectedRequest = findTUIRequest(updated.Requests, selectedRequestID)
 	if selectedRequestID == "" {
@@ -1317,6 +1477,22 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 			current.SelectedRequest,
 			len(updated.Requests),
 		)
+		if current.HistoryDetailOpen {
+			updated.HistoryDetailOpen = false
+		}
+	}
+	if updated.SelectedRequest < 0 {
+		updated.HistoryDetailOpen = false
+	}
+	updated.SelectedLog = findTUILog(updated.Logs, selectedLog)
+	selectedLogFound := updated.SelectedLog >= 0
+	if selectedLog == "" || updated.SelectedLog < 0 {
+		updated.SelectedLog = firstTUILogMatch(updated)
+	}
+	if current.LogDetailOpen && !selectedLogFound ||
+		updated.SelectedLog < 0 ||
+		findTUIInt(matchedTUILogIndexes(updated), updated.SelectedLog) < 0 {
+		updated.LogDetailOpen = false
 	}
 	updated.SelectedProvider = findTUIProvider(updated.Providers, selectedProviderName)
 	if selectedProviderName == "" {
@@ -1327,10 +1503,15 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	}
 	if importSelected {
 		updated.SelectedRow = current.SelectedRow
+	} else if selectedProfilePath != "" {
+		updated.SelectedRow = findTUIProfileExact(
+			updated.Profiles,
+			selectedProfilePath,
+		)
+		if updated.SelectedRow < 0 {
+			updated.SelectedRow = tuiProfileImportSubscriptionRow
+		}
 	} else {
-		updated.SelectedRow = findTUIProfile(updated.Profiles, selectedProfilePath)
-	}
-	if !importSelected && selectedProfilePath == "" {
 		updated.SelectedRow = clampTUISelection(current.SelectedRow, len(updated.Profiles))
 	}
 	if !importSelected && len(updated.Profiles) == 0 {
@@ -1349,7 +1530,55 @@ func findTUISSHProfile(profiles []tuiSSHProfile, name string) int {
 			return index
 		}
 	}
-	return 0
+	return -1
+}
+
+func findTUIGroupExact(groups []tuiGroup, name string) int {
+	if name == "" {
+		return -1
+	}
+	for index, group := range groups {
+		if group.Name == name {
+			return index
+		}
+	}
+	return -1
+}
+
+func findTUIStringExact(values []string, value string) int {
+	if value == "" {
+		return -1
+	}
+	for index, candidate := range values {
+		if candidate == value {
+			return index
+		}
+	}
+	return -1
+}
+
+func findTUIProfileExact(profiles []tuiProfile, path string) int {
+	if path == "" {
+		return -1
+	}
+	for index, profile := range profiles {
+		if filepath.Clean(profile.Path) == filepath.Clean(path) {
+			return index
+		}
+	}
+	return -1
+}
+
+func findTUILog(logs []string, line string) int {
+	if line == "" {
+		return -1
+	}
+	for index := len(logs) - 1; index >= 0; index-- {
+		if logs[index] == line {
+			return index
+		}
+	}
+	return -1
 }
 
 func mergeTUIGroupDelays(current, updated []tuiGroup) {
@@ -1492,12 +1721,14 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			current := findTUIString(filters, tuiDefaultValue(m.snapshot.HistoryFilter, "all"))
 			m.snapshot.HistoryFilter = filters[wrapTUIIndex(current, 1, len(filters))]
 			m.snapshot.SelectedRequest = firstTUIRequestMatch(m.snapshot)
+			m.snapshot.HistoryDetailOpen = false
 			m.snapshot.Status = "History filter: " + m.snapshot.HistoryFilter
 		case tuiPageLogs:
 			levels := []string{"ALL", "ERROR", "WARN", "INFO", "DEBUG"}
 			current := findTUIString(levels, tuiDefaultValue(m.snapshot.LogsLevel, "ALL"))
 			m.snapshot.LogsLevel = levels[wrapTUIIndex(current, 1, len(levels))]
 			m.snapshot.SelectedLog = firstTUILogMatch(m.snapshot)
+			m.snapshot.LogDetailOpen = false
 			m.snapshot.Status = "Log level filter: " + m.snapshot.LogsLevel
 		}
 	case tuiKeyCloseConnections:
@@ -1528,12 +1759,14 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 					}
 					state.backendRevision = status.Revision
 					state.snapshot.Requests = nil
-					state.snapshot.SelectedRequest = 0
+					state.snapshot.SelectedRequest = -1
+					state.snapshot.HistoryDetailOpen = false
 					state.snapshot.Status = "Shared History cleared"
 				})
 			}
 			m.snapshot.Requests = nil
-			m.snapshot.SelectedRequest = 0
+			m.snapshot.SelectedRequest = -1
+			m.snapshot.HistoryDetailOpen = false
 			m.snapshot.Status = "History cleared"
 		} else if m.snapshot.Page == tuiPageLogs {
 			if !m.dangerConfirmed {
@@ -1553,11 +1786,15 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 					state.backendRevision = status.Revision
 					clearTUILogs()
 					state.snapshot.Logs = nil
+					state.snapshot.SelectedLog = -1
+					state.snapshot.LogDetailOpen = false
 					state.snapshot.Status = "Shared logs cleared"
 				})
 			}
 			clearTUILogs()
 			m.snapshot.Logs = nil
+			m.snapshot.SelectedLog = -1
+			m.snapshot.LogDetailOpen = false
 			m.snapshot.Status = "Logs cleared"
 		} else if m.snapshot.Page == tuiPageConnections {
 			if !m.dangerConfirmed {
@@ -1588,7 +1825,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeyCloseConnection:
 		if m.snapshot.Page == tuiPageSSH {
 			if !m.snapshot.FocusSidebar && m.snapshot.SSHDashboardFocus {
-				return m.testSelectedSSHDelay()
+				return m.testSelectedSSHDelayFor(
+					tuiSSHDashboardRowIsDirect(m.snapshot.SelectedSSHDetail),
+				)
 			}
 			m.snapshot.Status = "Focus SSH Dashboard before testing route delay"
 			return nil
@@ -1638,6 +1877,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				}
 			})
 		}
+		if m.snapshot.Page == tuiPageConnections {
+			m.snapshot.Status = "Select an active connection before closing it"
+		}
 	case tuiKeyCoreToggle:
 		return m.startOperation(func(state *tuiOperationState) {
 			if !m.ownsCore {
@@ -1681,7 +1923,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeyNewProfile:
 		if m.snapshot.Page == tuiPageSSH {
 			if !m.snapshot.FocusSidebar && m.snapshot.SSHDashboardFocus {
-				return m.refreshSelectedSSHNetwork()
+				return m.refreshSelectedSSHDashboard()
 			}
 			if m.snapshot.FocusSidebar {
 				m.snapshot.Status = "Focus SSH profiles before adding a profile"
@@ -1751,7 +1993,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		if m.snapshot.Page == tuiPageSSH &&
 			!m.snapshot.FocusSidebar &&
 			m.snapshot.SSHDashboardFocus {
-			return m.testSelectedSSHSpeed()
+			return m.testSelectedSSHSpeedFor(
+				tuiSSHDashboardRowIsDirect(m.snapshot.SelectedSSHDetail),
+			)
 		}
 		if !m.snapshot.FocusSidebar &&
 			m.snapshot.Page == tuiPageProxies &&
@@ -1974,7 +2218,11 @@ func (m *tuiModel) moveSelection(delta int) tea.Cmd {
 	switch m.snapshot.Page {
 	case tuiPageSSH:
 		if m.snapshot.SSHDashboardFocus {
-			m.snapshot.SelectedSSHDetail = wrapTUIIndex(m.snapshot.SelectedSSHDetail, delta, 4)
+			m.snapshot.SelectedSSHDetail = wrapTUIIndex(
+				m.snapshot.SelectedSSHDetail,
+				delta,
+				tuiSSHDashboardRowCount,
+			)
 		} else {
 			previousName := m.selectedSSHName()
 			m.snapshot.SelectedSSH = wrapTUIIndex(
@@ -2733,6 +2981,12 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 				" · ↑↓/ws select · Enter apply · Esc back"
 			return nil
 		}
+		group := m.snapshot.Groups[m.snapshot.SelectedGroup]
+		if m.snapshot.SelectedNode < 0 ||
+			m.snapshot.SelectedNode >= len(group.Nodes) {
+			m.snapshot.Status = "Select a proxy node before applying it"
+			return nil
+		}
 		return m.startOperation(func(state *tuiOperationState) {
 			if m.service != nil {
 				selectTUIServiceProxy(state, m.service, m.client)
@@ -2747,6 +3001,11 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 		}
 		if m.snapshot.SelectedRow == tuiProfileImportFileRow {
 			m.beginInput(tuiInputProfileFile)
+			return nil
+		}
+		if m.snapshot.SelectedRow < 0 ||
+			m.snapshot.SelectedRow >= len(m.snapshot.Profiles) {
+			m.snapshot.Status = "Select a profile before activating it"
 			return nil
 		}
 		if m.service == nil {
@@ -2784,17 +3043,22 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			return m.runSelectedSSHAction("connect")
 		}
 		switch m.snapshot.SelectedSSHDetail {
-		case 0:
+		case tuiSSHDashboardTunnelRow:
 			if profile.Connected && profile.Ready {
 				return m.runSelectedSSHAction("disconnect")
 			}
 			return m.runSelectedSSHAction("connect")
-		case 1:
-			return m.refreshSelectedSSHNetwork()
-		case 2:
-			return m.testSelectedSSHDelay()
-		case 3:
-			return m.testSelectedSSHSpeed()
+		case tuiSSHDashboardDirectExitRow,
+			tuiSSHDashboardManagedIPRow:
+			return m.refreshSelectedSSHDashboard()
+		case tuiSSHDashboardDirectRTTRow:
+			return m.testSelectedSSHDelayFor(true)
+		case tuiSSHDashboardDirectSpeedRow:
+			return m.testSelectedSSHSpeedFor(true)
+		case tuiSSHDashboardManagedRTTRow:
+			return m.testSelectedSSHDelayFor(false)
+		case tuiSSHDashboardManagedSpeedRow:
+			return m.testSelectedSSHSpeedFor(false)
 		}
 	case tuiPageRequests:
 		if len(matchedTUIRequestIndexes(m.snapshot)) == 0 {
@@ -2842,11 +3106,13 @@ func selectTUIServiceProxy(
 ) {
 	if state.snapshot.SelectedGroup < 0 ||
 		state.snapshot.SelectedGroup >= len(state.snapshot.Groups) {
+		state.snapshot.Status = "Select a proxy group before applying it"
 		return
 	}
 	group := state.snapshot.Groups[state.snapshot.SelectedGroup]
 	if state.snapshot.SelectedNode < 0 ||
 		state.snapshot.SelectedNode >= len(group.Nodes) {
+		state.snapshot.Status = "Select a proxy node before applying it"
 		return
 	}
 	node := group.Nodes[state.snapshot.SelectedNode]
@@ -2870,6 +3136,7 @@ func switchTUIServiceProfile(
 ) {
 	if state.snapshot.SelectedRow < 0 ||
 		state.snapshot.SelectedRow >= len(state.snapshot.Profiles) {
+		state.snapshot.Status = "Select a profile before activating it"
 		return
 	}
 	profile := state.snapshot.Profiles[state.snapshot.SelectedRow]
@@ -3497,6 +3764,10 @@ func (m *tuiModel) resetSelectedSSHMetrics() {
 	m.snapshot.SSHNetwork = tuiNetworkInfo{}
 	m.snapshot.SSHDelay = tuiDelayResult{}
 	m.snapshot.SSHSpeed = tuiSpeedResult{}
+	m.snapshot.SSHDirectProbe = cliSSHRemoteProbe{}
+	m.snapshot.SSHDirectNetwork = tuiNetworkInfo{}
+	m.snapshot.SSHDirectDelay = tuiDelayResult{}
+	m.snapshot.SSHDirectSpeed = tuiSpeedResult{}
 	m.snapshot.SSHTraffic = trafficSnapshot{}
 	m.snapshot.SSHTrafficHistory = nil
 	m.snapshot.SSHTotalTraffic = trafficSnapshot{}
@@ -3516,7 +3787,11 @@ func (m *tuiModel) refreshSelectedSSHDashboard() tea.Cmd {
 	if !profile.Connected || !profile.Ready {
 		return nil
 	}
-	return tea.Batch(m.pollSelectedSSHRelay(), m.refreshSelectedSSHNetwork())
+	return tea.Batch(
+		m.pollSelectedSSHRelay(),
+		m.refreshSelectedSSHNetwork(),
+		m.refreshSelectedSSHDirectProbe(),
+	)
 }
 
 func (m *tuiModel) pollSelectedSSHRelay() tea.Cmd {
@@ -3568,48 +3843,112 @@ func (m *tuiModel) selectedSSHHTTPClient() (
 }
 
 func (m *tuiModel) refreshSelectedSSHNetwork() tea.Cmd {
+	return m.refreshSelectedSSHNetworkFor(false)
+}
+
+func (m *tuiModel) refreshSelectedSSHNetworkFor(direct bool) tea.Cmd {
 	name, client, closeClient, err := m.selectedSSHHTTPClient()
 	if err != nil {
-		m.snapshot.SSHNetwork = tuiNetworkInfo{Error: err.Error(), CheckedAt: time.Now()}
-		m.snapshot.Status = "SSH network detection failed: " + err.Error()
+		info := tuiNetworkInfo{Error: err.Error(), CheckedAt: time.Now()}
+		if direct {
+			m.snapshot.SSHDirectNetwork = info
+			m.snapshot.Status = "SSH direct network detection failed: " + err.Error()
+		} else {
+			m.snapshot.SSHNetwork = info
+			m.snapshot.Status = "SSH network detection failed: " + err.Error()
+		}
 		return nil
 	}
-	m.snapshot.SSHNetwork.Loading = true
+	if direct {
+		m.snapshot.SSHDirectNetwork.Loading = true
+	} else {
+		m.snapshot.SSHNetwork.Loading = true
+	}
 	return func() tea.Msg {
 		defer closeClient()
 		return tuiSSHNetworkResultMsg{
-			name: name,
-			info: detectTUINetworkWithClient(client, "SSH · "+name),
+			name:   name,
+			direct: direct,
+			info:   detectTUINetworkWithClient(client, "SSH · "+name),
 		}
 	}
 }
 
 func (m *tuiModel) testSelectedSSHDelay() tea.Cmd {
+	return m.testSelectedSSHDelayFor(false)
+}
+
+func (m *tuiModel) testSelectedSSHDelayFor(direct bool) tea.Cmd {
+	if direct && !m.snapshot.SSHDirectProbe.DirectAllowed {
+		m.snapshot.Status = "SSH direct route unavailable: " + cliDisplayValue(m.snapshot.SSHDirectProbe.Reason)
+		return nil
+	}
 	name, client, closeClient, err := m.selectedSSHHTTPClient()
 	if err != nil {
 		m.snapshot.Status = "SSH route delay failed: " + err.Error()
 		return nil
 	}
-	m.snapshot.SSHDelay = tuiDelayResult{Testing: true}
+	if direct {
+		m.snapshot.SSHDirectDelay = tuiDelayResult{Testing: true}
+	} else {
+		m.snapshot.SSHDelay = tuiDelayResult{Testing: true}
+	}
 	testURL := m.tuiDelayTestURL()
 	return func() tea.Msg {
 		defer closeClient()
 		result, testErr := runTUIRouteDelayTest(context.Background(), client, testURL)
-		return tuiSSHDelayResultMsg{name: name, result: result, err: testErr}
+		return tuiSSHDelayResultMsg{name: name, direct: direct, result: result, err: testErr}
 	}
 }
 
 func (m *tuiModel) testSelectedSSHSpeed() tea.Cmd {
+	return m.testSelectedSSHSpeedFor(false)
+}
+
+func (m *tuiModel) testSelectedSSHSpeedFor(direct bool) tea.Cmd {
+	if direct && !m.snapshot.SSHDirectProbe.DirectAllowed {
+		m.snapshot.Status = "SSH direct route unavailable: " + cliDisplayValue(m.snapshot.SSHDirectProbe.Reason)
+		return nil
+	}
 	name, client, closeClient, err := m.selectedSSHHTTPClient()
 	if err != nil {
 		m.snapshot.Status = "SSH route speed failed: " + err.Error()
 		return nil
 	}
-	m.snapshot.SSHSpeed = tuiSpeedResult{Testing: true}
+	if direct {
+		m.snapshot.SSHDirectSpeed = tuiSpeedResult{Testing: true}
+	} else {
+		m.snapshot.SSHSpeed = tuiSpeedResult{Testing: true}
+	}
 	return func() tea.Msg {
 		defer closeClient()
 		result, testErr := runTUIDownloadSpeedTest(context.Background(), client)
-		return tuiSSHSpeedResultMsg{name: name, result: result, err: testErr}
+		return tuiSSHSpeedResultMsg{name: name, direct: direct, result: result, err: testErr}
+	}
+}
+
+func (m *tuiModel) refreshSelectedSSHDirectProbe() tea.Cmd {
+	name := m.selectedSSHName()
+	if name == "" {
+		return nil
+	}
+	profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
+	if !profile.Connected || !profile.Ready {
+		return nil
+	}
+	return func() tea.Msg {
+		message := tuiSSHDirectProbeResultMsg{name: name}
+		state, active, err := activeCLIPersistentSSHTunnel()
+		if err != nil {
+			message.err = err
+			return message
+		}
+		if !active || !strings.EqualFold(state.Name, name) {
+			message.err = errors.New("SSH tunnel is disconnected")
+			return message
+		}
+		message.probe, message.err = probeCLISSHRemote(state)
+		return message
 	}
 }
 
@@ -4750,16 +5089,19 @@ func (m *tuiModel) submitInput() tea.Cmd {
 	case tuiInputHistorySearch:
 		m.snapshot.HistoryQuery = value
 		m.snapshot.SelectedRequest = firstTUIRequestMatch(m.snapshot)
+		m.snapshot.HistoryDetailOpen = false
 		m.snapshot.Status = "History search updated"
 		return nil
 	case tuiInputConnectionsSearch:
 		m.snapshot.ConnectionsQuery = value
 		m.snapshot.SelectedConnection = firstTUIConnectionMatch(m.snapshot)
+		m.snapshot.ConnectionsDetailOpen = false
 		m.snapshot.Status = "Connections search updated"
 		return nil
 	case tuiInputLogsSearch:
 		m.snapshot.LogsQuery = value
 		m.snapshot.SelectedLog = firstTUILogMatch(m.snapshot)
+		m.snapshot.LogDetailOpen = false
 		m.snapshot.Status = "Log search updated"
 		return nil
 	case tuiInputMixedPort:
@@ -5340,11 +5682,11 @@ func tuiKeyFromTea(message tea.KeyMsg) (tuiKey, bool) {
 	case "1":
 		return tuiKeyDashboard, true
 	case "2":
-		return tuiKeyProxies, true
-	case "3":
-		return tuiKeyProfiles, true
-	case "4":
 		return tuiKeySSH, true
+	case "3":
+		return tuiKeyProxies, true
+	case "4":
+		return tuiKeyProfiles, true
 	case "5":
 		return tuiKeyRequests, true
 	case "6":

@@ -28,6 +28,7 @@ Lifecycle keys and commands:
 
 ```text
 q in TUI                 exit and clean up only this frontend process
+close TUI terminal       exit and clean up only this frontend process
 Ctrl+C in managed TUI    stop Backend + Core + SSH tunnels, disconnect all frontends, wait for cleanup
 flclash core stop        stop Core, keep Backend
 flclash backend stop     stop Backend + Core
@@ -178,6 +179,9 @@ flclash ssh add home A --user user --port 2222 --local-port 1080 --password
 flclash ssh connect home
 flc ssh curl https://example.com
 
+# Strict direct: refuse when the SSH host reports a transparent FlClash TUN
+flc ssh -d curl https://example.com
+
 flc ssh -u home git ls-remote https://github.com/owner/repository.git
 
 # Encrypted key plus SSH password (including publickey,password MFA servers)
@@ -195,8 +199,15 @@ port, so they cannot steal the persistent application endpoint. Fixed-port
 conflicts fail closed instead of silently choosing another port.
 The relay counts bytes and active connections as they pass through, so the SSH
 Dashboard can show 30-sample live traffic and cumulative totals without root,
-eBPF, packet capture, or changes to the remote SSH server. Temporary
-`flc ssh -u` tunnels remain direct and short-lived.
+eBPF, packet capture, or changes to the remote SSH server.
+
+`flc ssh COMMAND` only hands traffic to the SSH host. The host decides whether
+its Clash/TUN/routing policy handles the post-decryption connection. `flc ssh
+-d COMMAND` is the explicit direct path: before executing, it invokes the
+read-only `flclash ssh probe --json` capability on the headless SSH host and
+refuses if FlClash is unavailable, incompatible, or reports a transparent TUN.
+This fail-closed check prevents a TUN-captured flow from being labelled direct.
+Both persistent and temporary (`flc ssh -u NAME`) commands support `-d`.
 
 `flc ssh COMMAND` requires the one persistent tunnel opened from the TUI or
 `flclash ssh connect`. `-u NAME` creates a separate temporary tunnel for that
@@ -262,9 +273,9 @@ Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availa
 
 ```text
 1 Dashboard     Core/System proxy/TUN/Mode/Proxy port/network/memory/30-sample traffic chart
-2 Proxies       groups/nodes/Providers, selection, delay and speed tests
-3 Profiles      import URL/local YAML, activate, update, rename, edit, delete non-active
-4 SSH            profile list and selected tunnel Dashboard shown together
+2 SSH            profile list and selected tunnel Dashboard shown together
+3 Proxies       groups/nodes/Providers, selection, delay and speed tests
+4 Profiles      import URL/local YAML, activate, update, rename, edit, delete non-active
 5 History        shared persistent flows, summaries, search/filter, details
 6 Connections    active flows, summaries, search, details, confirmed close actions
 7 Logs           persistent Backend + TUI events, search/filter/details/export/clear

@@ -1086,7 +1086,7 @@ func completionCommand(args []string) error {
 		{"mode", "rule global direct silent"},
 		{"port", "off"},
 		{"flc", "status select test env ssh"},
-		{"ssh", "add edit delete list show connect disconnect status test --port --local-port --identity --passphrase --clear-passphrase --password --clear-password --option"},
+		{"ssh", "add edit delete list show connect disconnect status test probe --port --local-port --identity --passphrase --clear-passphrase --password --clear-password --option"},
 		{"net", "show refresh delay speed"},
 		{"status", "--json --watch"},
 		{"backend", "start stop restart status logs clients"},
@@ -1114,7 +1114,7 @@ func completionCommand(args []string) error {
 		fmt.Println("  elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == connections && ${COMP_WORDS[2]} == close ]]; then")
 		fmt.Println("    words='all'")
 		fmt.Println("  elif (( COMP_CWORD >= 3 )) && [[ ${COMP_WORDS[1]} == flc && ${COMP_WORDS[2]} == ssh ]]; then")
-		fmt.Println("    words='-u --use'")
+		fmt.Println("    words='-d --direct -u --use'")
 		fmt.Println("  else")
 		fmt.Println("    case \"${COMP_WORDS[1]}\" in")
 		for _, group := range groups {
@@ -1129,7 +1129,7 @@ func completionCommand(args []string) error {
 		fmt.Println("_flc() {")
 		fmt.Println("  local current words")
 		fmt.Println("  current=\"${COMP_WORDS[COMP_CWORD]}\"")
-		fmt.Println("  if (( COMP_CWORD == 1 )); then words='ssh'; else words='-u --use'; fi")
+		fmt.Println("  if (( COMP_CWORD == 1 )); then words='ssh'; else words='-d --direct -u --use'; fi")
 		fmt.Println("  COMPREPLY=( $(compgen -W \"$words\" -- \"$current\") )")
 		fmt.Println("}")
 		fmt.Println("complete -F _flc flc")
@@ -1148,7 +1148,7 @@ func completionCommand(args []string) error {
 		}
 		fmt.Println("esac")
 		fmt.Println("_flc() {")
-		fmt.Println("  _arguments '1:command:(ssh)' '*:ssh argument:(-u --use)'")
+		fmt.Println("  _arguments '1:command:(ssh)' '*:ssh argument:(-d --direct -u --use)'")
 		fmt.Println("}")
 		fmt.Println("compdef _flc flc")
 	case "fish":
@@ -1166,7 +1166,7 @@ func completionCommand(args []string) error {
 		}
 		fmt.Println("complete -c flclash -f -n '__fish_seen_subcommand_from connections; and __fish_seen_subcommand_from close' -a all")
 		fmt.Println("complete -c flc -f -n '__fish_use_subcommand' -a ssh")
-		fmt.Println("complete -c flc -f -n '__fish_seen_subcommand_from ssh' -a '-u --use'")
+		fmt.Println("complete -c flc -f -n '__fish_seen_subcommand_from ssh' -a '-d --direct -u --use'")
 	default:
 		return fmt.Errorf("unsupported shell %q", args[0])
 	}

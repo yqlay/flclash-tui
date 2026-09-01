@@ -1,3 +1,18 @@
+## FlClash TUI v0.5.18
+
+- Add a verified SSH direct path: `flc ssh -d COMMAND` refuses to run when B
+  reports a transparent FlClash TUN, while ordinary `flc ssh COMMAND` clearly
+  follows B's own Clash, routing, or network policy.
+- Expand the SSH Dashboard with A/B inet addresses, B direct/managed exit
+  cards, independent latency/download tests, and truthful blocked or unknown
+  direct-path feedback.
+- Move SSH directly below Dashboard in the sidebar, correct shortcut ordering
+  and selected-row rendering, and harden History, Connections, Logs, Settings,
+  and Profile refreshes against stale selections and hidden errors.
+- Reclaim a TUI reliably when its terminal closes through HUP, TERM, stdin EOF,
+  or a VS Code/WSL shell-parent exit, while keeping Backend and SSH relays
+  intentionally independent from a normal `q` frontend exit.
+
 ## FlClash TUI v0.5.17
 
 - fix(tui): harden SSH and connection state

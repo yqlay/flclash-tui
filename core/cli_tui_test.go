@@ -488,7 +488,7 @@ func TestTUIExistingFrontendNoticeIsNonBlockingAndOpensDetails(t *testing.T) {
 		Type:  tea.KeyRunes,
 		Runes: []rune{'2'},
 	})
-	if model.snapshot.Page != tuiPageProxies || len(model.notifications) != 1 {
+	if model.snapshot.Page != tuiPageSSH || len(model.notifications) != 1 {
 		t.Fatalf("notification blocked normal navigation: %+v", model.snapshot)
 	}
 	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
@@ -945,7 +945,7 @@ func TestBubbleTeaBlocksMutatingActionsWhileBusy(t *testing.T) {
 	}
 	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
 
-	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
 	if model.snapshot.Page != tuiPageProfiles {
 		t.Fatalf("navigation was blocked while busy: page %d", model.snapshot.Page)
 	}
@@ -1377,6 +1377,102 @@ func TestTUIInterruptSignalUsesManagedShutdownPath(t *testing.T) {
 	}
 }
 
+func TestTUITerminalExitSignalClosesOnlyCurrentFrontend(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	coreMemoryStopped := false
+	trafficStopped := false
+	model.stopCoreMemory = func() { coreMemoryStopped = true }
+	model.stopTraffic = func() { trafficStopped = true }
+
+	_, command := model.Update(tuiTerminalExitSignalMsg{})
+	if command == nil {
+		t.Fatal("terminal exit signal did not return a quit command")
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatal("terminal exit signal did not quit the TUI event loop")
+	}
+	if !model.frontendExitRequested || model.shutdownRequested {
+		t.Fatalf(
+			"terminal exit used wrong lifecycle: frontend=%t shutdown=%t",
+			model.frontendExitRequested,
+			model.shutdownRequested,
+		)
+	}
+	if !coreMemoryStopped || !trafficStopped {
+		t.Fatalf(
+			"terminal exit left frontend monitors running: memory=%t traffic=%t",
+			coreMemoryStopped,
+			trafficStopped,
+		)
+	}
+}
+
+func TestTUITerminalInputReportsEOFOnlyOnce(t *testing.T) {
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readEnd.Close()
+	if err := writeEnd.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	terminalEOF := make(chan struct{}, 2)
+	input := newTUITerminalInput(readEnd, terminalEOF)
+	buffer := make([]byte, 1)
+	for range 2 {
+		if _, err := input.Read(buffer); err != io.EOF {
+			t.Fatalf("terminal input error = %v, want EOF", err)
+		}
+	}
+
+	select {
+	case <-terminalEOF:
+	default:
+		t.Fatal("terminal input did not report EOF")
+	}
+	select {
+	case <-terminalEOF:
+		t.Fatal("terminal input reported EOF more than once")
+	default:
+	}
+}
+
+func TestTUIParentExitSignalChecksForStartRace(t *testing.T) {
+	originalParentPID := tuiParentPID
+	originalSetSignal := setTUIParentExitSignal
+	t.Cleanup(func() {
+		tuiParentPID = originalParentPID
+		setTUIParentExitSignal = originalSetSignal
+	})
+
+	signalCalls := 0
+	setTUIParentExitSignal = func() error {
+		signalCalls++
+		return nil
+	}
+	tuiParentPID = func() int { return 42 }
+	if err := armTUIParentExitSignal(); err != nil {
+		t.Fatalf("arm TUI parent exit signal: %v", err)
+	}
+	if signalCalls != 1 {
+		t.Fatalf("parent exit signal calls = %d, want 1", signalCalls)
+	}
+
+	parentCalls := 0
+	tuiParentPID = func() int {
+		parentCalls++
+		if parentCalls == 1 {
+			return 42
+		}
+		return 1
+	}
+	err := armTUIParentExitSignal()
+	if err == nil || !strings.Contains(err.Error(), "parent exited") {
+		t.Fatalf("parent exit race error = %v", err)
+	}
+}
+
 func TestTUIStartupInterruptIsConsumedWithoutBackendResidue(t *testing.T) {
 	originalExit := completeCLIExitForTUI
 	completeCLIExitForTUI = func(int) error { return nil }
@@ -1714,9 +1810,9 @@ func TestTUISidebarMatchesGraphicalInformationArchitecture(t *testing.T) {
 	plain := stripTUIANSI(strings.Join(lines, "\n"))
 	labels := []string{
 		"Dashboard",
+		"SSH",
 		"Proxies",
 		"Profiles",
-		"SSH",
 		"History",
 		"Connections",
 		"Logs",
@@ -1737,6 +1833,67 @@ func TestTUISidebarMatchesGraphicalInformationArchitecture(t *testing.T) {
 	for _, removed := range []string{"Providers"} {
 		if strings.Contains(plain, removed) {
 			t.Fatalf("sidebar still exposes standalone %s page:\n%s", removed, plain)
+		}
+	}
+	historySelected := tuiSidebar(
+		tuiSnapshot{
+			Page:         tuiPageRequests,
+			SelectedMenu: int(tuiPageRequests),
+			FocusSidebar: true,
+		},
+		26,
+		20,
+	)
+	if selected := stripTUIANSI(strings.Join(historySelected, "\n")); strings.Contains(selected, "> >  History") {
+		t.Fatalf("selected History rendered two cursor chevrons:\n%s", selected)
+	}
+}
+
+func TestTUISidebarOrderAndNumericShortcutsStayAligned(t *testing.T) {
+	pages := []struct {
+		digit string
+		key   tuiKey
+		page  tuiPage
+	}{
+		{"1", tuiKeyDashboard, tuiPageDashboard},
+		{"2", tuiKeySSH, tuiPageSSH},
+		{"3", tuiKeyProxies, tuiPageProxies},
+		{"4", tuiKeyProfiles, tuiPageProfiles},
+		{"5", tuiKeyRequests, tuiPageRequests},
+		{"6", tuiKeyConnections, tuiPageConnections},
+		{"7", tuiKeyLogs, tuiPageLogs},
+		{"8", tuiKeyTools, tuiPageTools},
+		{"9", tuiKeyMaintenance, tuiPageMaintenance},
+	}
+	for index, test := range pages {
+		key, ok := tuiKeyFromTea(tea.KeyMsg{
+			Type:  tea.KeyRunes,
+			Runes: []rune(test.digit),
+		})
+		if !ok || key != test.key {
+			t.Fatalf("%s mapped to (%v, %t), want (%v, true)", test.digit, key, ok, test.key)
+		}
+		page, ok := tuiPageForKey(key)
+		if !ok || page != test.page {
+			t.Fatalf("%s opens (%v, %t), want (%v, true)", test.digit, page, ok, test.page)
+		}
+
+		snapshot := tuiSnapshot{
+			Page:         tuiPageDashboard,
+			SelectedMenu: int(tuiPageDashboard),
+			FocusSidebar: true,
+		}
+		for moved := 0; moved < index; moved++ {
+			if !handleTUIFocusNavigation(&snapshot, tuiKeyDown) {
+				t.Fatalf("sidebar did not move down to position %d", index)
+			}
+		}
+		if snapshot.SelectedMenu != index {
+			t.Fatalf("sidebar position = %d, want %d", snapshot.SelectedMenu, index)
+		}
+		if !handleTUIFocusNavigation(&snapshot, tuiKeySelect) ||
+			snapshot.Page != test.page || snapshot.FocusSidebar {
+			t.Fatalf("sidebar position %d did not open %s: %+v", index, tuiPageName(test.page), snapshot)
 		}
 	}
 }
@@ -1922,6 +2079,178 @@ func TestTUIRefreshDoesNotSelectAnotherConnectionAfterSelectedOneCloses(t *testi
 	}
 }
 
+func TestTUIRefreshClosesStaleHistoryAndLogDetailsAndSelectsNewLogs(t *testing.T) {
+	current := tuiSnapshot{
+		Page:                  tuiPageLogs,
+		Requests:              []tuiRequest{{tuiConnection: tuiConnection{ID: "closed-request"}}},
+		SelectedRequest:       0,
+		HistoryDetailOpen:     true,
+		Logs:                  []string{"old log"},
+		SelectedLog:           0,
+		LogDetailOpen:         true,
+		Connections:           []tuiConnection{{ID: "closed-connection"}},
+		SelectedConnection:    0,
+		ConnectionsDetailOpen: true,
+	}
+	refreshed := current
+	refreshed.Requests = []tuiRequest{{tuiConnection: tuiConnection{ID: "new-request"}}}
+	refreshed.Connections = []tuiConnection{{ID: "new-connection"}}
+	refreshed.Logs = []string{"newest log"}
+
+	merged := mergeTUIRefresh(current, refreshed)
+	if merged.SelectedConnection != -1 || merged.ConnectionsDetailOpen {
+		t.Fatalf("closed connection retained selection/detail: %+v", merged)
+	}
+	if merged.SelectedRequest != -1 || merged.HistoryDetailOpen {
+		t.Fatalf("closed History entry retained selection/detail: %+v", merged)
+	}
+	if merged.SelectedLog != 0 || merged.LogDetailOpen {
+		t.Fatalf("replaced log retained stale detail or did not select new log: %+v", merged)
+	}
+}
+
+func TestTUIRefreshKeepsSelectedLogByContentAfterReordering(t *testing.T) {
+	current := tuiSnapshot{
+		Logs:        []string{"older", "selected"},
+		SelectedLog: 1,
+	}
+	refreshed := current
+	refreshed.Logs = []string{"selected", "newer"}
+	merged := mergeTUIRefresh(current, refreshed)
+	if merged.SelectedLog != 0 {
+		t.Fatalf("selected log moved to %d instead of following its content", merged.SelectedLog)
+	}
+
+	current.SelectedLog = -1
+	current.Logs = nil
+	refreshed = current
+	refreshed.Logs = []string{"first new log"}
+	merged = mergeTUIRefresh(current, refreshed)
+	if merged.SelectedLog != 0 {
+		t.Fatalf("new log was not selected after an empty log state: %+v", merged)
+	}
+}
+
+func TestTUIRefreshReplacesTransientRefreshErrorsAfterRecovery(t *testing.T) {
+	for _, status := range []string{
+		"Controller unavailable: dial failed",
+		"Invalid controller response: bad JSON",
+		"Connections refresh failed: temporary failure",
+		"Refresh incomplete · History: temporary failure",
+		"SSH profiles unavailable: read config failed",
+	} {
+		merged := mergeTUIRefresh(
+			tuiSnapshot{Status: status},
+			tuiSnapshot{Status: "Connected"},
+		)
+		if merged.Status != "Connected" {
+			t.Fatalf("refresh recovery kept stale %q status as %q", status, merged.Status)
+		}
+	}
+}
+
+func TestTUIRefreshClearsStaleTransientStatusBeforeCollectingNewData(t *testing.T) {
+	for _, status := range []string{
+		"Controller unavailable: dial failed",
+		"Invalid controller response: bad JSON",
+		"Connections refresh failed: temporary failure",
+		"Refresh incomplete · Logs: temporary failure",
+		"SSH profiles unavailable: read config failed",
+	} {
+		snapshot := tuiSnapshot{Status: status}
+		clearTUITransientRefreshStatus(&snapshot)
+		if snapshot.Status != "Loading..." {
+			t.Fatalf("transient refresh status %q was retained as %q", status, snapshot.Status)
+		}
+	}
+
+	snapshot := tuiSnapshot{Status: "Settings committed"}
+	clearTUITransientRefreshStatus(&snapshot)
+	if snapshot.Status != "Settings committed" {
+		t.Fatalf("action status should remain visible: %q", snapshot.Status)
+	}
+}
+
+func TestTUIRefreshDoesNotSwitchToAnotherSSHProfileWhenSelectedProfileDisappears(t *testing.T) {
+	current := tuiSnapshot{
+		SSHProfiles: []tuiSSHProfile{{Name: "gone"}},
+		SelectedSSH: 0,
+	}
+	refreshed := current
+	refreshed.SSHProfiles = []tuiSSHProfile{{Name: "other"}}
+	merged := mergeTUIRefresh(current, refreshed)
+	if merged.SelectedSSH != -1 {
+		t.Fatalf("refresh switched disappeared SSH selection to profile %d", merged.SelectedSSH)
+	}
+}
+
+func TestTUIRefreshDoesNotApplyAnotherProxyWhenSelectionDisappears(t *testing.T) {
+	current := tuiSnapshot{
+		Groups:         []tuiGroup{{Name: "gone", Nodes: []string{"old-node"}}},
+		SelectedGroup:  0,
+		SelectedNode:   0,
+		ProxyNodeFocus: true,
+	}
+	refreshed := current
+	refreshed.Groups = []tuiGroup{{Name: "other", Nodes: []string{"other-node"}}}
+	merged := mergeTUIRefresh(current, refreshed)
+	if merged.SelectedGroup != -1 || merged.SelectedNode != -1 || merged.ProxyNodeFocus {
+		t.Fatalf("refresh switched a removed proxy group: %+v", merged)
+	}
+
+	refreshed = current
+	refreshed.Groups = []tuiGroup{{Name: "gone", Nodes: []string{"replacement-node"}}}
+	merged = mergeTUIRefresh(current, refreshed)
+	if merged.SelectedGroup != 0 || merged.SelectedNode != -1 || merged.ProxyNodeFocus {
+		t.Fatalf("refresh retained a removed proxy node as another node: %+v", merged)
+	}
+
+	model := &tuiModel{snapshot: tuiSnapshot{
+		Page:           tuiPageProxies,
+		Groups:         refreshed.Groups,
+		SelectedGroup:  0,
+		SelectedNode:   -1,
+		ProxyNodeFocus: true,
+	}}
+	if command := model.selectCurrent(); command != nil || model.busy ||
+		!strings.Contains(model.snapshot.Status, "Select a proxy node") {
+		t.Fatalf("invalid proxy selection started an operation: %+v", model.snapshot)
+	}
+}
+
+func TestTUIInvalidSelectionsReturnActionableStatus(t *testing.T) {
+	state := tuiOperationState{}
+	selectTUIServiceProxy(&state, nil, controllerClient{})
+	if state.snapshot.Status != "Select a proxy group before applying it" {
+		t.Fatalf("managed proxy selection status = %q", state.snapshot.Status)
+	}
+
+	snapshot := tuiSnapshot{}
+	selectTUIProxy(&snapshot, controllerClient{}, "")
+	if snapshot.Status != "Select a proxy group before applying it" {
+		t.Fatalf("direct proxy selection status = %q", snapshot.Status)
+	}
+	updateTUIProvider(&snapshot, controllerClient{})
+	if snapshot.Status != "Select a provider before updating it" {
+		t.Fatalf("provider selection status = %q", snapshot.Status)
+	}
+
+	model := &tuiModel{snapshot: tuiSnapshot{
+		Page:        tuiPageProfiles,
+		SelectedRow: 0,
+	}}
+	if command := model.selectCurrent(); command != nil || model.busy ||
+		model.snapshot.Status != "Select a profile before activating it" {
+		t.Fatalf("invalid profile selection started an operation: %+v", model.snapshot)
+	}
+
+	model.snapshot = tuiSnapshot{Page: tuiPageConnections, SelectedConnection: -1}
+	if command := model.handleKey(tuiKeyCloseConnection); command != nil ||
+		model.snapshot.Status != "Select an active connection before closing it" {
+		t.Fatalf("invalid connection close did not explain itself: %+v", model.snapshot)
+	}
+}
+
 func TestTUIFilteredSelectionClearsAndNavigationRecoversAtEdges(t *testing.T) {
 	snapshot := tuiSnapshot{
 		Connections: []tuiConnection{{ID: "first"}, {ID: "second"}},
@@ -1955,6 +2284,49 @@ func TestTUIFilteredSelectionClearsAndNavigationRecoversAtEdges(t *testing.T) {
 	moveTUIRequestMatch(&snapshot, -1)
 	if snapshot.SelectedConnection != 1 || snapshot.SelectedRequest != 1 {
 		t.Fatalf("up did not recover last match: %+v", snapshot)
+	}
+}
+
+func TestTUISearchAndFilterCloseStaleDetails(t *testing.T) {
+	model := &tuiModel{
+		snapshot: tuiSnapshot{
+			Page:                  tuiPageRequests,
+			Requests:              []tuiRequest{{tuiConnection: tuiConnection{ID: "active"}, Active: true}},
+			SelectedRequest:       0,
+			HistoryDetailOpen:     true,
+			Connections:           []tuiConnection{{ID: "connection"}},
+			SelectedConnection:    0,
+			ConnectionsDetailOpen: true,
+			Logs:                  []string{"INFO visible"},
+			SelectedLog:           0,
+			LogDetailOpen:         true,
+		},
+	}
+
+	model.handleKey(tuiKeyFilter)
+	if model.snapshot.HistoryDetailOpen {
+		t.Fatal("changing the History filter retained a stale detail")
+	}
+
+	model.inputMode = tuiInputConnectionsSearch
+	model.inputValue = []rune("missing")
+	model.submitInput()
+	if model.snapshot.ConnectionsDetailOpen || model.snapshot.SelectedConnection != -1 {
+		t.Fatalf("connections search retained stale detail or selection: %+v", model.snapshot)
+	}
+
+	model.inputMode = tuiInputLogsSearch
+	model.inputValue = []rune("missing")
+	model.submitInput()
+	if model.snapshot.LogDetailOpen || model.snapshot.SelectedLog != -1 {
+		t.Fatalf("log search retained stale detail or selection: %+v", model.snapshot)
+	}
+
+	model.snapshot.Page = tuiPageLogs
+	model.snapshot.LogDetailOpen = true
+	model.handleKey(tuiKeyFilter)
+	if model.snapshot.LogDetailOpen {
+		t.Fatal("changing the log level filter retained a stale detail")
 	}
 }
 
@@ -1994,8 +2366,10 @@ func TestTUILogExportAndClear(t *testing.T) {
 
 	model := &tuiModel{
 		snapshot: tuiSnapshot{
-			Page: tuiPageLogs,
-			Logs: logs,
+			Page:          tuiPageLogs,
+			Logs:          logs,
+			SelectedLog:   1,
+			LogDetailOpen: true,
 		},
 	}
 	if command := model.handleKey(tuiKeyCloseConnections); command != nil {
@@ -2009,6 +2383,9 @@ func TestTUILogExportAndClear(t *testing.T) {
 	}
 	if len(model.snapshot.Logs) != 0 || len(cliLogSnapshot()) != 0 {
 		t.Fatal("clearing logs left captured entries behind")
+	}
+	if model.snapshot.SelectedLog != -1 || model.snapshot.LogDetailOpen {
+		t.Fatalf("clearing logs retained stale selection/detail: %+v", model.snapshot)
 	}
 }
 
@@ -2108,6 +2485,8 @@ func TestTUIRequestsCanBeClearedWithoutClosingConnections(t *testing.T) {
 	model.snapshot.Requests = []tuiRequest{{
 		tuiConnection: tuiConnection{ID: "request-1"},
 	}}
+	model.snapshot.SelectedRequest = 0
+	model.snapshot.HistoryDetailOpen = true
 	model.snapshot.Connections = []tuiConnection{{ID: "active-1"}}
 
 	if command := model.handleKey(tuiKeyCloseConnections); command != nil {
@@ -2121,6 +2500,9 @@ func TestTUIRequestsCanBeClearedWithoutClosingConnections(t *testing.T) {
 	}
 	if len(model.snapshot.Requests) != 0 {
 		t.Fatalf("request history was not cleared: %+v", model.snapshot.Requests)
+	}
+	if model.snapshot.SelectedRequest != -1 || model.snapshot.HistoryDetailOpen {
+		t.Fatalf("clearing History retained stale selection/detail: %+v", model.snapshot)
 	}
 	if len(model.snapshot.Connections) != 1 {
 		t.Fatal("clearing request history changed active connections")
@@ -2790,6 +3172,16 @@ func TestTUIRefreshSelectsImportWhenLastProfileDisappears(t *testing.T) {
 	if merged.SelectedRow != tuiProfileImportSubscriptionRow {
 		t.Fatalf(
 			"empty Profile refresh selected row %d, want subscription import",
+			merged.SelectedRow,
+		)
+	}
+	merged = mergeTUIRefresh(current, tuiSnapshot{Profiles: []tuiProfile{{
+		Name: "other.yaml",
+		Path: "/tmp/other.yaml",
+	}}})
+	if merged.SelectedRow != tuiProfileImportSubscriptionRow {
+		t.Fatalf(
+			"Profile refresh selected unrelated profile row %d instead of import",
 			merged.SelectedRow,
 		)
 	}
@@ -5060,25 +5452,19 @@ func TestTUIFocusNavigationMakesSidebarOperable(t *testing.T) {
 	if !handleTUIFocusNavigation(&snapshot, tuiKeyDown) {
 		t.Fatal("sidebar down key was not handled")
 	}
-	if snapshot.SelectedMenu != int(tuiPageProxies) || snapshot.Page != tuiPageDashboard {
+	if snapshot.SelectedMenu != int(tuiPageSSH) || snapshot.Page != tuiPageDashboard {
 		t.Fatalf("sidebar movement changed wrong state: %+v", snapshot)
 	}
 	if !handleTUIFocusNavigation(&snapshot, tuiKeySelect) {
 		t.Fatal("sidebar Enter was not handled")
 	}
-	if snapshot.Page != tuiPageProxies || snapshot.FocusSidebar {
+	if snapshot.Page != tuiPageSSH || snapshot.FocusSidebar {
 		t.Fatalf("sidebar Enter did not open content: %+v", snapshot)
 	}
 	if !handleTUIFocusNavigation(&snapshot, tuiKeyLeft) || !snapshot.FocusSidebar {
-		t.Fatalf("left did not return to sidebar from proxies: %+v", snapshot)
+		t.Fatalf("left did not return to sidebar from SSH: %+v", snapshot)
 	}
-	if !handleTUIFocusNavigation(&snapshot, tuiKeyRight) || snapshot.FocusSidebar {
-		t.Fatalf("right did not return to proxy content: %+v", snapshot)
-	}
-	if !handleTUIFocusNavigation(&snapshot, tuiKeyFocusNext) || !snapshot.FocusSidebar {
-		t.Fatalf("Tab did not focus sidebar: %+v", snapshot)
-	}
-	if snapshot.SelectedMenu != int(tuiPageProxies) {
+	if snapshot.SelectedMenu != int(tuiPageSSH) {
 		t.Fatalf("sidebar cursor did not follow active page: %+v", snapshot)
 	}
 	if !handleTUIFocusNavigation(&snapshot, tuiKeySettings) {
@@ -5216,21 +5602,27 @@ func TestTUIProxyGroupsAndNodesUseArrowOrWSNavigation(t *testing.T) {
 func TestReadTUIKeysWaitsUntilPreviousKeyIsHandled(t *testing.T) {
 	keys := make(chan tuiKey)
 	handled := make(chan struct{})
-	go readTUIKeysSynchronized(bytes.NewBufferString("12"), keys, handled)
+	go readTUIKeysSynchronized(bytes.NewBufferString("1234"), keys, handled)
 
-	if got := <-keys; got != tuiKeyDashboard {
-		t.Fatalf("first key = %v, want dashboard", got)
+	want := []tuiKey{
+		tuiKeyDashboard,
+		tuiKeySSH,
+		tuiKeyProxies,
+		tuiKeyProfiles,
 	}
-	select {
-	case unexpected := <-keys:
-		t.Fatalf("read next key before acknowledgement: %v", unexpected)
-	case <-time.After(20 * time.Millisecond):
+	for index, expected := range want {
+		if got := <-keys; got != expected {
+			t.Fatalf("key %d = %v, want %v", index+1, got, expected)
+		}
+		if index == 0 {
+			select {
+			case unexpected := <-keys:
+				t.Fatalf("read next key before acknowledgement: %v", unexpected)
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+		handled <- struct{}{}
 	}
-	handled <- struct{}{}
-	if got := <-keys; got != tuiKeyProxies {
-		t.Fatalf("second key = %v, want proxies", got)
-	}
-	handled <- struct{}{}
 	if _, open := <-keys; open {
 		t.Fatal("key channel was not closed after synchronized input ended")
 	}

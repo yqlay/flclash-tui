@@ -32,6 +32,7 @@ const (
 	cliSSHPersistentStateFile  = "persistent.json"
 	cliSSHConfigVersion        = 2
 	cliSSHAskpassFileEnv       = "FLCLASH_SSH_ASKPASS_FILE"
+	cliSSHRemoteProbeVersion   = 1
 )
 
 type cliExitCodeError struct{ code int }
@@ -181,6 +182,22 @@ type cliSSHCredentials struct {
 	IdentityPassphrase string
 }
 
+// cliSSHRemoteProbe is intentionally small and read-only. It is executed on
+// the SSH host before a direct command is allowed: once a remote transparent
+// TUN is active, a normal SSH dynamic forward can no longer honestly promise
+// to bypass that host's FlClash traffic policy.
+type cliSSHRemoteProbe struct {
+	ProtocolVersion int    `json:"protocol_version"`
+	Available       bool   `json:"available"`
+	Version         string `json:"version,omitempty"`
+	BackendRunning  bool   `json:"backend_running"`
+	CoreRunning     bool   `json:"core_running"`
+	TunEnabled      bool   `json:"tun_enabled"`
+	DirectAllowed   bool   `json:"direct_allowed"`
+	IntranetIP      string `json:"intranet_ip,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+}
+
 type cliSSHIdentityKind byte
 
 const (
@@ -247,6 +264,8 @@ func sshManagementCommand(args []string) error {
 		return cliSSHStatusCommand(args[1:])
 	case "test":
 		return cliSSHTestCommand(args[1:])
+	case "probe":
+		return cliSSHProbeCommand(args[1:])
 	default:
 		return fmt.Errorf("unknown ssh command %q; use `flclash ssh -help`", args[0])
 	}
@@ -262,6 +281,7 @@ func printSSHManagementUsage(w io.Writer) {
 	fmt.Fprintln(w, "  flclash ssh list|status [--json]")
 	fmt.Fprintln(w, "  flclash ssh connect|disconnect [NAME|all]")
 	fmt.Fprintln(w, "  flclash ssh test [NAME]")
+	fmt.Fprintln(w, "  flclash ssh probe --json  # read-only endpoint check for flc ssh -d")
 	fmt.Fprintln(w, "`ssh add` with no arguments and `ssh edit NAME` open an interactive prompt.")
 }
 
@@ -270,6 +290,7 @@ var (
 	startCLITransientSSHTunnelForCommand   = startCLITransientSSHTunnel
 	stopCLITransientSSHTunnelForCommand    = stopCLITransientSSHTunnel
 	runCLICommandWithSSHProxyForCommand    = runCLICommandWithSSHProxy
+	probeCLISSHRemoteForCommand            = probeCLISSHRemote
 )
 
 func flcSSHCommand(args []string) error {
@@ -278,14 +299,31 @@ func flcSSHCommand(args []string) error {
 		return nil
 	}
 	profileName := ""
-	if args[0] == "-u" || args[0] == "--use" {
-		if len(args) < 3 {
-			return errors.New("usage: flc ssh -u NAME COMMAND [ARG...]")
+	direct := false
+	for len(args) > 0 {
+		switch {
+		case args[0] == "-d" || args[0] == "--direct":
+			direct = true
+			args = args[1:]
+		case args[0] == "-u" || args[0] == "--use":
+			if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
+				return errors.New("usage: flc ssh [-d] -u NAME COMMAND [ARG...]")
+			}
+			if profileName != "" {
+				return errors.New("SSH profile may only be selected once")
+			}
+			profileName, args = args[1], args[2:]
+		case strings.HasPrefix(args[0], "--use="):
+			if profileName != "" || strings.TrimSpace(strings.TrimPrefix(args[0], "--use=")) == "" {
+				return errors.New("SSH profile may only be selected once")
+			}
+			profileName, args = strings.TrimPrefix(args[0], "--use="), args[1:]
+		default:
+			goto command
 		}
-		profileName, args = args[1], args[2:]
-	} else if strings.HasPrefix(args[0], "--use=") {
-		profileName, args = strings.TrimPrefix(args[0], "--use="), args[1:]
 	}
+
+command:
 	if len(args) == 0 {
 		return errors.New("flc ssh requires a local command")
 	}
@@ -312,7 +350,7 @@ func flcSSHCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		commandErr := runCLICommandWithSSHProxyForCommand(args, state.Port)
+		commandErr := runCLICommandThroughSSHForCommand(args, state, direct)
 		stopErr := stopCLITransientSSHTunnelForCommand(state)
 		return errors.Join(commandErr, stopErr)
 	}
@@ -329,15 +367,88 @@ func flcSSHCommand(args []string) error {
 			state.Name,
 		)
 	}
+	return runCLICommandThroughSSHForCommand(args, state, direct)
+}
+
+func runCLICommandThroughSSHForCommand(
+	args []string,
+	state cliSSHTunnelState,
+	direct bool,
+) error {
+	if direct {
+		if err := requireCLISSHDirectExit(state); err != nil {
+			return err
+		}
+	}
 	return runCLICommandWithSSHProxyForCommand(args, state.Port)
 }
 
+func requireCLISSHDirectExit(state cliSSHTunnelState) error {
+	probe, err := probeCLISSHRemoteForCommand(state)
+	if err != nil {
+		return fmt.Errorf("verify direct SSH exit on %q: %w", state.Name, err)
+	}
+	if probe.ProtocolVersion != cliSSHRemoteProbeVersion {
+		return fmt.Errorf(
+			"SSH host direct check is incompatible (protocol %d); update FlClash on the SSH host",
+			probe.ProtocolVersion,
+		)
+	}
+	if !probe.Available {
+		reason := cliDisplayValue(probe.Reason)
+		return fmt.Errorf(
+			"SSH host cannot verify a direct exit: %s; start/update FlClash on the SSH host",
+			reason,
+		)
+	}
+	if !probe.DirectAllowed {
+		reason := probe.Reason
+		if reason == "" {
+			reason = "transparent TUN is enabled"
+		}
+		return fmt.Errorf(
+			"SSH direct exit refused: %s; use `flc ssh COMMAND` to follow the SSH host network policy",
+			reason,
+		)
+	}
+	return nil
+}
+
 func printFLCSSHUsage(w io.Writer) {
-	fmt.Fprintln(w, "Run one local command through an SSH host's network exit.")
+	fmt.Fprintln(w, "Run one local command through an SSH host's network policy.")
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  flc ssh COMMAND [ARG...]")
-	fmt.Fprintln(w, "  flc ssh -u NAME COMMAND [ARG...]")
+	fmt.Fprintln(w, "  flc ssh [-d|--direct] [-u NAME|--use NAME] COMMAND [ARG...]")
 	fmt.Fprintln(w, "-u creates a temporary tunnel which is always closed after the command.")
+	fmt.Fprintln(w, "Without -d, the SSH host decides whether Clash/TUN/routing handles the flow.")
+	fmt.Fprintln(w, "-d fails closed when the SSH host reports a transparent FlClash TUN.")
+}
+
+func cliSSHProbeCommand(args []string) error {
+	if len(args) != 1 || args[0] != "--json" {
+		return errors.New("usage: flclash ssh probe --json")
+	}
+	probe := cliSSHRemoteProbe{
+		ProtocolVersion: cliSSHRemoteProbeVersion,
+		Version:         cliVersion,
+	}
+	_, status, err := currentManagedServiceRaw()
+	if err != nil {
+		probe.Reason = "FlClash Backend is unavailable"
+		return writeCLIJSON(os.Stdout, probe)
+	}
+	probe.Available = true
+	probe.BackendRunning = true
+	probe.CoreRunning = status.Running
+	probe.TunEnabled = status.TunState == "on"
+	probe.DirectAllowed = !probe.TunEnabled
+	probe.IntranetIP = detectTUIIntranetIP()
+	if probe.TunEnabled {
+		probe.Reason = "FlClash transparent TUN is enabled"
+	} else {
+		probe.Reason = "FlClash TUN is off"
+	}
+	return writeCLIJSON(os.Stdout, probe)
 }
 
 func cliSSHAddCommand(args []string) error {
@@ -1637,6 +1748,41 @@ func runCLISSHProbe(command *exec.Cmd) error {
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	return command.Run()
+}
+
+func probeCLISSHRemote(state cliSSHTunnelState) (cliSSHRemoteProbe, error) {
+	if strings.TrimSpace(state.ControlPath) == "" || strings.TrimSpace(state.Destination) == "" {
+		return cliSSHRemoteProbe{}, errors.New("SSH control connection is unavailable")
+	}
+	sshPath, err := exec.LookPath("ssh")
+	if err != nil {
+		return cliSSHRemoteProbe{}, errors.New("OpenSSH client `ssh` is required")
+	}
+	command := exec.Command(
+		sshPath,
+		"-S", state.ControlPath,
+		state.Destination,
+		"flclash", "ssh", "probe", "--json",
+	)
+	var stdout, stderr cliSSHCappedBuffer
+	command.Stdin = nil
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		summary := cliSSHOutputSummary(stderr.String())
+		if summary == "" {
+			summary = cliSSHOutputSummary(stdout.String())
+		}
+		if summary != "" {
+			return cliSSHRemoteProbe{}, fmt.Errorf("run remote FlClash probe: %w: %s", err, summary)
+		}
+		return cliSSHRemoteProbe{}, fmt.Errorf("run remote FlClash probe: %w", err)
+	}
+	var probe cliSSHRemoteProbe
+	if err := json.Unmarshal([]byte(stdout.String()), &probe); err != nil {
+		return cliSSHRemoteProbe{}, fmt.Errorf("parse remote FlClash probe: %w", err)
+	}
+	return probe, nil
 }
 
 func cliSSHOutputSummary(output string) string {

@@ -52,6 +52,9 @@ flclash ssh add home host --user user --password --local-port 1080
 flclash ssh connect home
 flc ssh curl https://example.com
 
+# 默认交给 host 的网络策略；-d 只在 host 的 FlClash TUN 关闭时允许直连
+flc ssh -d curl https://example.com
+
 # 加密私钥；也可同时保存私钥口令和 SSH 登录密码
 flclash ssh add school host --user user --identity ~/.ssh/id_ed25519 --passphrase --password
 
@@ -63,7 +66,9 @@ flclash ssh test home
 flclash ssh disconnect home
 ```
 
-SSH 配置也可以直接在 TUI 的 **SSH** 页面管理。主页面同时显示 SSH 配置列表方框和当前配置的 Dashboard；用 Tab 在侧栏、配置列表和 Dashboard 间切换焦点。Username 和 Host 分开填写，避免误用 WSL 当前用户名。未加密私钥无需口令；加密私钥未保存口令时，连接会在 TUI 内安全询问一次且不落盘。密钥和 SSH 登录密码同时存在时先尝试指定密钥，密码仅用于回退或服务器要求的第二因素。OpenSSH 警告只写入 Logs，不会破坏 TUI 画面。列表 Enter 会连接未就绪的配置，已连接时转到 Dashboard；Dashboard 可查看 SSH 出口 IP、延迟、下载速度、活动连接以及该 SSH SOCKS5 端口的实时/累计流量。
+`flc ssh COMMAND` 不主动指定 B 的代理端口：流量在 B 解密后，由 B 的 Clash、TUN、路由规则或其他网络策略决定出口。`flc ssh -d COMMAND` 是严格直连检查：B 必须安装兼容 FlClash 且 Backend 可查询，若 B 开启透明 TUN、状态未知或版本不兼容，命令会拒绝执行而不会误标直连。
+
+SSH 配置也可以直接在 TUI 的 **SSH** 页面管理。主页面同时显示 SSH 配置列表方框和当前配置的 Dashboard；用 Tab 在侧栏、配置列表和 Dashboard 间切换焦点。Username 和 Host 分开填写，避免误用 WSL 当前用户名。未加密私钥无需口令；加密私钥未保存口令时，连接会在 TUI 内安全询问一次且不落盘。密钥和 SSH 登录密码同时存在时先尝试指定密钥，密码仅用于回退或服务器要求的第二因素。OpenSSH 警告只写入 Logs，不会破坏 TUI 画面。列表 Enter 会连接未就绪的配置，已连接时转到 Dashboard；Dashboard 先显示 A 与 B 的 inet IP，再依序显示可验证直连出口和 B 决定的 managed 出口的 IP、延迟、下载速度；透明 TUN 开启时直连卡会明确显示已阻止。
 
 WSL 中不要直接使用权限显示为 `0777` 的 `/mnt/c/...` 私钥；OpenSSH 会拒绝它。先复制到 `~/.ssh/` 并执行 `chmod 600 ~/.ssh/KEY`。
 
@@ -84,7 +89,7 @@ flclash history show --limit 20
 flclash exit                       # 完全退出前端、Backend、Core 和 SSH
 ```
 
-TUI 中 `q` 只退出当前界面，`Ctrl+C` 完全退出，`Ctrl+N` 查看通知详情，`?` 查看全部快捷键。
+TUI 中 `q` 或关闭其终端只退出当前界面并释放前端记录，`Ctrl+C` 完全退出，`Ctrl+N` 查看通知详情，`?` 查看全部快捷键。
 
 完整命令、TUN、Profiles、History、日志、配置目录和故障排查见 [CLI_LINUX.md](CLI_LINUX.md)。程序内可使用 `flclash --help`、`flclash COMMAND --help` 和 `flc --help`。
 

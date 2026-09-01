@@ -26,6 +26,7 @@ import (
 
 	"github.com/metacubex/mihomo/config"
 	logrus "github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -42,15 +43,26 @@ type tuiPage int
 
 const (
 	tuiPageDashboard tuiPage = iota
+	tuiPageSSH
 	tuiPageProxies
 	tuiPageProfiles
-	tuiPageSSH
 	tuiPageRequests
 	tuiPageConnections
 	tuiPageLogs
 	tuiPageTools
 	tuiPageMaintenance
 	tuiPageCount
+)
+
+const (
+	tuiSSHDashboardTunnelRow = iota
+	tuiSSHDashboardDirectExitRow
+	tuiSSHDashboardDirectRTTRow
+	tuiSSHDashboardDirectSpeedRow
+	tuiSSHDashboardManagedIPRow
+	tuiSSHDashboardManagedRTTRow
+	tuiSSHDashboardManagedSpeedRow
+	tuiSSHDashboardRowCount
 )
 
 type tuiConnection struct {
@@ -301,6 +313,10 @@ type tuiSnapshot struct {
 	SSHNetwork             tuiNetworkInfo
 	SSHDelay               tuiDelayResult
 	SSHSpeed               tuiSpeedResult
+	SSHDirectProbe         cliSSHRemoteProbe
+	SSHDirectNetwork       tuiNetworkInfo
+	SSHDirectDelay         tuiDelayResult
+	SSHDirectSpeed         tuiSpeedResult
 	SSHTraffic             trafficSnapshot
 	SSHTrafficHistory      []trafficSnapshot
 	SSHTotalTraffic        trafficSnapshot
@@ -424,6 +440,36 @@ rules:
   - MATCH,PROXY
 `
 
+var tuiParentPID = os.Getppid
+
+var setTUIParentExitSignal = func() error {
+	return unix.Prctl(
+		unix.PR_SET_PDEATHSIG,
+		uintptr(syscall.SIGHUP),
+		0,
+		0,
+		0,
+	)
+}
+
+// armTUIParentExitSignal covers terminal hosts that terminate the shell
+// directly without delivering SIGHUP to the foreground process group. The
+// parent is checked again because it can exit in the small window before
+// PR_SET_PDEATHSIG is installed.
+func armTUIParentExitSignal() error {
+	parentPID := tuiParentPID()
+	if parentPID <= 1 {
+		return nil
+	}
+	if err := setTUIParentExitSignal(); err != nil {
+		return fmt.Errorf("arm TUI parent exit signal: %w", err)
+	}
+	if tuiParentPID() != parentPID {
+		return errors.New("terminal parent exited while the TUI was starting")
+	}
+	return nil
+}
+
 func tuiCommand(args []string) error {
 	if cliSubcommandHelp(args) {
 		fmt.Println("Usage: flclash [tui] [--config PATH] [--directory PATH]")
@@ -453,6 +499,9 @@ func tuiCommand(args []string) error {
 	}
 	if !isInteractiveTUI() {
 		return errors.New("TUI requires an interactive terminal; use run or proxy commands in non-interactive shells")
+	}
+	if err := armTUIParentExitSignal(); err != nil {
+		return err
 	}
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, syscall.SIGINT)
@@ -1441,7 +1490,11 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 					selectedRequestID,
 				)
 			}
+		} else if snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Loading..." {
+			snapshot.Status = "Connections refresh failed: invalid controller response"
 		}
+	} else if snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Loading..." {
+		snapshot.Status = "Connections refresh failed: " + err.Error()
 	}
 	systemProxyEnabled := snapshot.Settings.SystemProxy
 	checkSystemProxy := snapshot.UpdatedAt.IsZero()
@@ -1938,10 +1991,12 @@ func selectTUIProxy(
 	homeDir string,
 ) {
 	if snapshot.SelectedGroup < 0 || snapshot.SelectedGroup >= len(snapshot.Groups) {
+		snapshot.Status = "Select a proxy group before applying it"
 		return
 	}
 	group := snapshot.Groups[snapshot.SelectedGroup]
 	if snapshot.SelectedNode < 0 || snapshot.SelectedNode >= len(group.Nodes) {
+		snapshot.Status = "Select a proxy node before applying it"
 		return
 	}
 	if err := client.setProxy(group.Name, group.Nodes[snapshot.SelectedNode]); err != nil {
@@ -1961,6 +2016,7 @@ func selectTUIProxy(
 
 func updateTUIProvider(snapshot *tuiSnapshot, client controllerClient) {
 	if snapshot.SelectedProvider < 0 || snapshot.SelectedProvider >= len(snapshot.Providers) {
+		snapshot.Status = "Select a provider before updating it"
 		return
 	}
 	provider := snapshot.Providers[snapshot.SelectedProvider]
@@ -2420,11 +2476,11 @@ func readTUIKeysSynchronized(reader io.Reader, keys chan<- tuiKey, handled <-cha
 		case '1':
 			key = tuiKeyDashboard
 		case '2':
-			key = tuiKeyProxies
-		case '3':
-			key = tuiKeyProfiles
-		case '4':
 			key = tuiKeySSH
+		case '3':
+			key = tuiKeyProxies
+		case '4':
+			key = tuiKeyProfiles
 		case '5':
 			key = tuiKeyRequests
 		case '6':
@@ -3399,9 +3455,9 @@ func tuiSidebar(snapshot tuiSnapshot, width, height int) []string {
 	innerWidth := maxTUIWidth(width-2, 1)
 	labels := []string{
 		"@  Dashboard",
+		"#  SSH",
 		"*  Proxies",
 		"+  Profiles",
-		"#  SSH",
 		">  History",
 		"~  Connections",
 		"=  Logs",
@@ -3422,6 +3478,11 @@ func tuiSidebar(snapshot tuiSnapshot, width, height int) []string {
 		if snapshot.FocusSidebar && index == snapshot.SelectedMenu {
 			prefix = "> "
 			color = tuiSelect + tuiCyan
+			if label == ">  History" {
+				// History uses a chevron as its page icon. Do not render it twice
+				// when the sidebar cursor is also a chevron.
+				label = "   History"
+			}
 		}
 		lines = append(lines, tuiBoxRow("  "+prefix+label, "", innerWidth, color, ""))
 	}
@@ -4661,7 +4722,7 @@ func drawTUISettings(b *strings.Builder, snapshot tuiSnapshot, width, height int
 		rowLimit = len(rows)
 	}
 	for index, row := range rows[:rowLimit] {
-		tuiRow(b, row, width, index == snapshot.SelectedSetting && !snapshot.FocusSidebar, "")
+		tuiRow(b, row, width, index == snapshot.SelectedTool && !snapshot.FocusSidebar, "")
 	}
 	tuiEndPanel(b, width)
 	if height >= len(rows)+7 {
@@ -4944,28 +5005,23 @@ func drawTUISSHDashboard(
 		status = "BROKEN · Enter to reconnect"
 		statusColor = tuiRed
 	}
-	publicIP := "Not checked · press n"
-	if snapshot.SSHNetwork.Loading {
-		publicIP = "Checking through SSH exit..."
-	} else if snapshot.SSHNetwork.PublicIP != "" {
-		publicIP = snapshot.SSHNetwork.PublicIP
-		if snapshot.SSHNetwork.Country != "" {
-			publicIP += "  [" + snapshot.SSHNetwork.Country + "]"
-		}
-	} else if snapshot.SSHNetwork.Error != "" {
-		publicIP = "Unavailable · " + snapshot.SSHNetwork.Error
+	managedIP := tuiSSHNetworkLabel(snapshot.SSHNetwork, "Not checked · press n")
+	directIP := tuiSSHNetworkLabel(snapshot.SSHDirectNetwork, "Not checked · press n")
+	directState := tuiSSHDirectStateLabel(snapshot.SSHDirectProbe)
+	if !snapshot.SSHDirectProbe.DirectAllowed {
+		directIP = directState
 	}
 	focused := !snapshot.FocusSidebar && snapshot.SSHDashboardFocus
 	if height < 18 {
 		tuiTitle(
 			b,
 			"SSH Dashboard · "+profile.Name,
-			"Tab focus · ↑↓ select · Enter run · n IP · d RTT · v speed",
+			"Tab focus · ↑↓ select · Enter run · n refresh · d RTT · v speed",
 			width,
 		)
 		tuiRow(b, "Tunnel        "+status, width, focused && snapshot.SelectedSSHDetail == 0, statusColor)
 		if snapshot.SelectedSSHDetail != 0 {
-			label, color := tuiSSHSelectedDashboardRow(snapshot, publicIP)
+			label, color := tuiSSHSelectedDashboardRow(snapshot, managedIP, directIP, directState)
 			tuiRow(b, label, width, focused, color)
 		}
 		writeTUIAnsiRow(b, "Traffic       "+formatTUITrafficLegend(snapshot.SSHTraffic, tuiTrafficPeak(snapshot.SSHTrafficHistory)), width)
@@ -4976,28 +5032,39 @@ func drawTUISSHDashboard(
 	tuiTitle(
 		b,
 		"SSH Dashboard · "+profile.Name,
-		"Tab profiles/sidebar · ↑↓ select · Enter run · n IP · d RTT · v speed",
+		"Tab profiles/sidebar · ↑↓ select · Enter run · n refresh · d RTT · v speed",
 		width,
 	)
 	tuiRow(b, "Tunnel        "+status, width, focused && snapshot.SelectedSSHDetail == 0, statusColor)
 	tuiRow(b, "SSH host      "+profile.Destination+":"+strconv.Itoa(profile.Port), width, false, tuiCyan)
 	tuiEndPanel(b, width)
 
-	networkSubtitle := "SOCKS5 SSH route · d RTT×5 · v CF speed · n refresh"
+	networkSubtitle := "B direct first · managed follows · direct requires B TUN off · d RTT×5 · v CF speed"
 	if !snapshot.SSHNetwork.CheckedAt.IsZero() {
 		networkSubtitle += " · checked " + snapshot.SSHNetwork.CheckedAt.Format("15:04:05")
 	}
 	tuiTitle(b, "Network detection", networkSubtitle, width)
-	tuiRow(b, "Public IP     "+publicIP, width, focused && snapshot.SelectedSSHDetail == 1, tuiCyan)
-	tuiRow(b, "Intranet IP   "+cliDisplayValue(snapshot.SSHNetwork.IntranetIP), width, false, tuiGreen)
-	tuiRow(b, "SSH route     "+tuiDashboardDelayLabel(snapshot.SSHDelay), width, focused && snapshot.SelectedSSHDetail == 2, tuiCyan)
-	tuiRow(b, "Cloudflare DL "+tuiSpeedResultLabel(snapshot.SSHSpeed), width, focused && snapshot.SelectedSSHDetail == 3, tuiGreen)
+	tuiRow(b, "A inet IP     "+tuiSSHIntranetLabel(snapshot.SSHNetwork.IntranetIP), width, false, tuiGreen)
+	tuiRow(b, "B inet IP     "+tuiSSHRemoteIntranetLabel(snapshot.SSHDirectProbe), width, false, tuiGreen)
+	tuiRow(b, "", width, false, "")
+	tuiRow(b, "B direct exit "+directState, width, focused && snapshot.SelectedSSHDetail == tuiSSHDashboardDirectExitRow, tuiYellow)
+	tuiRow(b, "B direct IP   "+directIP, width, false, tuiCyan)
+	tuiRow(b, "Direct RTT    "+tuiDashboardDelayLabel(snapshot.SSHDirectDelay), width, focused && snapshot.SelectedSSHDetail == tuiSSHDashboardDirectRTTRow, tuiCyan)
+	tuiRow(b, "Direct CF DL  "+tuiSpeedResultLabel(snapshot.SSHDirectSpeed), width, focused && snapshot.SelectedSSHDetail == tuiSSHDashboardDirectSpeedRow, tuiGreen)
+	tuiRow(b, "", width, false, "")
+	tuiRow(b, "B managed IP  "+managedIP, width, focused && snapshot.SelectedSSHDetail == tuiSSHDashboardManagedIPRow, tuiCyan)
+	tuiRow(b, "Managed RTT   "+tuiDashboardDelayLabel(snapshot.SSHDelay), width, focused && snapshot.SelectedSSHDetail == tuiSSHDashboardManagedRTTRow, tuiCyan)
+	tuiRow(b, "Managed CF DL "+tuiSpeedResultLabel(snapshot.SSHSpeed), width, focused && snapshot.SelectedSSHDetail == tuiSSHDashboardManagedSpeedRow, tuiGreen)
 	tuiEndPanel(b, width)
 
-	if height >= 24 {
-		plotHeight := minTUI(maxTUIWidth(height-profileRows-19, 2), 6)
-		if height >= 33 {
-			plotHeight = minTUI(maxTUIWidth(height-profileRows-20, 3), 6)
+	if height >= 27 {
+		plotLimit := 6
+		if height < 44 {
+			plotLimit = 3
+		}
+		plotHeight := minTUI(maxTUIWidth(height-profileRows-22, 2), plotLimit)
+		if height >= 36 {
+			plotHeight = minTUI(maxTUIWidth(height-profileRows-23, 3), plotLimit)
 		}
 		chart := buildTUITrafficChart(snapshot.SSHTrafficHistory, maxTUIWidth(width-4, 1), plotHeight)
 		tuiTrafficTitle(b, snapshot.SSHTraffic, chart.peak, width)
@@ -5007,7 +5074,7 @@ func drawTUISSHDashboard(
 		tuiEndPanel(b, width)
 	}
 
-	if height < 33 {
+	if height < 36 {
 		return
 	}
 	uptime := "not connected"
@@ -5022,17 +5089,83 @@ func drawTUISSHDashboard(
 	tuiEndPanel(b, width)
 }
 
-func tuiSSHSelectedDashboardRow(snapshot tuiSnapshot, publicIP string) (string, string) {
-	switch snapshot.SelectedSSHDetail {
-	case 1:
-		return "Public IP     " + publicIP, tuiCyan
-	case 2:
-		return "SSH route     " + tuiDashboardDelayLabel(snapshot.SSHDelay), tuiCyan
-	case 3:
-		return "Cloudflare DL " + tuiSpeedResultLabel(snapshot.SSHSpeed), tuiGreen
-	default:
-		return "Public IP     " + publicIP, tuiCyan
+func tuiSSHNetworkLabel(info tuiNetworkInfo, empty string) string {
+	if info.Loading {
+		return "Checking through SSH exit..."
 	}
+	if info.PublicIP != "" {
+		value := info.PublicIP
+		if info.Country != "" {
+			value += "  [" + info.Country + "]"
+		}
+		return value
+	}
+	if info.Error != "" {
+		return "Unavailable · " + info.Error
+	}
+	return empty
+}
+
+func tuiSSHDirectStateLabel(probe cliSSHRemoteProbe) string {
+	switch {
+	case probe.DirectAllowed:
+		return "READY · remote FlClash TUN off"
+	case probe.ProtocolVersion == 0 && probe.Reason == "":
+		return "Not checked · press n"
+	case probe.Reason != "":
+		return "BLOCKED · " + probe.Reason
+	default:
+		return "BLOCKED · remote direct state unavailable"
+	}
+}
+
+func tuiSSHSelectedDashboardRow(
+	snapshot tuiSnapshot,
+	managedIP,
+	directIP,
+	directState string,
+) (string, string) {
+	switch snapshot.SelectedSSHDetail {
+	case tuiSSHDashboardDirectExitRow:
+		return "B direct exit " + directState, tuiYellow
+	case tuiSSHDashboardDirectRTTRow:
+		return "Direct RTT    " + tuiDashboardDelayLabel(snapshot.SSHDirectDelay), tuiCyan
+	case tuiSSHDashboardDirectSpeedRow:
+		return "Direct CF DL  " + tuiSpeedResultLabel(snapshot.SSHDirectSpeed), tuiGreen
+	case tuiSSHDashboardManagedIPRow:
+		return "B managed IP  " + managedIP, tuiCyan
+	case tuiSSHDashboardManagedRTTRow:
+		return "Managed RTT   " + tuiDashboardDelayLabel(snapshot.SSHDelay), tuiCyan
+	case tuiSSHDashboardManagedSpeedRow:
+		return "Managed CF DL " + tuiSpeedResultLabel(snapshot.SSHSpeed), tuiGreen
+	default:
+		return "A inet IP     " + tuiSSHIntranetLabel(snapshot.SSHNetwork.IntranetIP), tuiGreen
+	}
+}
+
+func tuiSSHDashboardRowIsDirect(row int) bool {
+	return row >= tuiSSHDashboardDirectExitRow &&
+		row <= tuiSSHDashboardDirectSpeedRow
+}
+
+func tuiSSHIntranetLabel(value string) string {
+	if strings.TrimSpace(value) != "" {
+		return value
+	}
+	return "Not checked · press n"
+}
+
+func tuiSSHRemoteIntranetLabel(probe cliSSHRemoteProbe) string {
+	if strings.TrimSpace(probe.IntranetIP) != "" {
+		return probe.IntranetIP
+	}
+	if probe.ProtocolVersion == 0 && probe.Reason == "" {
+		return "Not checked · press n"
+	}
+	if probe.Reason != "" {
+		return "Unavailable · " + probe.Reason
+	}
+	return "Unavailable · remote FlClash did not report an inet IP"
 }
 
 func tuiTrafficPeak(history []trafficSnapshot) int64 {
