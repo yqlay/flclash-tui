@@ -2301,39 +2301,16 @@ func addTUIProfile(homeDir string, oldState **term.State) error {
 		if value == "" {
 			return errTUIActionCancelled
 		}
-		request, err := newTUISubscriptionRequest(value)
+		data, err := fetchTUISubscription(value)
 		if err != nil {
 			return err
-		}
-		client := &nethttp.Client{Timeout: 30 * time.Second}
-		response, err := client.Do(request)
-		if err != nil {
-			return err
-		}
-		defer response.Body.Close()
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			return fmt.Errorf("subscription returned %s", response.Status)
-		}
-		data, err := io.ReadAll(io.LimitReader(response.Body, tuiSubscriptionMaxBytes+1))
-		if err != nil {
-			return err
-		}
-		if len(data) == 0 {
-			return errors.New("subscription response is empty")
-		}
-		if len(data) > tuiSubscriptionMaxBytes {
-			return fmt.Errorf("subscription response exceeds %d MiB", tuiSubscriptionMaxBytes>>20)
 		}
 		if err := os.MkdirAll(homeDir, 0o700); err != nil {
 			return err
 		}
 		path := filepath.Join(homeDir, fmt.Sprintf("profile-%d.yaml", time.Now().UnixNano()))
-		if err := os.WriteFile(path, data, 0o600); err != nil {
+		if err := writeTUIProfileAtomically(path, data, 0o600); err != nil {
 			return err
-		}
-		if message := handleValidateConfig(path); message != "" {
-			_ = os.Remove(path)
-			return fmt.Errorf("downloaded profile is invalid: %s", message)
 		}
 		return nil
 	})
@@ -4857,7 +4834,7 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 		if position == 1 {
 			tuiRow(
 				b,
-				"+ Import local YAML file",
+				"+ Import local profile file",
 				width,
 				snapshot.SelectedRow == tuiProfileImportFileRow &&
 					!snapshot.FocusSidebar,

@@ -1,3 +1,16 @@
+## FlClash TUI v0.5.19
+
+- Import Base64-wrapped node subscriptions such as the common plain-text
+  `ss://`, `vmess://`, `vless://`, `trojan://`, Hysteria, TUIC, and AnyTLS
+  feeds, converting them into a complete Mihomo profile before activation.
+- Accept native Mihomo/Clash YAML, raw URI lists, Base64 YAML/URI lists,
+  SIP008, supported sing-box/Xray JSON, and common Surge/Quantumult X/Loon
+  proxy lines from both subscription URLs and local files of any extension.
+- Validate every converted node with the bundled Mihomo parser and reject an
+  incomplete conversion instead of silently dropping unsupported nodes.
+- Show the detected format and node count after importing, and align the CLI,
+  TUI, and documentation with the expanded input support.
+
 ## FlClash TUI v0.5.18
 
 - Add a verified SSH direct path: `flc ssh -d COMMAND` refuses to run when B

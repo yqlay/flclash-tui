@@ -89,7 +89,7 @@ Profiles and configuration:
 flclash profile list [--json]
 flclash profile current
 flclash profile import URL
-flclash profile import-file /path/to/config.yaml
+flclash profile import-file /path/to/nodes.txt
 flclash profile use NAME
 flclash profile update [NAME]
 flclash profile rename NAME NEW_NAME
@@ -119,7 +119,7 @@ flclash connections close all
 
 History is Backend's shared, persistent, up-to-500-entry record derived from active Mihomo connections. It contains active and recently completed flows, not HTTP bodies. Backend reloads it after restart; restored entries begin as completed until Mihomo reports them active again. `history clear` clears both memory and disk without closing connections, while `connections close all` does not erase History.
 
-`profile import-file` validates and copies a regular `.yaml`/`.yml` file into the FlClash data directory without modifying the source. It preserves the basename and adds `-2`, `-3`, and so on when needed. Internal `.flclash-silent-runtime-*` and `.flclash-managed-runtime-*` YAML files are never shown as Profiles.
+`profile import` and `profile import-file` accept Mihomo/Clash YAML, raw URI lists, standard or URL-safe Base64-wrapped YAML/URI lists, SIP008 JSON, supported sing-box/Xray JSON outbounds, and common Surge/Quantumult X/Loon proxy lines. Local files may use any extension and are converted into a copied `.yaml` profile without modifying the source; duplicate names gain `-2`, `-3`, and so on. Every converted node is validated by Mihomo, and an unsupported or malformed node rejects the whole import instead of being silently dropped. Internal `.flclash-silent-runtime-*` and `.flclash-managed-runtime-*` YAML files are never shown as Profiles.
 
 TUN scope is explicit:
 
@@ -275,7 +275,7 @@ Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availa
 1 Dashboard     Core/System proxy/TUN/Mode/Proxy port/network/memory/30-sample traffic chart
 2 SSH            profile list and selected tunnel Dashboard shown together
 3 Proxies       groups/nodes/Providers, selection, delay and speed tests
-4 Profiles      import URL/local YAML, activate, update, rename, edit, delete non-active
+4 Profiles      import URL/local profile, activate, update, rename, edit, delete non-active
 5 History        shared persistent flows, summaries, search/filter, details
 6 Connections    active flows, summaries, search, details, confirmed close actions
 7 Logs           persistent Backend + TUI events, search/filter/details/export/clear

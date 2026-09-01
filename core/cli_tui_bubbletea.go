@@ -1116,9 +1116,9 @@ func (m *tuiModel) inputPresentation() (string, string) {
 	case tuiInputFLCOutbound:
 		return "Select FLC outbound", "Type an exact proxy or proxy-group name"
 	case tuiInputSubscription:
-		return "Import subscription", "Paste a Clash/Mihomo subscription URL"
+		return "Import subscription", "Paste a YAML, URI, Base64, JSON, or client-format URL"
 	case tuiInputProfileFile:
-		return "Import local YAML", "Type an absolute, relative, or ~/ path"
+		return "Import local profile", "Type a YAML, URI, Base64, JSON, or client-format file path"
 	case tuiInputProfileName:
 		return "Rename profile", "Type a file name; .yaml is added automatically"
 	case tuiInputHistorySearch:
@@ -2240,7 +2240,7 @@ func (m *tuiModel) moveSelection(delta int) tea.Cmd {
 		if m.snapshot.SelectedRow == tuiProfileImportSubscriptionRow {
 			m.snapshot.Status = "Enter to import a subscription URL"
 		} else if m.snapshot.SelectedRow == tuiProfileImportFileRow {
-			m.snapshot.Status = "Enter to copy and import a local YAML file"
+			m.snapshot.Status = "Enter to convert and import a local profile file"
 		} else if m.snapshot.SelectedRow < len(m.snapshot.Profiles) {
 			profile := m.snapshot.Profiles[m.snapshot.SelectedRow]
 			if profile.Current {
@@ -5170,7 +5170,7 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			return nil
 		}
 		return m.startOperation(func(state *tuiOperationState) {
-			data, err := fetchTUISubscription(value)
+			payload, err := fetchTUISubscriptionDetails(value)
 			if err != nil {
 				state.snapshot.Status = "Add profile failed: " + err.Error()
 				return
@@ -5184,7 +5184,7 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			)
 			status, err := m.service.putProfile(
 				path,
-				data,
+				payload.Data,
 				"",
 				true,
 				&value,
@@ -5196,7 +5196,8 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			}
 			state.backendRevision = status.Revision
 			path = status.ResultPath
-			state.snapshot.Status = "Subscription profile linked; U refreshes from the saved URL"
+			state.snapshot.Status = "Subscription linked: " + payload.summary() +
+				" · U refreshes from the saved URL"
 			refreshTUIProfiles(&state.snapshot, state.paths)
 			state.snapshot.SelectedRow = findTUIProfile(state.snapshot.Profiles, path)
 			state.profileSelection = path
@@ -5210,7 +5211,7 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			m.snapshot.Status = "Local profile import requires the managed backend"
 			return nil
 		}
-		data, name, err := readTUILocalProfile(value)
+		payload, name, err := readTUILocalProfileDetails(value)
 		if err != nil {
 			m.snapshot.Status = "Import local profile failed: " + err.Error()
 			appendTUILogEvent("ERROR", m.snapshot.Status)
@@ -5227,7 +5228,7 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			}
 			status, err := m.service.putProfile(
 				path,
-				data,
+				payload.Data,
 				"",
 				true,
 				nil,
@@ -5239,7 +5240,8 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			}
 			state.backendRevision = status.Revision
 			path = status.ResultPath
-			state.snapshot.Status = "Local profile imported: " + filepath.Base(path)
+			state.snapshot.Status = "Local profile imported: " + filepath.Base(path) +
+				" · " + payload.summary()
 			refreshTUIProfiles(&state.snapshot, state.paths)
 			state.snapshot.SelectedRow = findTUIProfile(state.snapshot.Profiles, path)
 			state.profileSelection = path
@@ -5381,14 +5383,21 @@ func downloadTUIProfile(homeDir, value string) (string, error) {
 }
 
 func readTUILocalProfile(value string) ([]byte, string, error) {
+	payload, name, err := readTUILocalProfileDetails(value)
+	return payload.Data, name, err
+}
+
+func readTUILocalProfileDetails(
+	value string,
+) (tuiSubscriptionPayload, string, error) {
 	path := strings.TrimSpace(value)
 	if path == "" {
-		return nil, "", errors.New("profile path must not be empty")
+		return tuiSubscriptionPayload{}, "", errors.New("profile path must not be empty")
 	}
 	if path == "~" || strings.HasPrefix(path, "~/") {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			return nil, "", fmt.Errorf("resolve home directory: %w", err)
+			return tuiSubscriptionPayload{}, "", fmt.Errorf("resolve home directory: %w", err)
 		}
 		if path == "~" {
 			path = homeDir
@@ -5398,37 +5407,47 @@ func readTUILocalProfile(value string) ([]byte, string, error) {
 	}
 	absolutePath, err := filepath.Abs(path)
 	if err != nil {
-		return nil, "", err
+		return tuiSubscriptionPayload{}, "", err
 	}
 	info, err := os.Lstat(absolutePath)
 	if err != nil {
-		return nil, "", err
+		return tuiSubscriptionPayload{}, "", err
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return nil, "", errors.New("profile must be a regular file, not a symlink")
+		return tuiSubscriptionPayload{}, "", errors.New("profile must be a regular file, not a symlink")
 	}
 	name := filepath.Base(absolutePath)
-	extension := strings.ToLower(filepath.Ext(name))
-	if extension != ".yaml" && extension != ".yml" {
-		return nil, "", errors.New("profile file must end in .yaml or .yml")
-	}
 	if info.Size() > tuiSubscriptionMaxBytes {
-		return nil, "", fmt.Errorf(
+		return tuiSubscriptionPayload{}, "", fmt.Errorf(
 			"profile content exceeds %d MiB",
 			tuiSubscriptionMaxBytes>>20,
 		)
 	}
 	data, err := os.ReadFile(absolutePath)
 	if err != nil {
-		return nil, "", err
+		return tuiSubscriptionPayload{}, "", err
 	}
 	if len(data) == 0 {
-		return nil, "", errors.New("profile content must not be empty")
+		return tuiSubscriptionPayload{}, "", errors.New("profile content must not be empty")
 	}
-	if message := validateConfigBytes(data); message != "" {
-		return nil, "", errors.New("profile is invalid: " + message)
+	payload, err := normalizeTUISubscription(data)
+	if err != nil {
+		return tuiSubscriptionPayload{}, "", errors.New("profile is invalid: " + err.Error())
 	}
-	return data, name, nil
+	return payload, tuiImportedProfileName(name), nil
+}
+
+func tuiImportedProfileName(sourceName string) string {
+	base := filepath.Base(strings.TrimSpace(sourceName))
+	extension := strings.ToLower(filepath.Ext(base))
+	if extension == ".yaml" || extension == ".yml" {
+		return base
+	}
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	if stem == "" || stem == "." || stem == ".." {
+		stem = "imported-profile"
+	}
+	return stem + ".yaml"
 }
 
 func nextTUIImportedProfilePath(homeDir, sourceName string) (string, error) {
@@ -5456,36 +5475,47 @@ func nextTUIImportedProfilePath(homeDir, sourceName string) (string, error) {
 }
 
 func fetchTUISubscription(value string) ([]byte, error) {
+	payload, err := fetchTUISubscriptionDetails(value)
+	return payload.Data, err
+}
+
+func fetchTUISubscriptionDetails(
+	value string,
+) (tuiSubscriptionPayload, error) {
 	request, err := newTUISubscriptionRequest(value)
 	if err != nil {
-		return nil, err
+		return tuiSubscriptionPayload{}, err
 	}
 	client := &nethttp.Client{Timeout: 30 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, err
+		return tuiSubscriptionPayload{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("subscription returned %s", response.Status)
+		return tuiSubscriptionPayload{}, fmt.Errorf("subscription returned %s", response.Status)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, tuiSubscriptionMaxBytes+1))
 	if err != nil {
-		return nil, err
+		return tuiSubscriptionPayload{}, err
 	}
 	if len(data) == 0 {
-		return nil, errors.New("subscription response is empty")
+		return tuiSubscriptionPayload{}, errors.New("subscription response is empty")
 	}
 	if len(data) > tuiSubscriptionMaxBytes {
-		return nil, fmt.Errorf(
+		return tuiSubscriptionPayload{}, fmt.Errorf(
 			"subscription response exceeds %d MiB",
 			tuiSubscriptionMaxBytes>>20,
 		)
 	}
-	if message := validateConfigBytes(data); message != "" {
-		return nil, fmt.Errorf("downloaded profile is invalid: %s", message)
+	payload, err := normalizeTUISubscription(data)
+	if err != nil {
+		return tuiSubscriptionPayload{}, fmt.Errorf(
+			"downloaded subscription is invalid: %w",
+			err,
+		)
 	}
-	return data, nil
+	return payload, nil
 }
 
 func writeTUIProfileAtomically(path string, data []byte, mode os.FileMode) error {
@@ -5629,7 +5659,10 @@ func newTUISubscriptionRequest(value string) (*nethttp.Request, error) {
 		return nil, errors.New("subscription URL must use http or https")
 	}
 	request.Header.Set("User-Agent", tuiSubscriptionUserAgent)
-	request.Header.Set("Accept", "application/yaml, text/yaml, text/plain, */*")
+	request.Header.Set(
+		"Accept",
+		"application/yaml, application/x-yaml, application/json, text/yaml, text/plain, */*",
+	)
 	return request, nil
 }
 

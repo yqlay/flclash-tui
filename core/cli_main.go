@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.5.18"
+const cliVersion = "0.5.19"
 
 type cliPaths struct {
 	homeDir    string
@@ -375,6 +375,7 @@ func (c controllerClient) listProxyNodes(group string, jsonOutput bool) error {
 func profileCommand(args []string) error {
 	if len(args) == 0 || cliSubcommandHelp(args) {
 		fmt.Println("Usage: flclash profile list|import|import-file|current|use|update|rename|edit|delete|link")
+		fmt.Println("Import accepts Mihomo YAML, URI/Base64 lists, supported JSON, and common client proxy lines.")
 		fmt.Println("Profile names resolve inside the active FlClash data directory.")
 		return nil
 	}

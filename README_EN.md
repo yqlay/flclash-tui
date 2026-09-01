@@ -30,7 +30,7 @@ Packages are also available from [Releases](https://github.com/yqlay/flclash-tui
 flclash
 ```
 
-1. Open **Profiles** and import a subscription URL or local YAML file.
+1. Open **Profiles** and import a subscription URL or local profile file.
 2. Select the Profile and press Enter to activate it.
 3. Open **Proxies** and select a proxy group and node.
 4. The default mode is `silent`; use `flc` for commands that need the proxy:
@@ -83,13 +83,15 @@ flclash port [PORT|off]
 flclash sys status|on|off
 flclash tun status|user on|system on|off
 flclash profile import URL
-flclash profile import-file /path/to/config.yaml
+flclash profile import-file /path/to/nodes.txt
 flclash logs --lines 100 --follow
 flclash history show --limit 20
 flclash exit                       # stop frontends, Backend, Core, and SSH
 ```
 
 In the TUI, `q` or closing its terminal exits only the current frontend and releases its record; `Ctrl+C` exits everything, `Ctrl+N` opens notification details, and `?` shows all keys.
+
+Profile import accepts Mihomo/Clash YAML, URI lists and Base64 wrappers, SIP008, sing-box/Xray JSON, and common Surge/Quantumult X/Loon proxy lines. Local files may use any extension. An unsupported or malformed node rejects the whole import instead of being silently dropped.
 
 See [CLI_LINUX.md](CLI_LINUX.md) for all commands, TUN, Profiles, History, logs, data paths, and troubleshooting. Runtime help is available through `flclash --help`, `flclash COMMAND --help`, and `flc --help`.
 
