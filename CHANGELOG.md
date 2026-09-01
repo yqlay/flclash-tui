@@ -1,3 +1,7 @@
+## FlClash TUI v0.5.17
+
+- fix(tui): harden SSH and connection state
+
 ## FlClash TUI v0.5.16
 
 - Add a rootless Go SOCKS5 metering relay for persistent SSH tunnels, keeping
