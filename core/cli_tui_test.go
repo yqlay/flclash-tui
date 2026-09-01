@@ -1880,6 +1880,84 @@ func TestTUIRequestHistoryTracksLifecycleAndLimit(t *testing.T) {
 	}
 }
 
+func TestTUIStoppedCoreClearsActiveConnectionsAndClosesHistory(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Connections = []tuiConnection{{ID: "connection-1"}}
+	model.snapshot.SelectedConnection = 0
+	model.snapshot.ConnectionsDetailOpen = true
+	model.snapshot.Requests = []tuiRequest{{
+		tuiConnection: tuiConnection{ID: "request-1"},
+		Active:        true,
+	}}
+	model.coreRunning = false
+
+	model.reconcileStoppedCoreState()
+
+	if len(model.snapshot.Connections) != 0 ||
+		model.snapshot.SelectedConnection != -1 ||
+		model.snapshot.ConnectionsDetailOpen {
+		t.Fatalf("stopped Core left stale Connections: %+v", model.snapshot)
+	}
+	if len(model.snapshot.Requests) != 1 || model.snapshot.Requests[0].Active {
+		t.Fatalf("stopped Core left active History: %+v", model.snapshot.Requests)
+	}
+}
+
+func TestTUIRefreshDoesNotSelectAnotherConnectionAfterSelectedOneCloses(t *testing.T) {
+	current := tuiSnapshot{
+		Page:                  tuiPageConnections,
+		Connections:           []tuiConnection{{ID: "closed"}},
+		SelectedConnection:    0,
+		ConnectionsDetailOpen: true,
+	}
+	refreshed := tuiSnapshot{
+		Connections: []tuiConnection{{ID: "still-open"}},
+	}
+	merged := mergeTUIRefresh(current, refreshed)
+	if merged.SelectedConnection != -1 {
+		t.Fatalf("closed connection selected replacement row %d", merged.SelectedConnection)
+	}
+	if merged.ConnectionsDetailOpen {
+		t.Fatal("connection detail remained open after its selected entry closed")
+	}
+}
+
+func TestTUIFilteredSelectionClearsAndNavigationRecoversAtEdges(t *testing.T) {
+	snapshot := tuiSnapshot{
+		Connections: []tuiConnection{{ID: "first"}, {ID: "second"}},
+		Requests: []tuiRequest{
+			{tuiConnection: tuiConnection{ID: "first"}},
+			{tuiConnection: tuiConnection{ID: "second"}},
+		},
+		Logs: []string{"first", "second"},
+	}
+	snapshot.ConnectionsQuery = "missing"
+	snapshot.HistoryQuery = "missing"
+	snapshot.LogsQuery = "missing"
+	if firstTUIConnectionMatch(snapshot) != -1 ||
+		firstTUIRequestMatch(snapshot) != -1 ||
+		firstTUILogMatch(snapshot) != -1 {
+		t.Fatal("a no-match filter retained a selectable row")
+	}
+
+	snapshot.ConnectionsQuery = ""
+	snapshot.HistoryQuery = ""
+	snapshot.SelectedConnection = -1
+	snapshot.SelectedRequest = -1
+	moveTUIConnectionMatch(&snapshot, 1)
+	moveTUIRequestMatch(&snapshot, 1)
+	if snapshot.SelectedConnection != 0 || snapshot.SelectedRequest != 0 {
+		t.Fatalf("down did not recover first match: %+v", snapshot)
+	}
+	snapshot.SelectedConnection = -1
+	snapshot.SelectedRequest = -1
+	moveTUIConnectionMatch(&snapshot, -1)
+	moveTUIRequestMatch(&snapshot, -1)
+	if snapshot.SelectedConnection != 1 || snapshot.SelectedRequest != 1 {
+		t.Fatalf("up did not recover last match: %+v", snapshot)
+	}
+}
+
 func TestTUILogExportAndClear(t *testing.T) {
 	clearTUILogs()
 	sendMessage(Message{
@@ -5011,6 +5089,66 @@ func TestTUIFocusNavigationMakesSidebarOperable(t *testing.T) {
 	}
 	if !handleTUIFocusNavigation(&snapshot, tuiKeyLeft) || !snapshot.FocusSidebar {
 		t.Fatalf("left did not return to sidebar: %+v", snapshot)
+	}
+}
+
+func TestTUIFocusNavigationCyclesThroughSSHProfilesAndDashboard(t *testing.T) {
+	snapshot := tuiSnapshot{
+		Page:         tuiPageSSH,
+		SelectedMenu: int(tuiPageSSH),
+		FocusSidebar: true,
+	}
+	if !handleTUIFocusNavigation(&snapshot, tuiKeyFocusNext) ||
+		snapshot.FocusSidebar || snapshot.SSHDashboardFocus {
+		t.Fatalf("Tab sidebar -> profiles = %+v", snapshot)
+	}
+	if !handleTUIFocusNavigation(&snapshot, tuiKeyFocusNext) ||
+		!snapshot.SSHDashboardFocus {
+		t.Fatalf("Tab profiles -> Dashboard = %+v", snapshot)
+	}
+	if !handleTUIFocusNavigation(&snapshot, tuiKeyFocusNext) ||
+		!snapshot.FocusSidebar || snapshot.SSHDashboardFocus {
+		t.Fatalf("Tab Dashboard -> sidebar = %+v", snapshot)
+	}
+	if !handleTUIFocusNavigation(&snapshot, tuiKeyFocusPrevious) ||
+		snapshot.FocusSidebar || !snapshot.SSHDashboardFocus {
+		t.Fatalf("Shift+Tab sidebar -> Dashboard = %+v", snapshot)
+	}
+	if !handleTUIFocusNavigation(&snapshot, tuiKeyFocusPrevious) ||
+		snapshot.FocusSidebar || snapshot.SSHDashboardFocus {
+		t.Fatalf("Shift+Tab Dashboard -> profiles = %+v", snapshot)
+	}
+	if !handleTUIFocusNavigation(&snapshot, tuiKeyFocusPrevious) ||
+		!snapshot.FocusSidebar {
+		t.Fatalf("Shift+Tab profiles -> sidebar = %+v", snapshot)
+	}
+}
+
+func TestPreserveTUIInteractionKeepsSSHSelectionDashboardAndMetrics(t *testing.T) {
+	current := tuiSnapshot{
+		SSHDashboardFocus: true,
+		SelectedSSH:       1,
+		SelectedSSHDetail: 3,
+		SSHNetwork:        tuiNetworkInfo{PublicIP: "203.0.113.8"},
+		SSHTrafficHistory: []trafficSnapshot{{Up: 10, Down: 20}},
+		SSHProfiles: []tuiSSHProfile{
+			{Name: "first"},
+			{Name: "second"},
+		},
+	}
+	updated := tuiSnapshot{
+		SSHProfiles: []tuiSSHProfile{
+			{Name: "second"},
+			{Name: "first"},
+		},
+	}
+	merged := preserveTUIInteraction(current, updated)
+	if merged.SelectedSSH != 0 ||
+		!merged.SSHDashboardFocus ||
+		merged.SelectedSSHDetail != 3 ||
+		merged.SSHNetwork.PublicIP != "203.0.113.8" ||
+		len(merged.SSHTrafficHistory) != 1 {
+		t.Fatalf("SSH interaction was not preserved: %+v", merged)
 	}
 }
 

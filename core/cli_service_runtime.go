@@ -1356,8 +1356,13 @@ func (r *tuiServiceRuntime) historyStatus(requestID string) tuiServiceStatus {
 		status.History = append([]tuiRequest(nil), updated...)
 	} else {
 		r.mu.RLock()
-		status.History = append([]tuiRequest(nil), r.history...)
+		history := append([]tuiRequest(nil), r.history...)
 		r.mu.RUnlock()
+		updated, changed := markTUIRequestHistoryInactive(history)
+		if changed {
+			r.recordHistoryUpdate(updated)
+		}
+		status.History = updated
 	}
 	return status
 }

@@ -143,3 +143,23 @@ func TestTUIHistoryRefreshAndClearAreSerialized(t *testing.T) {
 		t.Fatalf("History was repopulated after clear: %+v", runtime.history)
 	}
 }
+
+func TestTUIHistoryMarksEntriesCompleteWhenCoreStops(t *testing.T) {
+	runtime := newTestTUIServiceRuntime(t)
+	runtime.mu.Lock()
+	runtime.history = []tuiRequest{{
+		tuiConnection: tuiConnection{ID: "connection-1"},
+		Active:        true,
+	}}
+	runtime.mu.Unlock()
+
+	status := runtime.historyStatus("")
+	if len(status.History) != 1 || status.History[0].Active {
+		t.Fatalf("stopped Core returned active History: %+v", status.History)
+	}
+	runtime.mu.RLock()
+	defer runtime.mu.RUnlock()
+	if len(runtime.history) != 1 || runtime.history[0].Active {
+		t.Fatalf("stopped Core retained active persistent History: %+v", runtime.history)
+	}
+}

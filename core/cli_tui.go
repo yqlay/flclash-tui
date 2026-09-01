@@ -206,12 +206,15 @@ type tuiProfile struct {
 
 type tuiSSHProfile struct {
 	Name          string
+	Username      string
+	Host          string
 	Destination   string
 	Port          int
 	LocalPort     int
 	Identity      string
 	PassphraseSet bool
 	PasswordSet   bool
+	NeedsUsername bool
 	Options       []string
 	Connected     bool
 	Ready         bool
@@ -221,7 +224,8 @@ type tuiSSHProfile struct {
 
 const (
 	tuiSSHFormNameRow = iota
-	tuiSSHFormDestinationRow
+	tuiSSHFormUsernameRow
+	tuiSSHFormHostRow
 	tuiSSHFormPortRow
 	tuiSSHFormLocalPortRow
 	tuiSSHFormIdentityRow
@@ -230,15 +234,21 @@ const (
 	tuiSSHFormOptionStartRow
 )
 
+const tuiSSHFormDestinationRow = tuiSSHFormHostRow
+
 type tuiSSHFormView struct {
 	Open              bool
 	Existing          bool
 	ReadOnly          bool
 	Name              string
+	Username          string
+	Host              string
 	Destination       string
 	Port              int
 	LocalPort         int
 	Identity          string
+	IdentityKind      cliSSHIdentityKind
+	IdentityError     string
 	PassphraseSet     bool
 	PassphraseChanged bool
 	PassphraseCleared bool
@@ -253,6 +263,13 @@ type tuiSSHFormView struct {
 	PasswordConfirm   bool
 	DeleteConfirmOpen bool
 	DeleteName        string
+}
+
+type tuiSSHCredentialPromptView struct {
+	Open     bool
+	Profile  string
+	Identity string
+	Value    string
 }
 
 type tuiProfileDeleteView struct {
@@ -279,7 +296,7 @@ type tuiSnapshot struct {
 	Logs                   []string
 	Profiles               []tuiProfile
 	SSHProfiles            []tuiSSHProfile
-	SSHDetailOpen          bool
+	SSHDashboardFocus      bool
 	SelectedSSHDetail      int
 	SSHNetwork             tuiNetworkInfo
 	SSHDelay               tuiDelayResult
@@ -346,6 +363,7 @@ type tuiSnapshot struct {
 	NotificationSelected   int
 	NotificationScroll     int
 	SSHForm                tuiSSHFormView
+	SSHCredentialPrompt    tuiSSHCredentialPromptView
 	ProfileDelete          tuiProfileDeleteView
 }
 
@@ -1401,8 +1419,28 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 				time.Now(),
 			)
 			snapshot.Connections = activeConnections
-			snapshot.SelectedConnection = findTUIConnection(snapshot.Connections, selectedConnectionID)
-			snapshot.SelectedRequest = findTUIRequest(snapshot.Requests, selectedRequestID)
+			if selectedConnectionID == "" {
+				snapshot.SelectedConnection = clampTUISelection(
+					snapshot.SelectedConnection,
+					len(snapshot.Connections),
+				)
+			} else {
+				snapshot.SelectedConnection = findTUIConnection(
+					snapshot.Connections,
+					selectedConnectionID,
+				)
+			}
+			if selectedRequestID == "" {
+				snapshot.SelectedRequest = clampTUISelection(
+					snapshot.SelectedRequest,
+					len(snapshot.Requests),
+				)
+			} else {
+				snapshot.SelectedRequest = findTUIRequest(
+					snapshot.Requests,
+					selectedRequestID,
+				)
+			}
 		}
 	}
 	systemProxyEnabled := snapshot.Settings.SystemProxy
@@ -1492,6 +1530,22 @@ func updateTUIRequestHistory(
 		updated = updated[:tuiRequestHistoryLimit]
 	}
 	return updated
+}
+
+// markTUIRequestHistoryInactive closes the local view of every request when
+// the Core is no longer running. Mihomo cannot keep a connection alive after
+// its listeners stop, so retaining ACTIVE here would misrepresent persisted
+// History after a stop or Backend restart.
+func markTUIRequestHistoryInactive(history []tuiRequest) ([]tuiRequest, bool) {
+	updated := append([]tuiRequest(nil), history...)
+	changed := false
+	for index := range updated {
+		if updated[index].Active {
+			updated[index].Active = false
+			changed = true
+		}
+	}
+	return updated, changed
 }
 
 func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
@@ -1584,12 +1638,15 @@ func refreshTUISSH(snapshot *tuiSnapshot) {
 	for _, view := range views {
 		snapshot.SSHProfiles = append(snapshot.SSHProfiles, tuiSSHProfile{
 			Name:          view.Name,
+			Username:      view.Username,
+			Host:          view.Host,
 			Destination:   view.Destination,
 			Port:          view.Port,
 			LocalPort:     view.LocalPort,
 			Identity:      view.Identity,
 			PassphraseSet: view.PassphraseSet,
 			PasswordSet:   view.PasswordSet,
+			NeedsUsername: view.NeedsUsername,
 			Connected:     view.Connected,
 			Ready:         view.Ready,
 			SocksPort:     view.SocksPort,
@@ -1630,7 +1687,7 @@ func findTUIConnection(connections []tuiConnection, id string) int {
 			return index
 		}
 	}
-	return 0
+	return -1
 }
 
 func findTUIRequest(requests []tuiRequest, id string) int {
@@ -1639,7 +1696,7 @@ func findTUIRequest(requests []tuiRequest, id string) int {
 			return index
 		}
 	}
-	return 0
+	return -1
 }
 
 func findTUIProvider(providers []tuiProvider, name string) int {
@@ -2498,10 +2555,35 @@ func handleTUIFocusNavigation(snapshot *tuiSnapshot, key tuiKey) bool {
 		snapshot.SelectedMenu = int(page)
 		snapshot.FocusSidebar = false
 		snapshot.ProxyNodeFocus = false
+		snapshot.SSHDashboardFocus = false
 		return true
 	}
 	switch key {
 	case tuiKeyFocusNext, tuiKeyFocusPrevious:
+		if snapshot.Page == tuiPageSSH {
+			previous := key == tuiKeyFocusPrevious
+			switch {
+			case snapshot.FocusSidebar:
+				snapshot.FocusSidebar = false
+				snapshot.SSHDashboardFocus = previous
+			case snapshot.SSHDashboardFocus:
+				if previous {
+					snapshot.SSHDashboardFocus = false
+				} else {
+					snapshot.FocusSidebar = true
+					snapshot.SSHDashboardFocus = false
+					snapshot.SelectedMenu = int(snapshot.Page)
+				}
+			default:
+				if previous {
+					snapshot.FocusSidebar = true
+					snapshot.SelectedMenu = int(snapshot.Page)
+				} else {
+					snapshot.SSHDashboardFocus = true
+				}
+			}
+			return true
+		}
 		snapshot.FocusSidebar = !snapshot.FocusSidebar
 		if snapshot.FocusSidebar {
 			snapshot.SelectedMenu = int(snapshot.Page)
@@ -2519,6 +2601,7 @@ func handleTUIFocusNavigation(snapshot *tuiSnapshot, key tuiKey) bool {
 			snapshot.SelectedMenu = int(snapshot.Page)
 			snapshot.FocusSidebar = false
 			snapshot.ProxyNodeFocus = false
+			snapshot.SSHDashboardFocus = false
 		case tuiKeyLeft:
 		default:
 			return false
@@ -2528,6 +2611,7 @@ func handleTUIFocusNavigation(snapshot *tuiSnapshot, key tuiKey) bool {
 	switch key {
 	case tuiKeyLeft:
 		snapshot.FocusSidebar = true
+		snapshot.SSHDashboardFocus = false
 		snapshot.SelectedMenu = int(snapshot.Page)
 		return true
 	case tuiKeyRight:
@@ -2658,6 +2742,11 @@ func renderTUICompact(
 	focus := "CONTENT"
 	if snapshot.FocusSidebar {
 		focus = "NAV"
+	} else if snapshot.Page == tuiPageSSH {
+		focus = "SSH PROFILES"
+		if snapshot.SSHDashboardFocus {
+			focus = "SSH DASHBOARD"
+		}
 	}
 	header := fmt.Sprintf(
 		"  FlClash · %d %s · %s · %s",
@@ -2677,6 +2766,7 @@ func renderTUICompact(
 	case snapshot.NotificationDetailOpen ||
 		snapshot.ProfileDelete.Open ||
 		snapshot.SSHForm.DeleteConfirmOpen ||
+		snapshot.SSHCredentialPrompt.Open ||
 		snapshot.SSHForm.Open ||
 		snapshot.SelectionTitle != "" ||
 		snapshot.InputTitle != "":
@@ -2725,6 +2815,8 @@ func renderTUICompact(
 		footer = "  ↑↓/ws page · →/Enter open · 1-9 direct · q"
 	} else if snapshot.Page == tuiPageDashboard {
 		footer = "  ↑↓/ws select · PgUp/PgDn scroll · Esc nav · q"
+	} else if snapshot.Page == tuiPageSSH {
+		footer = "  Tab profiles/Dashboard/sidebar · ↑↓/ws · Enter · Esc · q"
 	}
 	b.WriteString(tuiNotificationFooter(snapshot, footer, width))
 	return b.String()
@@ -2943,6 +3035,8 @@ func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) stri
 		drawTUIProfileDeleteConfirm(&b, snapshot.ProfileDelete, width)
 	} else if snapshot.SSHForm.DeleteConfirmOpen {
 		drawTUISSHDeleteConfirm(&b, snapshot.SSHForm, width)
+	} else if snapshot.SSHCredentialPrompt.Open {
+		drawTUISSHCredentialPrompt(&b, snapshot.SSHCredentialPrompt, width)
 	} else if snapshot.SSHForm.Open {
 		drawTUISSHForm(&b, snapshot.SSHForm, width, height)
 	} else if snapshot.SelectionTitle != "" {
@@ -2989,6 +3083,19 @@ func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) stri
 		drawTUIProxies(&b, snapshot, width, height)
 	}
 	return b.String()
+}
+
+func drawTUISSHCredentialPrompt(
+	b *strings.Builder,
+	prompt tuiSSHCredentialPromptView,
+	width int,
+) {
+	tuiTitle(b, "Unlock SSH private key", "Enter connect · Esc cancel", width)
+	tuiRow(b, "Profile       "+prompt.Profile, width, false, tuiCyan)
+	tuiRow(b, "Identity      "+prompt.Identity, width, false, tuiDim)
+	tuiRow(b, "Passphrase    "+prompt.Value, width, true, tuiCyan)
+	tuiRow(b, "One-time credential · it will not be saved", width, false, tuiDim)
+	tuiEndPanel(b, width)
 }
 
 func drawTUIDangerConfirm(b *strings.Builder, snapshot tuiSnapshot, width int) {
@@ -3080,7 +3187,7 @@ func drawTUISSHForm(
 	rows := make([]struct {
 		label string
 		color string
-	}, 0, len(form.Options)+11)
+	}, 0, len(form.Options)+12)
 	rows = append(rows,
 		struct {
 			label string
@@ -3089,7 +3196,11 @@ func drawTUISSHForm(
 		struct {
 			label string
 			color string
-		}{label: "SSH host               " + form.Destination},
+		}{label: "SSH username           " + form.Username},
+		struct {
+			label string
+			color string
+		}{label: "SSH host               " + form.Host},
 		struct {
 			label string
 			color string
@@ -3104,7 +3215,16 @@ func drawTUISSHForm(
 		}{label: "Identity(private key)  " + cliDisplayValue(form.Identity)},
 	)
 	passphrase := "not saved · Enter set"
-	if form.PassphraseSet {
+	switch {
+	case form.Identity == "":
+		passphrase = "not applicable · select Identity first"
+	case form.IdentityError != "":
+		passphrase = "key unavailable/invalid · check Identity"
+	case form.IdentityKind == cliSSHIdentityUnencrypted:
+		passphrase = "not required · private key is unencrypted"
+	case form.IdentityKind == cliSSHIdentityEncrypted && !form.PassphraseSet:
+		passphrase = "ask once when connecting · not saved"
+	case form.PassphraseSet:
 		passphrase = "******** · Enter replace · c clear"
 	}
 	if form.ReadOnly && form.PassphraseSet {
@@ -3704,7 +3824,7 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 		"Dashboard      d rule-route latency (5 samples) · v Cloudflare 4-stream speed · n refresh",
 		"Proxies        Enter nodes · d node RTT (5 samples) · v node speed · Esc groups",
 		"Profiles       Enter activate · U refresh · F2/u rename · e edit · n import · x delete",
-		"SSH            Enter connect/disconnect · n add · e edit · x delete · d test",
+		"SSH            Tab profiles/Dashboard · Enter connect/run · n add/IP · d RTT · v speed",
 		"History        x clears shared history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
 		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
@@ -4375,7 +4495,7 @@ func matchedTUILogIndexes(snapshot tuiSnapshot) []int {
 func firstTUIRequestMatch(snapshot tuiSnapshot) int {
 	indexes := matchedTUIRequestIndexes(snapshot)
 	if len(indexes) == 0 {
-		return 0
+		return -1
 	}
 	return indexes[0]
 }
@@ -4383,7 +4503,7 @@ func firstTUIRequestMatch(snapshot tuiSnapshot) int {
 func firstTUIConnectionMatch(snapshot tuiSnapshot) int {
 	indexes := matchedTUIConnectionIndexes(snapshot)
 	if len(indexes) == 0 {
-		return 0
+		return -1
 	}
 	return indexes[0]
 }
@@ -4391,7 +4511,7 @@ func firstTUIConnectionMatch(snapshot tuiSnapshot) int {
 func firstTUILogMatch(snapshot tuiSnapshot) int {
 	indexes := matchedTUILogIndexes(snapshot)
 	if len(indexes) == 0 {
-		return 0
+		return -1
 	}
 	return indexes[len(indexes)-1]
 }
@@ -4402,6 +4522,13 @@ func moveTUIRequestMatch(snapshot *tuiSnapshot, delta int) {
 		return
 	}
 	position := findTUIInt(indexes, snapshot.SelectedRequest)
+	if position < 0 {
+		if delta < 0 {
+			position = 0
+		} else {
+			position = -1
+		}
+	}
 	snapshot.SelectedRequest = indexes[wrapTUIIndex(position, delta, len(indexes))]
 }
 
@@ -4411,6 +4538,13 @@ func moveTUIConnectionMatch(snapshot *tuiSnapshot, delta int) {
 		return
 	}
 	position := findTUIInt(indexes, snapshot.SelectedConnection)
+	if position < 0 {
+		if delta < 0 {
+			position = 0
+		} else {
+			position = -1
+		}
+	}
 	snapshot.SelectedConnection = indexes[wrapTUIIndex(position, delta, len(indexes))]
 }
 
@@ -4702,33 +4836,39 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 }
 
 func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
-	if snapshot.SSHDetailOpen {
-		drawTUISSHDashboard(b, snapshot, width, height)
-		return
+	profileLimit := 5
+	if height < 18 {
+		profileLimit = 1
+	} else if height < 33 {
+		profileLimit = 3
 	}
 	tuiTitle(
 		b,
-		"SSH",
-		"Local traffic → SSH host exit · Enter Dashboard · n add · e edit · x delete · d test",
+		fmt.Sprintf("SSH profiles · %d configured", len(snapshot.SSHProfiles)),
+		"↑↓ select · Enter connect/Dashboard · Tab focus · n add · e edit · x delete",
 		width,
 	)
 	if len(snapshot.SSHProfiles) == 0 {
 		tuiRow(b, "No SSH profiles · press n to add one", width, false, tuiDim)
 		tuiEndPanel(b, width)
+		tuiEmptyPanel(b, "SSH Dashboard", "Add an SSH profile to start a tunnel", width)
 		return
 	}
-	limit := maxTUIWidth(height-3, 1)
 	start, end := tuiVisibleRange(
 		len(snapshot.SSHProfiles),
 		snapshot.SelectedSSH,
-		limit,
+		minTUI(profileLimit, len(snapshot.SSHProfiles)),
 	)
 	for index := start; index < end; index++ {
 		profile := snapshot.SSHProfiles[index]
 		status := "DISCONNECTED"
 		endpoint := ""
 		color := tuiDim
-		if profile.Connected && profile.Ready {
+		if profile.NeedsUsername {
+			status = "NEEDS USER"
+			endpoint = " · edit profile before connecting"
+			color = tuiYellow
+		} else if profile.Connected && profile.Ready {
 			status = "CONNECTED"
 			configured := "auto"
 			if profile.LocalPort > 0 {
@@ -4770,33 +4910,40 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 			b,
 			row,
 			width,
-			index == snapshot.SelectedSSH && !snapshot.FocusSidebar,
+			index == snapshot.SelectedSSH &&
+				!snapshot.FocusSidebar &&
+				!snapshot.SSHDashboardFocus,
 			color,
 		)
 	}
 	tuiEndPanel(b, width)
+	drawTUISSHDashboard(b, snapshot, width, height, end-start)
 }
 
-func drawTUISSHDashboard(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
+func drawTUISSHDashboard(
+	b *strings.Builder,
+	snapshot tuiSnapshot,
+	width,
+	height,
+	profileRows int,
+) {
 	if snapshot.SelectedSSH < 0 || snapshot.SelectedSSH >= len(snapshot.SSHProfiles) {
-		tuiEmptyPanel(b, "SSH Dashboard", "Selected SSH profile is unavailable · Esc to return", width)
+		tuiEmptyPanel(b, "SSH Dashboard", "Selected SSH profile is unavailable", width)
 		return
 	}
 	profile := snapshot.SSHProfiles[snapshot.SelectedSSH]
 	status := "DISCONNECTED · Enter to connect"
 	statusColor := tuiDim
-	if profile.Connected && profile.Ready {
+	if profile.NeedsUsername {
+		status = "USERNAME REQUIRED · edit profile before connecting"
+		statusColor = tuiYellow
+	} else if profile.Connected && profile.Ready {
 		status = fmt.Sprintf("CONNECTED · SOCKS5 127.0.0.1:%d · Enter to disconnect", profile.SocksPort)
 		statusColor = tuiGreen
 	} else if profile.Connected {
 		status = "BROKEN · Enter to reconnect"
 		statusColor = tuiRed
 	}
-	tuiTitle(b, "SSH Dashboard · "+profile.Name, "Esc profiles · Enter controls selected item", width)
-	tuiRow(b, "Tunnel        "+status, width, snapshot.SelectedSSHDetail == 0 && !snapshot.FocusSidebar, statusColor)
-	tuiRow(b, "SSH host      "+profile.Destination+":"+strconv.Itoa(profile.Port), width, false, tuiCyan)
-	tuiEndPanel(b, width)
-
 	publicIP := "Not checked · press n"
 	if snapshot.SSHNetwork.Loading {
 		publicIP = "Checking through SSH exit..."
@@ -4808,25 +4955,61 @@ func drawTUISSHDashboard(b *strings.Builder, snapshot tuiSnapshot, width, height
 	} else if snapshot.SSHNetwork.Error != "" {
 		publicIP = "Unavailable · " + snapshot.SSHNetwork.Error
 	}
+	focused := !snapshot.FocusSidebar && snapshot.SSHDashboardFocus
+	if height < 18 {
+		tuiTitle(
+			b,
+			"SSH Dashboard · "+profile.Name,
+			"Tab focus · ↑↓ select · Enter run · n IP · d RTT · v speed",
+			width,
+		)
+		tuiRow(b, "Tunnel        "+status, width, focused && snapshot.SelectedSSHDetail == 0, statusColor)
+		if snapshot.SelectedSSHDetail != 0 {
+			label, color := tuiSSHSelectedDashboardRow(snapshot, publicIP)
+			tuiRow(b, label, width, focused, color)
+		}
+		writeTUIAnsiRow(b, "Traffic       "+formatTUITrafficLegend(snapshot.SSHTraffic, tuiTrafficPeak(snapshot.SSHTrafficHistory)), width)
+		tuiEndPanel(b, width)
+		return
+	}
+
+	tuiTitle(
+		b,
+		"SSH Dashboard · "+profile.Name,
+		"Tab profiles/sidebar · ↑↓ select · Enter run · n IP · d RTT · v speed",
+		width,
+	)
+	tuiRow(b, "Tunnel        "+status, width, focused && snapshot.SelectedSSHDetail == 0, statusColor)
+	tuiRow(b, "SSH host      "+profile.Destination+":"+strconv.Itoa(profile.Port), width, false, tuiCyan)
+	tuiEndPanel(b, width)
+
 	networkSubtitle := "SOCKS5 SSH route · d RTT×5 · v CF speed · n refresh"
 	if !snapshot.SSHNetwork.CheckedAt.IsZero() {
 		networkSubtitle += " · checked " + snapshot.SSHNetwork.CheckedAt.Format("15:04:05")
 	}
 	tuiTitle(b, "Network detection", networkSubtitle, width)
-	tuiRow(b, "Public IP     "+publicIP, width, snapshot.SelectedSSHDetail == 1 && !snapshot.FocusSidebar, tuiCyan)
+	tuiRow(b, "Public IP     "+publicIP, width, focused && snapshot.SelectedSSHDetail == 1, tuiCyan)
 	tuiRow(b, "Intranet IP   "+cliDisplayValue(snapshot.SSHNetwork.IntranetIP), width, false, tuiGreen)
-	tuiRow(b, "SSH route     "+tuiDashboardDelayLabel(snapshot.SSHDelay), width, snapshot.SelectedSSHDetail == 2 && !snapshot.FocusSidebar, tuiCyan)
-	tuiRow(b, "Cloudflare DL "+tuiSpeedResultLabel(snapshot.SSHSpeed), width, snapshot.SelectedSSHDetail == 3 && !snapshot.FocusSidebar, tuiGreen)
+	tuiRow(b, "SSH route     "+tuiDashboardDelayLabel(snapshot.SSHDelay), width, focused && snapshot.SelectedSSHDetail == 2, tuiCyan)
+	tuiRow(b, "Cloudflare DL "+tuiSpeedResultLabel(snapshot.SSHSpeed), width, focused && snapshot.SelectedSSHDetail == 3, tuiGreen)
 	tuiEndPanel(b, width)
 
-	plotHeight := minTUI(maxTUIWidth(height-25, 3), 6)
-	chart := buildTUITrafficChart(snapshot.SSHTrafficHistory, maxTUIWidth(width-4, 1), plotHeight)
-	tuiTrafficTitle(b, snapshot.SSHTraffic, chart.peak, width)
-	for _, line := range chart.lines {
-		writeTUIAnsiRow(b, line, width)
+	if height >= 24 {
+		plotHeight := minTUI(maxTUIWidth(height-profileRows-19, 2), 6)
+		if height >= 33 {
+			plotHeight = minTUI(maxTUIWidth(height-profileRows-20, 3), 6)
+		}
+		chart := buildTUITrafficChart(snapshot.SSHTrafficHistory, maxTUIWidth(width-4, 1), plotHeight)
+		tuiTrafficTitle(b, snapshot.SSHTraffic, chart.peak, width)
+		for _, line := range chart.lines {
+			writeTUIAnsiRow(b, line, width)
+		}
+		tuiEndPanel(b, width)
 	}
-	tuiEndPanel(b, width)
 
+	if height < 33 {
+		return
+	}
 	uptime := "not connected"
 	if profile.Connected && !profile.StartedAt.IsZero() {
 		uptime = time.Since(profile.StartedAt).Round(time.Second).String()
@@ -4837,6 +5020,27 @@ func drawTUISSHDashboard(b *strings.Builder, snapshot tuiSnapshot, width, height
 	tuiRow(b, "Uptime        "+uptime, width, false, "")
 	tuiRow(b, "Scope         only traffic through this SSH SOCKS5 port", width, false, tuiDim)
 	tuiEndPanel(b, width)
+}
+
+func tuiSSHSelectedDashboardRow(snapshot tuiSnapshot, publicIP string) (string, string) {
+	switch snapshot.SelectedSSHDetail {
+	case 1:
+		return "Public IP     " + publicIP, tuiCyan
+	case 2:
+		return "SSH route     " + tuiDashboardDelayLabel(snapshot.SSHDelay), tuiCyan
+	case 3:
+		return "Cloudflare DL " + tuiSpeedResultLabel(snapshot.SSHSpeed), tuiGreen
+	default:
+		return "Public IP     " + publicIP, tuiCyan
+	}
+}
+
+func tuiTrafficPeak(history []trafficSnapshot) int64 {
+	var peak int64
+	for _, sample := range history {
+		peak = maxTUIInt64(peak, maxTUIInt64(sample.Up, sample.Down))
+	}
+	return peak
 }
 
 func truncateTUI(value string, width int) string {

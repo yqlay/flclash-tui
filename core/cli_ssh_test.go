@@ -3,7 +3,10 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"net"
 	"os"
@@ -15,6 +18,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	cryptossh "golang.org/x/crypto/ssh"
 )
 
 func TestParseCLISSHProfileEdit(t *testing.T) {
@@ -34,10 +38,76 @@ func TestParseCLISSHProfileEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if interactive || edit.Name != "school" ||
+		edit.Username != "student" || edit.Host != "example.edu" ||
 		edit.Destination != "student@example.edu" || edit.Port != 2222 ||
 		edit.Identity != "/tmp/id_ed25519" || edit.LocalPort != 1080 ||
 		!edit.LocalPortSet || len(edit.Options) != 1 {
 		t.Fatalf("unexpected parsed profile: %+v", edit)
+	}
+}
+
+func TestParseCLISSHProfileEditSupportsSeparateRequiredUsername(t *testing.T) {
+	edit, interactive, err := parseCLISSHProfileEdit([]string{
+		"school",
+		"example.edu",
+		"--user",
+		"student",
+	}, false)
+	if err != nil || interactive || edit.Username != "student" ||
+		edit.Host != "example.edu" {
+		t.Fatalf("separate SSH username parse = %+v, interactive:%t err:%v", edit, interactive, err)
+	}
+	if _, _, err := parseCLISSHProfileEdit([]string{"school", "example.edu"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cliSSHProfileFromEdit(cliSSHProfile{}, cliSSHProfileEdit{
+		Name: "school",
+		Host: "example.edu",
+		Port: 22,
+	}, false); err == nil || !strings.Contains(err.Error(), "username") {
+		t.Fatalf("missing SSH username error = %v", err)
+	}
+}
+
+func TestCLISSHConfigV1MigrationSplitsDestinationAndMarksBareHost(t *testing.T) {
+	configRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	directory := filepath.Join(configRoot, "flclash")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, cliSSHConfigFilename)
+	legacy := `{"version":1,"profiles":[` +
+		`{"name":"split","destination":"student@example.edu","port":22},` +
+		`{"name":"incomplete","destination":"ssh-alias","port":22}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadCLISSHConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Profiles[0].Username != "student" || config.Profiles[0].Host != "example.edu" ||
+		config.Profiles[1].Username != "" || config.Profiles[1].Host != "ssh-alias" {
+		t.Fatalf("migrated SSH profiles = %+v", config.Profiles)
+	}
+	views, err := loadCLISSHProfileViews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 2 || !views[1].NeedsUsername {
+		t.Fatalf("legacy bare host was not marked incomplete: %+v", views)
+	}
+	if err := updateCLISSHConfig(func(*cliSSHConfig) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"version": 2`) ||
+		strings.Contains(string(data), `"destination"`) {
+		t.Fatalf("SSH config was not serialized as v2: %s", data)
 	}
 }
 
@@ -144,6 +214,98 @@ func TestCLISSHAskpassSelectsKeyPassphraseAndPassword(t *testing.T) {
 	}
 	if _, err := cliSSHAskpassAnswer("Confirm host key?", path); err == nil {
 		t.Fatal("askpass answered an unrelated authentication prompt")
+	}
+}
+
+func writeTestCLISSHPrivateKey(
+	t *testing.T,
+	passphrase string,
+) string {
+	t.Helper()
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var block *pem.Block
+	if passphrase == "" {
+		block, err = cryptossh.MarshalPrivateKey(key, "flclash-test")
+	} else {
+		block, err = cryptossh.MarshalPrivateKeyWithPassphrase(
+			key,
+			"flclash-test",
+			[]byte(passphrase),
+		)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "id_ed25519")
+	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestInspectCLISSHIdentityDistinguishesEncryption(t *testing.T) {
+	plain := writeTestCLISSHPrivateKey(t, "")
+	kind, err := inspectCLISSHIdentity(plain, "")
+	if err != nil || kind != cliSSHIdentityUnencrypted {
+		t.Fatalf("plain SSH key inspection = %v, %v", kind, err)
+	}
+	encrypted := writeTestCLISSHPrivateKey(t, "key-secret")
+	kind, err = inspectCLISSHIdentity(encrypted, "")
+	if err != nil || kind != cliSSHIdentityEncrypted {
+		t.Fatalf("encrypted SSH key inspection = %v, %v", kind, err)
+	}
+	if _, err := inspectCLISSHIdentity(encrypted, "wrong"); err == nil ||
+		!strings.Contains(err.Error(), "incorrect") {
+		t.Fatalf("wrong key passphrase error = %v", err)
+	}
+	if kind, err = inspectCLISSHIdentity(encrypted, "key-secret"); err != nil || kind != cliSSHIdentityEncrypted {
+		t.Fatalf("unlocked SSH key inspection = %v, %v", kind, err)
+	}
+}
+
+func TestInspectCLISSHIdentityRejectsOpenPermissions(t *testing.T) {
+	path := writeTestCLISSHPrivateKey(t, "")
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspectCLISSHIdentity(path, ""); err == nil ||
+		!strings.Contains(err.Error(), "permissions are too open") ||
+		!strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("open SSH key permissions error = %v", err)
+	}
+}
+
+func TestPrepareCLISSHProfileCredentialsRequestsOnlyEncryptedKeyPassphrase(t *testing.T) {
+	plain := cliSSHProfile{
+		Name:     "plain",
+		Username: "student",
+		Host:     "example.edu",
+		Port:     22,
+		Identity: writeTestCLISSHPrivateKey(t, ""),
+	}
+	if _, err := prepareCLISSHProfileCredentials(plain, cliSSHCredentials{}); err != nil {
+		t.Fatalf("unencrypted SSH key required a passphrase: %v", err)
+	}
+	encrypted := plain
+	encrypted.Name = "encrypted"
+	encrypted.Identity = writeTestCLISSHPrivateKey(t, "key-secret")
+	if _, err := prepareCLISSHProfileCredentials(encrypted, cliSSHCredentials{}); err == nil {
+		t.Fatal("encrypted SSH key without passphrase was accepted")
+	} else {
+		var required *cliSSHCredentialRequiredError
+		if !errors.As(err, &required) {
+			t.Fatalf("encrypted SSH key error = %T %v", err, err)
+		}
+	}
+	prepared, err := prepareCLISSHProfileCredentials(
+		encrypted,
+		cliSSHCredentials{IdentityPassphrase: "key-secret"},
+	)
+	if err != nil || prepared.IdentityPassphrase != "key-secret" {
+		t.Fatalf("one-time key passphrase preparation = %+v, %v", prepared, err)
 	}
 }
 
@@ -285,14 +447,15 @@ func TestTUISSHPageRendersMaskedAuthentication(t *testing.T) {
 		"private Unix socket",
 		true,
 		false,
-		180,
+		220,
 		30,
 	))
 	for _, expected := range []string{
-		"SSH",
+		"SSH profiles · 1 configured",
+		"SSH Dashboard · school",
 		"school",
 		"CONNECTED",
-		"key + passphrase **** + password ****",
+		"key + passphrase **** → password **** fallback/MFA",
 		"SOCKS5 127.0.0.1:45678",
 		"configured 1080",
 	} {
@@ -333,7 +496,7 @@ func TestTUISSHDashboardShowsExitTestsAndRelayTraffic(t *testing.T) {
 	output := stripTUIANSI(renderTUIAtSize(
 		tuiSnapshot{
 			Page:              tuiPageSSH,
-			SSHDetailOpen:     true,
+			SSHDashboardFocus: true,
 			SSHConnections:    2,
 			SSHTraffic:        trafficSnapshot{Up: 1024, Down: 2048},
 			SSHTotalTraffic:   trafficSnapshot{Up: 4096, Down: 8192},
@@ -357,6 +520,7 @@ func TestTUISSHDashboardShowsExitTestsAndRelayTraffic(t *testing.T) {
 		40,
 	))
 	for _, expected := range []string{
+		"SSH profiles · 1 configured",
 		"SSH Dashboard · school",
 		"SOCKS5 127.0.0.1:1080",
 		"203.0.113.8  [SG]",
@@ -371,8 +535,10 @@ func TestTUISSHDashboardShowsExitTestsAndRelayTraffic(t *testing.T) {
 	}
 }
 
-func TestTUIEnterOpensDashboardThenReconnectsBrokenSSHProfile(t *testing.T) {
+func TestTUIEnterReconnectsBrokenSSHProfileFromProfileBox(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.width = 120
+	model.height = 30
 	model.snapshot.Page = tuiPageSSH
 	model.snapshot.FocusSidebar = false
 	model.snapshot.SSHProfiles = []tuiSSHProfile{{
@@ -380,13 +546,133 @@ func TestTUIEnterOpensDashboardThenReconnectsBrokenSSHProfile(t *testing.T) {
 		Connected: true,
 		Ready:     false,
 	}}
-	_ = model.selectCurrent()
-	if !model.sshDetailOpen {
-		t.Fatal("SSH list Enter did not open the profile Dashboard")
-	}
 	command := model.selectCurrent()
 	if command == nil || model.snapshot.Status != "SSH connect school..." {
-		t.Fatalf("broken SSH Dashboard action = command:%t status:%q", command != nil, model.snapshot.Status)
+		t.Fatalf("broken SSH profile action = command:%t status:%q", command != nil, model.snapshot.Status)
+	}
+	if model.snapshot.SSHDashboardFocus {
+		t.Fatal("broken SSH profile moved focus before reconnecting")
+	}
+}
+
+func TestTUIEnterFocusesDashboardForHealthySSHProfile(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.FocusSidebar = false
+	model.snapshot.SSHProfiles = []tuiSSHProfile{{
+		Name:      "school",
+		Connected: true,
+		Ready:     true,
+		SocksPort: 1080,
+	}}
+	command := model.selectCurrent()
+	if !model.snapshot.SSHDashboardFocus {
+		t.Fatal("healthy SSH profile Enter did not focus its Dashboard")
+	}
+	if command == nil {
+		t.Fatal("healthy SSH profile Enter did not refresh Dashboard data")
+	}
+	if strings.Contains(model.snapshot.Status, "disconnect") {
+		t.Fatalf("profile-box Enter unexpectedly disconnected tunnel: %q", model.snapshot.Status)
+	}
+}
+
+func TestTUISSHProfileSelectionResetsMetricsAndRefreshesReadyProfile(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.SSHProfiles = []tuiSSHProfile{
+		{Name: "first"},
+		{Name: "second", Connected: true, Ready: true, SocksPort: 1080},
+	}
+	model.snapshot.SSHNetwork = tuiNetworkInfo{PublicIP: "203.0.113.1"}
+	model.snapshot.SSHDelay = tuiDelayResult{MedianMillis: 25}
+	model.snapshot.SSHTrafficHistory = []trafficSnapshot{{Up: 10, Down: 20}}
+
+	command := model.moveSelection(1)
+	if model.snapshot.SelectedSSH != 1 {
+		t.Fatalf("selected SSH profile = %d, want 1", model.snapshot.SelectedSSH)
+	}
+	if model.snapshot.SSHNetwork.PublicIP != "" ||
+		model.snapshot.SSHDelay.MedianMillis != 0 ||
+		len(model.snapshot.SSHTrafficHistory) != 0 {
+		t.Fatalf("SSH metrics survived profile switch: %+v", model.snapshot)
+	}
+	if command == nil {
+		t.Fatal("ready SSH profile switch did not schedule Dashboard refresh")
+	}
+}
+
+func TestTUISSHNewKeyUsesCurrentFocus(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.FocusSidebar = false
+	_ = model.handleKey(tuiKeyNewProfile)
+	if !model.sshFormOpen {
+		t.Fatal("n in SSH profile box did not open add form")
+	}
+
+	model.resetSSHForm()
+	model.snapshot.SSHDashboardFocus = true
+	_ = model.handleKey(tuiKeyNewProfile)
+	if model.sshFormOpen {
+		t.Fatal("n in SSH Dashboard unexpectedly opened add form")
+	}
+}
+
+func TestTUISSHCompactPageKeepsProfilesAndDashboardVisible(t *testing.T) {
+	output := stripTUIANSI(tuiRenderPage(
+		tuiSnapshot{
+			Page: tuiPageSSH,
+			SSHProfiles: []tuiSSHProfile{{
+				Name:        "school",
+				Destination: "student@example.edu",
+				Port:        22,
+			}},
+		},
+		cliPaths{},
+		96,
+		12,
+	))
+	for _, expected := range []string{
+		"SSH profiles · 1 configured",
+		"SSH Dashboard · school",
+		"Traffic",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("compact SSH page does not contain %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestTUISSHEncryptedKeyPromptStaysInsideFrameAndMasksInput(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.SSHProfiles = []tuiSSHProfile{{Name: "school"}}
+	_, _ = model.Update(tuiSSHCommandResultMsg{
+		action:       "connect",
+		selectedName: "school",
+		err: &cliSSHCredentialRequiredError{
+			Profile:  "school",
+			Identity: "/home/student/.ssh/id_ed25519",
+		},
+	})
+	if !model.sshCredentialPromptOpen {
+		t.Fatal("encrypted SSH key did not open the TUI credential prompt")
+	}
+	secret := "one-time-secret"
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(secret)})
+	view := model.View()
+	if strings.Contains(view, secret) || !strings.Contains(stripTUIANSI(view), "One-time credential") {
+		t.Fatalf("SSH credential prompt leaked or omitted state:\n%s", view)
+	}
+	_, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command == nil || model.sshCredentialPromptOpen || len(model.sshCredentialInput) != 0 {
+		t.Fatalf(
+			"SSH credential submission = command:%t open:%t input:%d",
+			command != nil,
+			model.sshCredentialPromptOpen,
+			len(model.sshCredentialInput),
+		)
 	}
 }
 
@@ -396,7 +682,8 @@ func TestTUISSHFormUsesDistinctHostKeyAndSecretLabels(t *testing.T) {
 		SSHForm: tuiSSHFormView{
 			Open:          true,
 			Name:          "school",
-			Destination:   "student@example.edu",
+			Username:      "student",
+			Host:          "example.edu",
 			Port:          22,
 			Identity:      "/tmp/id_ed25519",
 			PassphraseSet: true,
@@ -413,7 +700,10 @@ func TestTUISSHFormUsesDistinctHostKeyAndSecretLabels(t *testing.T) {
 		30,
 	))
 	for _, expected := range []string{
+		"SSH username",
+		"student",
 		"SSH host",
+		"example.edu",
 		"Identity(private key)",
 		"Key passphrase",
 		"SSH password",
@@ -432,6 +722,7 @@ func TestCLISSHProfileEditPreservesOrClearsCredentialsIndependently(t *testing.T
 		Name:               "school",
 		Destination:        "student@example.edu",
 		Port:               22,
+		Identity:           "/tmp/id_ed25519",
 		IdentityPassphrase: "key-secret",
 		Password:           "login-secret",
 	}
@@ -479,6 +770,8 @@ func TestCLISSHRejectsManagedForwardingOptions(t *testing.T) {
 
 func TestCLISSHTunnelArgumentsUseSafeFirstConnectPolicy(t *testing.T) {
 	profile := cliSSHProfile{
+		Username: "student",
+		Host:     "example.edu",
 		Port:     2222,
 		Identity: "/tmp/id_ed25519",
 	}
@@ -487,6 +780,10 @@ func TestCLISSHTunnelArgumentsUseSafeFirstConnectPolicy(t *testing.T) {
 	for _, expected := range []string{
 		"-p 2222",
 		"-i /tmp/id_ed25519",
+		"-l student",
+		"PreferredAuthentications=publickey",
+		"PasswordAuthentication=no",
+		"BatchMode=yes",
 		"ClearAllForwardings=yes",
 		"StrictHostKeyChecking=accept-new",
 	} {
@@ -508,6 +805,90 @@ func TestCLISSHTunnelArgumentsUseSafeFirstConnectPolicy(t *testing.T) {
 	})
 	if joined := strings.Join(forwardArguments, " "); !strings.Contains(joined, "-O forward -D 127.0.0.1:1080") {
 		t.Fatalf("dynamic forward control arguments are incomplete: %v", forwardArguments)
+	}
+}
+
+func TestCLISSHTunnelArgumentsUseDeterministicAuthenticationMatrix(t *testing.T) {
+	tests := []struct {
+		name       string
+		profile    cliSSHProfile
+		expected   []string
+		unexpected []string
+	}{
+		{
+			name: "key_and_password",
+			profile: cliSSHProfile{
+				Identity: "/tmp/key",
+				Password: "secret",
+			},
+			expected: []string{
+				"IdentitiesOnly=yes",
+				"PreferredAuthentications=publickey,keyboard-interactive,password",
+			},
+		},
+		{
+			name: "password_only",
+			profile: cliSSHProfile{
+				Password: "secret",
+			},
+			expected: []string{
+				"PubkeyAuthentication=no",
+				"PreferredAuthentications=keyboard-interactive,password",
+			},
+		},
+		{
+			name:    "agent_default_key",
+			profile: cliSSHProfile{},
+			expected: []string{
+				"PreferredAuthentications=publickey",
+				"PasswordAuthentication=no",
+			},
+			unexpected: []string{"NumberOfPasswordPrompts"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.profile.Username = "student"
+			test.profile.Host = "example.edu"
+			test.profile.Port = 22
+			joined := strings.Join(cliSSHTunnelArguments(test.profile, "/tmp/control"), " ")
+			for _, expected := range test.expected {
+				if !strings.Contains(joined, expected) {
+					t.Fatalf("SSH auth arguments missing %q: %s", expected, joined)
+				}
+			}
+			for _, unexpected := range test.unexpected {
+				if strings.Contains(joined, unexpected) {
+					t.Fatalf("SSH auth arguments contain %q: %s", unexpected, joined)
+				}
+			}
+		})
+	}
+}
+
+func TestRunCLISSHCommandCapturesWarningsWithoutTerminalOutput(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	clearTUILogs()
+	command := exec.Command(
+		"sh",
+		"-c",
+		"printf '%s\\n' '** WARNING: connection is not using a post-quantum key exchange algorithm.' >&2",
+	)
+	if err := runCLISSHCommand(command, "ssh_connect", true); err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(cliLogSnapshot(), "\n"); !strings.Contains(joined, "post-quantum key exchange") {
+		t.Fatalf("captured OpenSSH warning was not written to Logs: %s", joined)
+	}
+	failure := exec.Command(
+		"sh",
+		"-c",
+		"printf '%s\\n' '** WARNING: connection is not using a post-quantum key exchange algorithm.' 'Permission denied (publickey).' >&2; exit 1",
+	)
+	err := runCLISSHCommand(failure, "ssh_connect", true)
+	if err == nil || !strings.Contains(err.Error(), "Permission denied") ||
+		strings.Contains(err.Error(), "post-quantum") {
+		t.Fatalf("captured SSH failure summary = %v", err)
 	}
 }
 
@@ -818,13 +1199,15 @@ func TestTUISSHAddAndEditStayInsideTUI(t *testing.T) {
 	if !model.sshFormOpen || model.sshFormExisting {
 		t.Fatalf("SSH add form state = open %t existing %t", model.sshFormOpen, model.sshFormExisting)
 	}
+	keyPassphrase := "never-render-this-passphrase"
+	identity := writeTestCLISSHPrivateKey(t, keyPassphrase)
 	model.sshForm = cliSSHProfile{
 		Name:               "school",
 		Destination:        "student@example.edu",
 		Port:               2222,
 		LocalPort:          1080,
-		Identity:           "/tmp/id_ed25519",
-		IdentityPassphrase: "never-render-this-passphrase",
+		Identity:           identity,
+		IdentityPassphrase: keyPassphrase,
 		Password:           "never-render-this-password",
 		Options:            []string{"StrictHostKeyChecking=yes"},
 	}
@@ -861,7 +1244,8 @@ func TestTUISSHAddAndEditStayInsideTUI(t *testing.T) {
 		model.sshForm.Password != "never-render-this-password" {
 		t.Fatalf("SSH edit form did not load the selected profile: %+v", model.sshForm)
 	}
-	model.sshForm.Destination = "new@example.edu"
+	model.sshForm.Username = "new"
+	model.sshForm.Host = "example.edu"
 	model.sshFormSelected = model.sshFormSaveRow()
 	command = model.activateSSHFormRow()
 	message = command().(tuiSSHCommandResultMsg)
@@ -918,13 +1302,16 @@ func TestCLISSHLocalPortPolicy(t *testing.T) {
 func TestTUISSHFormSecretsAndOptionEditing(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.sshFormOpen = true
+	identity := writeTestCLISSHPrivateKey(t, "old-passphrase")
 	model.sshForm = cliSSHProfile{
 		Name:               "school",
 		Destination:        "student@example.edu",
 		Port:               22,
+		Identity:           identity,
 		IdentityPassphrase: "old-passphrase",
 		Password:           "old-password",
 	}
+	model.refreshSSHFormIdentityState()
 	model.sshFormSelected = tuiSSHFormLocalPortRow
 	model.beginSSHFormFieldEdit()
 	model.sshFormInput = []rune("1080")
@@ -1280,13 +1667,15 @@ func TestReplaceCLISSHProfileRejectsStaleFrontend(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := updateCLISSHConfig(func(config *cliSSHConfig) error {
-		config.Profiles[0].Destination = "external@example.edu"
+		config.Profiles[0].Username = "external"
+		config.Profiles[0].Host = "example.edu"
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	stale := original
-	stale.Destination = "stale@example.edu"
+	stale.Username = "stale"
+	stale.Host = "example.edu"
 	err = replaceCLISSHProfile("school", fingerprint, stale)
 	if err == nil || !strings.Contains(err.Error(), "changed in another frontend") {
 		t.Fatalf("stale SSH edit error = %v", err)

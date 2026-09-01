@@ -212,9 +212,14 @@ type tuiModel struct {
 	sshFormPasswordCleared   bool
 	sshFormPasswordConfirm   bool
 	sshFormPasswordFirst     string
+	sshFormIdentityKind      cliSSHIdentityKind
+	sshFormIdentityError     string
 	sshDeleteConfirmOpen     bool
 	sshDeleteName            string
-	sshDetailOpen            bool
+	sshCredentialPromptOpen  bool
+	sshCredentialProfile     string
+	sshCredentialIdentity    string
+	sshCredentialInput       []rune
 	sshLastStats             cliSSHRelayStats
 	sshLastStatsAt           time.Time
 	sshLastStatsName         string
@@ -375,12 +380,26 @@ func runTUI(
 func (m *tuiModel) initializeCoreRuntime(coreRunning bool) {
 	m.coreRunning = coreRunning
 	if !coreRunning {
+		m.reconcileStoppedCoreState()
 		return
 	}
 	m.pendingMixedPort = nil
 	m.stagedSettings = nil
 	m.settingsDirty = false
 	m.snapshot.Settings = tuiSettings{}
+}
+
+// reconcileStoppedCoreState prevents a stopped Core from leaving stale active
+// connections or ACTIVE History rows on screen while an asynchronous refresh
+// is pending. Persistent History remains available, but every entry is closed.
+func (m *tuiModel) reconcileStoppedCoreState() {
+	if m.coreRunning {
+		return
+	}
+	m.snapshot.Connections = nil
+	m.snapshot.SelectedConnection = -1
+	m.snapshot.ConnectionsDetailOpen = false
+	m.snapshot.Requests, _ = markTUIRequestHistoryInactive(m.snapshot.Requests)
 }
 
 func tuiProgramOptions() []tea.ProgramOption {
@@ -438,6 +457,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.backendRevision = message.status.Revision
 		m.coreRunning = message.status.Running
+		m.reconcileStoppedCoreState()
 		m.snapshot.Settings.SystemProxy = message.status.SystemProxy
 		m.snapshot.Settings.Mode = message.status.Mode
 		m.snapshot.Settings.MixedPort = message.status.ConfiguredProxyPort
@@ -512,7 +532,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.waitTrafficUpdate()
 	case tuiSSHRelayStatsMsg:
-		if !m.sshDetailOpen || m.selectedSSHName() != message.name {
+		if m.selectedSSHName() != message.name {
 			return m, nil
 		}
 		if message.err != nil {
@@ -578,6 +598,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.serviceStatus != nil {
 			m.backendRevision = message.serviceStatus.Revision
 			m.coreRunning = message.serviceStatus.Running
+			m.reconcileStoppedCoreState()
 			m.snapshot.Settings.SystemProxy = message.serviceStatus.SystemProxy
 			m.snapshot.Settings.Mode = message.serviceStatus.Mode
 			m.snapshot.Settings.MixedPort = message.serviceStatus.ConfiguredProxyPort
@@ -616,6 +637,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.paths = message.state.paths
 		m.setupParams = append(m.setupParams[:0], message.state.setupParams...)
 		m.coreRunning = message.state.coreRunning
+		m.reconcileStoppedCoreState()
 		m.systemProxyManaged = message.state.systemProxyManaged
 		m.pendingMixedPort = cloneTUIOptionalInt(message.state.pendingMixedPort)
 		m.stagedSettings = cloneTUISettings(message.state.stagedSettings)
@@ -716,6 +738,14 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		})
 	case tuiSSHCommandResultMsg:
 		m.busy = false
+		var credentialRequired *cliSSHCredentialRequiredError
+		if message.action == "connect" && errors.As(message.err, &credentialRequired) {
+			m.beginSSHCredentialPrompt(
+				credentialRequired.Profile,
+				credentialRequired.Identity,
+			)
+			return m, nil
+		}
 		if message.err == nil && (message.action == "add" || message.action == "edit") {
 			m.resetSSHForm()
 		}
@@ -735,7 +765,17 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.snapshot.Status = "SSH " + message.action + " complete"
 		}
-		return m, m.startRefresh()
+		commands := []tea.Cmd{m.startRefresh()}
+		if message.err == nil {
+			switch message.action {
+			case "connect":
+				m.resetSelectedSSHMetrics()
+				commands = append(commands, m.refreshSelectedSSHDashboard())
+			case "disconnect":
+				m.resetSelectedSSHMetrics()
+			}
+		}
+		return m, tea.Batch(commands...)
 	case tea.KeyMsg:
 		if message.String() == "ctrl+n" || m.notificationDetailOpen {
 			return m, m.handleTeaKey(message)
@@ -748,6 +788,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.inputMode != tuiInputNone {
 			return m, m.handleInput(message)
+		}
+		if m.sshCredentialPromptOpen {
+			return m, m.handleSSHCredentialPrompt(message)
 		}
 		if m.sshDeleteConfirmOpen {
 			return m, m.handleSSHDeleteConfirm(message)
@@ -785,7 +828,7 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 	if message.String() == "v" &&
 		(m.snapshot.Page == tuiPageDashboard ||
 			m.snapshot.Page == tuiPageProxies ||
-			m.snapshot.Page == tuiPageSSH && m.sshDetailOpen) {
+			m.snapshot.Page == tuiPageSSH && m.snapshot.SSHDashboardFocus) {
 		key = tuiKeySpeedTest
 	}
 	if key == tuiKeyNotifications {
@@ -805,7 +848,12 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 		m.snapshot.ShowHelp = false
 		return nil
 	}
+	previousPage := m.snapshot.Page
 	if handleTUIFocusNavigation(&m.snapshot, key) {
+		if previousPage != tuiPageSSH && m.snapshot.Page == tuiPageSSH {
+			m.resetSelectedSSHMetrics()
+			return m.refreshSelectedSSHDashboard()
+		}
 		return nil
 	}
 	if m.busy && !tuiKeyAllowedWhileBusy(key) {
@@ -838,11 +886,16 @@ func tuiKeyAllowedWhileBusy(key tuiKey) bool {
 
 func (m *tuiModel) View() string {
 	snapshot := m.snapshot
-	snapshot.SSHDetailOpen = m.sshDetailOpen
 	snapshot.DangerConfirmOpen = m.dangerConfirmOpen
 	snapshot.DangerConfirmTitle = m.dangerConfirmTitle
 	snapshot.DangerConfirmMessage = m.dangerConfirmMessage
 	snapshot.SSHForm = m.sshFormView()
+	snapshot.SSHCredentialPrompt = tuiSSHCredentialPromptView{
+		Open:     m.sshCredentialPromptOpen,
+		Profile:  m.sshCredentialProfile,
+		Identity: m.sshCredentialIdentity,
+		Value:    strings.Repeat("•", len(m.sshCredentialInput)),
+	}
 	snapshot.ProfileDelete = tuiProfileDeleteView{
 		Open: m.profileDeleteOpen,
 		Name: m.profileDeleteName,
@@ -894,15 +947,20 @@ func (m *tuiModel) View() string {
 }
 
 func (m *tuiModel) sshFormView() tuiSSHFormView {
+	profile := normalizeCLISSHProfile(m.sshForm)
 	view := tuiSSHFormView{
 		Open:              m.sshFormOpen,
 		Existing:          m.sshFormExisting,
 		ReadOnly:          m.sshFormReadOnly,
-		Name:              m.sshForm.Name,
-		Destination:       m.sshForm.Destination,
+		Name:              profile.Name,
+		Username:          profile.Username,
+		Host:              profile.Host,
+		Destination:       profile.Destination,
 		Port:              m.sshForm.Port,
 		LocalPort:         m.sshForm.LocalPort,
 		Identity:          m.sshForm.Identity,
+		IdentityKind:      m.sshFormIdentityKind,
+		IdentityError:     m.sshFormIdentityError,
 		PassphraseSet:     m.sshForm.IdentityPassphrase != "",
 		PassphraseChanged: m.sshFormPassphraseChanged,
 		PassphraseCleared: m.sshFormPassphraseCleared,
@@ -1188,6 +1246,10 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	if current.SelectedRow >= 0 && current.SelectedRow < len(current.Profiles) {
 		selectedProfilePath = current.Profiles[current.SelectedRow].Path
 	}
+	selectedSSHName := ""
+	if current.SelectedSSH >= 0 && current.SelectedSSH < len(current.SSHProfiles) {
+		selectedSSHName = current.SSHProfiles[current.SelectedSSH].Name
+	}
 
 	updated.Page = current.Page
 	updated.SelectedMenu = current.SelectedMenu
@@ -1197,9 +1259,21 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	updated.SelectedMaintenance = current.SelectedMaintenance
 	updated.ProxyView = current.ProxyView
 	updated.ProxyNodeFocus = current.ProxyNodeFocus
+	updated.SSHDashboardFocus = current.SSHDashboardFocus
+	updated.SelectedSSHDetail = current.SelectedSSHDetail
 	updated.ManagedService = current.ManagedService
 	updated.FocusSidebar = current.FocusSidebar
 	updated.ShowHelp = current.ShowHelp
+	updated.SSHNetwork = current.SSHNetwork
+	updated.SSHDelay = current.SSHDelay
+	updated.SSHSpeed = current.SSHSpeed
+	updated.SSHTraffic = current.SSHTraffic
+	updated.SSHTrafficHistory = append(
+		[]trafficSnapshot(nil),
+		current.SSHTrafficHistory...,
+	)
+	updated.SSHTotalTraffic = current.SSHTotalTraffic
+	updated.SSHConnections = current.SSHConnections
 	if len(current.GroupOrder) > 0 {
 		updated.GroupOrder = append([]string(nil), current.GroupOrder...)
 		orderTUIGroups(updated.Groups, updated.GroupOrder)
@@ -1262,7 +1336,20 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	if !importSelected && len(updated.Profiles) == 0 {
 		updated.SelectedRow = tuiProfileImportSubscriptionRow
 	}
+	updated.SelectedSSH = findTUISSHProfile(updated.SSHProfiles, selectedSSHName)
+	if selectedSSHName == "" {
+		updated.SelectedSSH = clampTUISelection(current.SelectedSSH, len(updated.SSHProfiles))
+	}
 	return updated
+}
+
+func findTUISSHProfile(profiles []tuiSSHProfile, name string) int {
+	for index, profile := range profiles {
+		if strings.EqualFold(profile.Name, name) {
+			return index
+		}
+	}
+	return 0
 }
 
 func mergeTUIGroupDelays(current, updated []tuiGroup) {
@@ -1349,9 +1436,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			}
 		}
 	case tuiKeyBack:
-		if m.snapshot.Page == tuiPageSSH && m.sshDetailOpen {
-			m.sshDetailOpen = false
-			m.snapshot.Status = "SSH profiles · Enter opens Dashboard"
+		if m.snapshot.Page == tuiPageSSH && m.snapshot.SSHDashboardFocus {
+			m.snapshot.SSHDashboardFocus = false
+			m.snapshot.Status = "SSH profiles · Enter connects or focuses Dashboard"
 		} else if m.snapshot.Page == tuiPageRequests && m.snapshot.HistoryDetailOpen {
 			m.snapshot.HistoryDetailOpen = false
 		} else if m.snapshot.Page == tuiPageConnections && m.snapshot.ConnectionsDetailOpen {
@@ -1415,6 +1502,10 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		}
 	case tuiKeyCloseConnections:
 		if m.snapshot.Page == tuiPageSSH {
+			if m.snapshot.FocusSidebar || m.snapshot.SSHDashboardFocus {
+				m.snapshot.Status = "Focus SSH profiles before deleting"
+				return nil
+			}
 			m.beginSSHDeleteConfirm()
 			return nil
 		} else if m.snapshot.Page == tuiPageProfiles {
@@ -1496,10 +1587,11 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		}
 	case tuiKeyCloseConnection:
 		if m.snapshot.Page == tuiPageSSH {
-			if m.sshDetailOpen {
+			if !m.snapshot.FocusSidebar && m.snapshot.SSHDashboardFocus {
 				return m.testSelectedSSHDelay()
 			}
-			return m.runSelectedSSHAction("test")
+			m.snapshot.Status = "Focus SSH Dashboard before testing route delay"
+			return nil
 		}
 		if m.snapshot.Page == tuiPageDashboard {
 			return m.testDashboardDelay()
@@ -1559,6 +1651,10 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeyEdit:
 		switch m.snapshot.Page {
 		case tuiPageSSH:
+			if m.snapshot.FocusSidebar || m.snapshot.SSHDashboardFocus {
+				m.snapshot.Status = "Focus SSH profiles before editing"
+				return nil
+			}
 			m.beginSSHForm(true)
 			return nil
 		case tuiPageProfiles:
@@ -1584,8 +1680,12 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		}
 	case tuiKeyNewProfile:
 		if m.snapshot.Page == tuiPageSSH {
-			if m.sshDetailOpen {
+			if !m.snapshot.FocusSidebar && m.snapshot.SSHDashboardFocus {
 				return m.refreshSelectedSSHNetwork()
+			}
+			if m.snapshot.FocusSidebar {
+				m.snapshot.Status = "Focus SSH profiles before adding a profile"
+				return nil
 			}
 			m.beginSSHForm(false)
 			return nil
@@ -1626,9 +1726,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			return m.runTool(4)
 		}
 	case tuiKeyUp:
-		m.moveSelection(-1)
+		return m.moveSelection(-1)
 	case tuiKeyDown:
-		m.moveSelection(1)
+		return m.moveSelection(1)
 	case tuiKeyDelayTest:
 		if !m.snapshot.FocusSidebar &&
 			m.snapshot.Page == tuiPageProxies &&
@@ -1648,7 +1748,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		if m.snapshot.Page == tuiPageDashboard {
 			return m.testDashboardSpeed()
 		}
-		if m.snapshot.Page == tuiPageSSH && m.sshDetailOpen {
+		if m.snapshot.Page == tuiPageSSH &&
+			!m.snapshot.FocusSidebar &&
+			m.snapshot.SSHDashboardFocus {
 			return m.testSelectedSSHSpeed()
 		}
 		if !m.snapshot.FocusSidebar &&
@@ -1868,17 +1970,22 @@ func (m *tuiModel) revealDashboardSelection() {
 	}
 }
 
-func (m *tuiModel) moveSelection(delta int) {
+func (m *tuiModel) moveSelection(delta int) tea.Cmd {
 	switch m.snapshot.Page {
 	case tuiPageSSH:
-		if m.sshDetailOpen {
+		if m.snapshot.SSHDashboardFocus {
 			m.snapshot.SelectedSSHDetail = wrapTUIIndex(m.snapshot.SelectedSSHDetail, delta, 4)
 		} else {
+			previousName := m.selectedSSHName()
 			m.snapshot.SelectedSSH = wrapTUIIndex(
 				m.snapshot.SelectedSSH,
 				delta,
 				len(m.snapshot.SSHProfiles),
 			)
+			if m.selectedSSHName() != previousName {
+				m.resetSelectedSSHMetrics()
+				return m.refreshSelectedSSHDashboard()
+			}
 		}
 	case tuiPageProfiles:
 		moveTUIProfile(&m.snapshot, delta)
@@ -1936,6 +2043,7 @@ func (m *tuiModel) moveSelection(delta int) {
 			tuiMaintenanceRowCount,
 		)
 	}
+	return nil
 }
 
 func (m *tuiModel) stageTUIAdjustedPort(key tuiKey) {
@@ -2659,15 +2767,21 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			return nil
 		}
 		profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
-		if !m.sshDetailOpen {
-			m.sshDetailOpen = true
-			m.snapshot.SelectedSSHDetail = 0
-			m.resetSelectedSSHMetrics()
-			m.snapshot.Status = "SSH Dashboard · Enter controls selected row · Esc returns to profiles"
-			if profile.Connected && profile.Ready {
-				return tea.Batch(m.pollSelectedSSHRelay(), m.refreshSelectedSSHNetwork())
+		if profile.NeedsUsername {
+			m.beginSSHForm(true)
+			if m.sshFormOpen {
+				m.sshFormSelected = tuiSSHFormUsernameRow
+				m.snapshot.Status = "Legacy SSH profile · enter Username before connecting"
 			}
 			return nil
+		}
+		if !m.snapshot.SSHDashboardFocus {
+			if profile.Connected && profile.Ready {
+				m.snapshot.SSHDashboardFocus = true
+				m.snapshot.Status = "SSH Dashboard focused · Enter controls selected row"
+				return m.refreshSelectedSSHDashboard()
+			}
+			return m.runSelectedSSHAction("connect")
 		}
 		switch m.snapshot.SelectedSSHDetail {
 		case 0:
@@ -3304,6 +3418,13 @@ func (m *tuiModel) startEditor(path string) tea.Cmd {
 }
 
 func (m *tuiModel) runSelectedSSHAction(action string) tea.Cmd {
+	return m.runSelectedSSHActionWithCredentials(action, cliSSHCredentials{})
+}
+
+func (m *tuiModel) runSelectedSSHActionWithCredentials(
+	action string,
+	credentials cliSSHCredentials,
+) tea.Cmd {
 	if m.snapshot.SelectedSSH < 0 ||
 		m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
 		m.snapshot.Status = "Select an SSH profile first"
@@ -3320,7 +3441,10 @@ func (m *tuiModel) runSelectedSSHAction(action string) tea.Cmd {
 		message := tuiSSHCommandResultMsg{action: action, selectedName: name}
 		switch action {
 		case "connect":
-			state, alreadyConnected, err := connectCLISSHProfile(name)
+			state, alreadyConnected, err := connectCLISSHProfileWithCredentials(
+				name,
+				credentials,
+			)
 			message.err = err
 			if err == nil {
 				prefix := "connected"
@@ -3382,8 +3506,27 @@ func (m *tuiModel) resetSelectedSSHMetrics() {
 	m.sshLastStatsName = ""
 }
 
+func (m *tuiModel) refreshSelectedSSHDashboard() tea.Cmd {
+	if m.snapshot.Page != tuiPageSSH ||
+		m.snapshot.SelectedSSH < 0 ||
+		m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
+		return nil
+	}
+	profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
+	if !profile.Connected || !profile.Ready {
+		return nil
+	}
+	return tea.Batch(m.pollSelectedSSHRelay(), m.refreshSelectedSSHNetwork())
+}
+
 func (m *tuiModel) pollSelectedSSHRelay() tea.Cmd {
-	if !m.sshDetailOpen {
+	if m.snapshot.Page != tuiPageSSH ||
+		m.snapshot.SelectedSSH < 0 ||
+		m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
+		return nil
+	}
+	profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
+	if !profile.Connected || !profile.Ready {
 		return nil
 	}
 	name := m.selectedSSHName()
@@ -3470,6 +3613,72 @@ func (m *tuiModel) testSelectedSSHSpeed() tea.Cmd {
 	}
 }
 
+func (m *tuiModel) beginSSHCredentialPrompt(profile, identity string) {
+	m.sshCredentialPromptOpen = true
+	m.sshCredentialProfile = profile
+	m.sshCredentialIdentity = identity
+	m.sshCredentialInput = nil
+	m.snapshot.Status = "Encrypted SSH private key · enter its one-time passphrase"
+}
+
+func (m *tuiModel) resetSSHCredentialPrompt() {
+	for index := range m.sshCredentialInput {
+		m.sshCredentialInput[index] = 0
+	}
+	m.sshCredentialInput = nil
+	m.sshCredentialPromptOpen = false
+	m.sshCredentialProfile = ""
+	m.sshCredentialIdentity = ""
+}
+
+func (m *tuiModel) handleSSHCredentialPrompt(message tea.KeyMsg) tea.Cmd {
+	switch message.Type {
+	case tea.KeyCtrlC:
+		m.resetSSHCredentialPrompt()
+		return m.handleKey(tuiKeyInterrupt)
+	case tea.KeyEsc:
+		m.resetSSHCredentialPrompt()
+		m.snapshot.Status = "SSH connection cancelled"
+		return nil
+	case tea.KeyEnter:
+		if len(m.sshCredentialInput) == 0 {
+			m.snapshot.Status = "Private key passphrase must not be empty"
+			return nil
+		}
+		profile := m.sshCredentialProfile
+		passphrase := string(m.sshCredentialInput)
+		m.resetSSHCredentialPrompt()
+		for index, item := range m.snapshot.SSHProfiles {
+			if strings.EqualFold(item.Name, profile) {
+				m.snapshot.SelectedSSH = index
+				break
+			}
+		}
+		return m.runSelectedSSHActionWithCredentials(
+			"connect",
+			cliSSHCredentials{IdentityPassphrase: passphrase},
+		)
+	case tea.KeyBackspace, tea.KeyDelete:
+		if len(m.sshCredentialInput) > 0 {
+			m.sshCredentialInput[len(m.sshCredentialInput)-1] = 0
+			m.sshCredentialInput = m.sshCredentialInput[:len(m.sshCredentialInput)-1]
+		}
+	case tea.KeyCtrlU:
+		for index := range m.sshCredentialInput {
+			m.sshCredentialInput[index] = 0
+		}
+		m.sshCredentialInput = nil
+	case tea.KeyRunes:
+		for _, value := range message.Runes {
+			if len(m.sshCredentialInput) >= 1024 {
+				break
+			}
+			m.sshCredentialInput = append(m.sshCredentialInput, value)
+		}
+	}
+	return nil
+}
+
 func (m *tuiModel) beginSSHForm(existing bool) {
 	profile := cliSSHProfile{Port: 22}
 	originalName := ""
@@ -3519,6 +3728,7 @@ func (m *tuiModel) beginSSHForm(existing bool) {
 	m.sshFormPasswordConfirm = false
 	m.sshFormPasswordFirst = ""
 	m.sshFormAddingOption = false
+	m.refreshSSHFormIdentityState()
 	if readOnly {
 		m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
 	} else {
@@ -3547,6 +3757,24 @@ func (m *tuiModel) resetSSHForm() {
 	m.sshFormPasswordCleared = false
 	m.sshFormPasswordConfirm = false
 	m.sshFormPasswordFirst = ""
+	m.sshFormIdentityKind = cliSSHIdentityNone
+	m.sshFormIdentityError = ""
+}
+
+func (m *tuiModel) refreshSSHFormIdentityState() {
+	m.sshFormIdentityKind = cliSSHIdentityNone
+	m.sshFormIdentityError = ""
+	if strings.TrimSpace(m.sshForm.Identity) == "" {
+		return
+	}
+	kind, err := inspectCLISSHIdentity(
+		m.sshForm.Identity,
+		m.sshForm.IdentityPassphrase,
+	)
+	m.sshFormIdentityKind = kind
+	if err != nil {
+		m.sshFormIdentityError = err.Error()
+	}
 }
 
 func (m *tuiModel) sshFormAddOptionRow() int {
@@ -3580,12 +3808,24 @@ func (m *tuiModel) beginSSHFormFieldEdit() {
 		m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
 		return
 	}
+	if m.sshFormSelected == tuiSSHFormPassphraseRow {
+		switch {
+		case strings.TrimSpace(m.sshForm.Identity) == "":
+			m.snapshot.Status = "Select Identity(private key) before setting a key passphrase"
+			return
+		case m.sshFormIdentityKind == cliSSHIdentityUnencrypted:
+			m.snapshot.Status = "This private key is not encrypted; no passphrase is required"
+			return
+		}
+	}
 	value := ""
 	switch m.sshFormSelected {
 	case tuiSSHFormNameRow:
 		value = m.sshForm.Name
-	case tuiSSHFormDestinationRow:
-		value = m.sshForm.Destination
+	case tuiSSHFormUsernameRow:
+		value = m.sshForm.Username
+	case tuiSSHFormHostRow:
+		value = m.sshForm.Host
 	case tuiSSHFormPortRow:
 		value = strconv.Itoa(m.sshForm.Port)
 	case tuiSSHFormLocalPortRow:
@@ -3641,8 +3881,10 @@ func (m *tuiModel) commitSSHFormField() bool {
 	switch m.sshFormSelected {
 	case tuiSSHFormNameRow:
 		m.sshForm.Name = strings.TrimSpace(value)
-	case tuiSSHFormDestinationRow:
-		m.sshForm.Destination = strings.TrimSpace(value)
+	case tuiSSHFormUsernameRow:
+		m.sshForm.Username = strings.TrimSpace(value)
+	case tuiSSHFormHostRow:
+		m.sshForm.Host = strings.TrimSpace(value)
 	case tuiSSHFormPortRow:
 		port, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || port < 1 || port > 65535 {
@@ -3659,6 +3901,7 @@ func (m *tuiModel) commitSSHFormField() bool {
 		m.sshForm.LocalPort = port
 	case tuiSSHFormIdentityRow:
 		m.sshForm.Identity = strings.TrimSpace(value)
+		m.refreshSSHFormIdentityState()
 	case tuiSSHFormPassphraseRow:
 		if value == "" {
 			m.snapshot.Status = "Private key passphrase must not be empty; press c outside editing to clear it"
@@ -3684,6 +3927,7 @@ func (m *tuiModel) commitSSHFormField() bool {
 		m.sshForm.IdentityPassphrase = value
 		m.sshFormPassphraseChanged = true
 		m.sshFormPassphraseCleared = false
+		m.refreshSSHFormIdentityState()
 	case tuiSSHFormPasswordRow:
 		if value == "" {
 			m.snapshot.Status = "SSH password must not be empty; press c outside editing to clear it"
@@ -3783,6 +4027,7 @@ func (m *tuiModel) handleSSHForm(message tea.KeyMsg) tea.Cmd {
 						m.sshForm.IdentityPassphrase = ""
 						m.sshFormPassphraseChanged = false
 						m.sshFormPassphraseCleared = true
+						m.refreshSSHFormIdentityState()
 						m.snapshot.Status = "Saved private key passphrase will be cleared when the form is saved"
 					} else {
 						m.sshForm.Password = ""
@@ -3861,8 +4106,23 @@ func (m *tuiModel) saveSSHForm() tea.Cmd {
 	}
 	profile := m.sshForm
 	profile.Name = strings.TrimSpace(profile.Name)
-	profile.Destination = strings.TrimSpace(profile.Destination)
+	profile.Username = strings.TrimSpace(profile.Username)
+	profile.Host = strings.TrimSpace(profile.Host)
 	profile.Identity = strings.TrimSpace(profile.Identity)
+	profile = normalizeCLISSHProfile(profile)
+	if profile.Identity != "" {
+		kind, err := inspectCLISSHIdentity(
+			profile.Identity,
+			profile.IdentityPassphrase,
+		)
+		if err != nil {
+			m.snapshot.Status = "SSH private key invalid: " + err.Error()
+			return nil
+		}
+		if kind == cliSSHIdentityUnencrypted {
+			profile.IdentityPassphrase = ""
+		}
+	}
 	if err := validateCLISSHProfile(profile); err != nil {
 		m.snapshot.Status = "SSH profile invalid: " + err.Error()
 		return nil
@@ -3953,7 +4213,9 @@ func (m *tuiModel) handleSSHFormFieldInput(message tea.KeyMsg) tea.Cmd {
 		limit := 4096
 		if m.sshFormSelected == tuiSSHFormNameRow {
 			limit = 64
-		} else if m.sshFormSelected == tuiSSHFormDestinationRow {
+		} else if m.sshFormSelected == tuiSSHFormUsernameRow {
+			limit = 128
+		} else if m.sshFormSelected == tuiSSHFormHostRow {
 			limit = 512
 		} else if m.sshFormSelected == tuiSSHFormPortRow {
 			limit = 5

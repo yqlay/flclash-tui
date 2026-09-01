@@ -174,14 +174,14 @@ proxy environment. For example, if FlClash runs only on B and the profile points
 to A, B's selected traffic exits through A; A only needs an SSH server:
 
 ```bash
-flclash ssh add home user@A --port 2222 --local-port 1080 --password
+flclash ssh add home A --user user --port 2222 --local-port 1080 --password
 flclash ssh connect home
 flc ssh curl https://example.com
 
 flc ssh -u home git ls-remote https://github.com/owner/repository.git
 
 # Encrypted key plus SSH password (including publickey,password MFA servers)
-flclash ssh add school user@A --identity ~/.ssh/id_ed25519 --passphrase --password
+flclash ssh add school A --user user --identity ~/.ssh/id_ed25519 --passphrase --password
 flclash ssh list
 flclash ssh test home
 ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
@@ -204,24 +204,43 @@ command and closes it afterwards; an existing persistent tunnel remains open.
 Commands must support proxy environment variables and SOCKS5. Tunnel setup is
 fail-closed, so a failed SSH connection never runs the command directly.
 
-`--passphrase` reads the private-key passphrase and `--password` reads the SSH
-server login password; both are confirmed without terminal echo and may coexist
-in one profile. AskPass selects the matching secret for OpenSSH's `passphrase`
-or `password` prompt, so encrypted keys followed by password authentication are
-supported. Profiles are stored separately in mode-`0600` `.flclash-ssh.json`;
+`--user` is required for new profiles; the compatibility form `user@host` is
+still accepted and split into Username and Host. Legacy bare-host profiles are
+marked incomplete until a Username is added instead of silently inheriting the
+current Linux user. `--passphrase` reads the private-key passphrase and
+`--password` reads the SSH server login password; both are confirmed without
+terminal echo and may coexist. Unencrypted keys need no passphrase. An encrypted
+key without a saved passphrase prompts once in the TUI or CLI terminal and does
+not save the answer. A specified key is tried before a saved login password,
+which remains available for fallback or `publickey,password` MFA. Without a
+saved login password, password authentication is disabled rather than allowing
+OpenSSH to take over the terminal. Profiles are stored separately in mode-`0600` `.flclash-ssh.json`;
 list/status/TUI/log output exposes only set flags or `********`. Key files,
 ssh-agent, and safe `--option KEY=VALUE` OpenSSH settings are also supported.
 New hosts default to `StrictHostKeyChecking=accept-new`: the first key is added
 to `known_hosts`, while a later key change is rejected. Set an explicit
 `StrictHostKeyChecking=...` profile option to override this policy.
+OpenSSH stdout/stderr never writes directly over the TUI. Non-fatal diagnostics,
+including post-quantum key-exchange warnings from newer OpenSSH releases, are
+kept in Logs; connection failures show a short error with full sanitized output
+available there.
+WSL-mounted private keys commonly appear as mode `0777`, which OpenSSH refuses.
+Copy such a key from `/mnt/c/...` into `~/.ssh/` and set mode `0600`; FlClash
+detects open permissions before attempting authentication and reports this fix.
 
 The SSH TUI page performs every management action without suspending or leaving
-the full-screen interface. Enter on a profile opens its Dashboard; the Tunnel
-row connects or disconnects, while `n`, `d`, and `v` check the SSH exit IP,
-five-sample route delay, and Cloudflare download speed. The Dashboard also
-shows relay-only live/cumulative traffic, active connections, and uptime. Esc
-returns to the profile list. In the list, press `n` to open the add form or `e`
-to edit the selected profile. In the form, use `Up/Down` or `Tab` to select a row and
+the full-screen interface. Its main view keeps a bordered profile list above
+the selected profile's Dashboard. Tab cycles focus through sidebar, profile
+list, and Dashboard; Shift+Tab reverses it. In the profile list, Enter connects
+a disconnected or broken profile, while Enter on a healthy profile focuses its
+Dashboard without disconnecting it. Press `n` to add, `e` to edit, or `x` to
+delete the selected profile. In the Dashboard, Up/Down selects Tunnel, Public
+IP, SSH route, or Cloudflare download; Enter runs the selected action. `n`, `d`,
+and `v` directly refresh the exit IP, run the five-sample route delay test, or
+run the download speed test. The Dashboard also shows relay-only
+live/cumulative traffic, active connections, and uptime. Esc moves Dashboard
+focus back to the profile list, then back to the sidebar. In the form, use
+`Up/Down` or `Tab` to select a row and
 `Enter` to edit or confirm it. Key-passphrase and SSH-password replacements are
 entered twice and stay masked; `c` stages removal of the selected secret.
 OpenSSH options are separate rows: use the
@@ -245,7 +264,7 @@ Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availa
 1 Dashboard     Core/System proxy/TUN/Mode/Proxy port/network/memory/30-sample traffic chart
 2 Proxies       groups/nodes/Providers, selection, delay and speed tests
 3 Profiles      import URL/local YAML, activate, update, rename, edit, delete non-active
-4 SSH            profiles plus per-tunnel network/traffic Dashboard
+4 SSH            profile list and selected tunnel Dashboard shown together
 5 History        shared persistent flows, summaries, search/filter, details
 6 Connections    active flows, summaries, search, details, confirmed close actions
 7 Logs           persistent Backend + TUI events, search/filter/details/export/clear

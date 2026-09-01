@@ -48,12 +48,12 @@ For desktop applications, switch to `rule` or `global` and enable **System proxy
 Run FlClash only on the machine whose traffic needs proxying. This example sends local traffic through the network exit of `user@host`:
 
 ```bash
-flclash ssh add home user@host --password --local-port 1080
+flclash ssh add home host --user user --password --local-port 1080
 flclash ssh connect home
 flc ssh curl https://example.com
 
 # Encrypted private key; key passphrase and SSH password may both be saved
-flclash ssh add school user@host --identity ~/.ssh/id_ed25519 --passphrase --password
+flclash ssh add school host --user user --identity ~/.ssh/id_ed25519 --passphrase --password
 
 # Reuse the tunnel from another local SOCKS5-aware application
 ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
@@ -63,7 +63,9 @@ flclash ssh test home
 flclash ssh disconnect home
 ```
 
-SSH profiles can also be managed from the TUI **SSH** page. Enter opens a per-profile Dashboard with the SSH exit IP, latency, download speed, active connections, and live/cumulative traffic for that SSH SOCKS5 port. Metering requires neither root nor eBPF. `Key passphrase` unlocks the private key and `SSH password` authenticates to the server; both may be set. A connected profile is read-only; disconnect it before editing.
+SSH profiles can also be managed from the TUI **SSH** page. Its main view keeps a bordered profile list and the selected profile's Dashboard visible together; Tab cycles focus through the sidebar, profile list, and Dashboard. Username and Host are separate fields, preventing accidental use of the current WSL username. Unencrypted keys need no passphrase; an encrypted key without a saved passphrase opens a masked one-time prompt inside the TUI. When a key and login password coexist, the specified key is tried first and the password is reserved for fallback or a required second factor. OpenSSH warnings go to Logs without corrupting the TUI. The Dashboard shows the SSH exit IP, latency, speed, active connections, and relay-only traffic.
+
+Under WSL, do not use a `/mnt/c/...` key that appears as mode `0777`; OpenSSH rejects it. Copy it into `~/.ssh/` and run `chmod 600 ~/.ssh/KEY` first.
 
 History, Connections, and Logs support `/` search and Enter for full details. `f` filters History state or log level. Destructive clears and connection closes require confirmation; Logs combine persistent Backend records with current TUI events.
 
