@@ -91,7 +91,7 @@ flclash exit                       # stop frontends, Backend, Core, and SSH
 
 In the TUI, `q` or closing its terminal exits only the current frontend and releases its record; `Ctrl+C` exits everything, `Ctrl+N` opens notification details, and `?` shows all keys.
 
-Profile import accepts Mihomo/Clash YAML, URI lists and Base64 wrappers, SIP008, sing-box/Xray JSON, and common Surge/Quantumult X/Loon proxy lines. Local files may use any extension. An unsupported or malformed node rejects the whole import instead of being silently dropped.
+Profile import accepts Mihomo/Clash YAML, URI lists and Base64 wrappers, SIP008, sing-box/Xray JSON, and common Surge/Quantumult X/Loon proxy lines. Local files may use any extension. Duplicate node names are disambiguated; an unsupported or malformed node rejects the whole import instead of being silently dropped.
 
 See [CLI_LINUX.md](CLI_LINUX.md) for all commands, TUN, Profiles, History, logs, data paths, and troubleshooting. Runtime help is available through `flclash --help`, `flclash COMMAND --help`, and `flc --help`.
 

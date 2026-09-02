@@ -78,6 +78,29 @@ func TestNormalizeTUISubscriptionRejectsPartialURIConversion(t *testing.T) {
 	}
 }
 
+func TestNormalizeTUISubscriptionRenamesDuplicateAndReservedNodeNames(t *testing.T) {
+	payload, err := buildTUIProxyProfile([]map[string]any{
+		{"name": "Same", "type": "direct"},
+		{"name": "Same", "type": "direct"},
+		{"name": "DIRECT", "type": "direct"},
+	}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := config.UnmarshalRawConfig(payload.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(raw.Proxy))
+	for _, proxy := range raw.Proxy {
+		got = append(got, tuiAnyString(proxy["name"]))
+	}
+	want := []string{"Same", "Same 2", "DIRECT 2"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("renamed proxy nodes = %v, want %v", got, want)
+	}
+}
+
 func TestNormalizeTUISubscriptionConvertsSIP008JSON(t *testing.T) {
 	data := []byte(`{
   "version": 1,

@@ -577,10 +577,7 @@ func portCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		proxyPort := status.ActiveProxyPort
-		if proxyPort <= 0 {
-			proxyPort = status.ConfiguredProxyPort
-		}
+		proxyPort := status.ConfiguredProxyPort
 		if proxyPort <= 0 {
 			fmt.Println("OFF")
 		} else {
@@ -953,7 +950,11 @@ func connectionsCommand(args []string) error {
 			return err
 		}
 		if len(args) > 1 && args[1] == "--json" {
-			return writeCLIJSON(os.Stdout, connectionStatus.Connections)
+			connections := connectionStatus.Connections
+			if connections == nil {
+				connections = []tuiConnection{}
+			}
+			return writeCLIJSON(os.Stdout, connections)
 		}
 		return printCLIManagedConnections(connectionStatus.Connections)
 	case "close":

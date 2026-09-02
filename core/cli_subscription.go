@@ -251,7 +251,7 @@ func buildTUIProxyProfile(
 	}
 	names := make([]string, 0, len(proxies)+1)
 	names = append(names, "DIRECT")
-	seen := map[string]struct{}{"DIRECT": {}}
+	nameCounts := map[string]int{"DIRECT": 1}
 	for index, proxy := range proxies {
 		name, _ := proxy["name"].(string)
 		name = strings.TrimSpace(name)
@@ -261,13 +261,8 @@ func buildTUIProxyProfile(
 				index+1,
 			)
 		}
-		if _, exists := seen[name]; exists {
-			return tuiSubscriptionPayload{}, fmt.Errorf(
-				"proxy %d duplicates the name %q",
-				index+1,
-				name,
-			)
-		}
+		name = uniqueTUIProxyName(nameCounts, name)
+		proxy["name"] = name
 		if _, err := adapter.ParseProxy(proxy); err != nil {
 			return tuiSubscriptionPayload{}, fmt.Errorf(
 				"proxy %d (%s) is invalid: %w",
@@ -276,7 +271,6 @@ func buildTUIProxyProfile(
 				err,
 			)
 		}
-		seen[name] = struct{}{}
 		names = append(names, name)
 	}
 	profile := map[string]any{

@@ -91,7 +91,7 @@ flclash exit                       # 完全退出前端、Backend、Core 和 SSH
 
 TUI 中 `q` 或关闭其终端只退出当前界面并释放前端记录，`Ctrl+C` 完全退出，`Ctrl+N` 查看通知详情，`?` 查看全部快捷键。
 
-订阅导入兼容 Mihomo/Clash YAML、节点 URI 列表及其 Base64、SIP008、sing-box/Xray JSON，以及常见 Surge/Quantumult X/Loon 节点行。本地文件不限制扩展名；不支持或损坏的节点会中止整次导入，不会静默漏掉。
+订阅导入兼容 Mihomo/Clash YAML、节点 URI 列表及其 Base64、SIP008、sing-box/Xray JSON，以及常见 Surge/Quantumult X/Loon 节点行。本地文件不限制扩展名；重复节点名会自动消歧，不支持或损坏的节点会中止整次导入，不会静默漏掉。
 
 完整命令、TUN、Profiles、History、日志、配置目录和故障排查见 [CLI_LINUX.md](CLI_LINUX.md)。程序内可使用 `flclash --help`、`flclash COMMAND --help` 和 `flc --help`。
 

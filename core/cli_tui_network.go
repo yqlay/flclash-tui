@@ -167,7 +167,9 @@ func detectTUINetwork(proxyPort int) tuiNetworkInfo {
 }
 
 func detectTUINetworkRoute(proxyURL, routeLabel string) tuiNetworkInfo {
-	return detectTUINetworkWithClient(newTUINetworkHTTPClient(proxyURL), routeLabel)
+	client := newTUINetworkHTTPClient(proxyURL)
+	defer client.CloseIdleConnections()
+	return detectTUINetworkWithClient(client, routeLabel)
 }
 
 func detectTUINetworkWithClient(client *http.Client, routeLabel string) tuiNetworkInfo {

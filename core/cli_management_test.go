@@ -124,6 +124,24 @@ func TestConnectionsArgs(t *testing.T) {
 	}
 }
 
+func TestPortCommandReportsConfiguredPortInSilentMode(t *testing.T) {
+	setupCLICommandTestDirectories(t)
+	serveCLICommandStatus(t, tuiServiceStatus{
+		OK:                  true,
+		Version:             cliVersion,
+		ProtocolVersion:     tuiServiceProtocolVersion,
+		Mode:                tuiSilentMode,
+		ConfiguredProxyPort: 7890,
+		ActiveProxyPort:     44710,
+	})
+	output := captureCLIOutput(t, func() error {
+		return portCommand(nil)
+	})
+	if output != "7890\n" {
+		t.Fatalf("silent configured port output = %q, want 7890", output)
+	}
+}
+
 func TestReadManagedLogFollowSurvivesRotation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "service.log")
 	if err := os.WriteFile(path, []byte("before rotation\n"), 0o600); err != nil {

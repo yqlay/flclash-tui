@@ -1,3 +1,21 @@
+## FlClash TUI v0.5.20
+
+- Repair a saved silent-mode FLC outbound automatically when a Profile import,
+  activation, update, restore, or Core restart removes or renames that outbound;
+  invalid listeners no longer stay up and return empty HTTP 502 responses.
+- Include authenticated loopback `flc-private` traffic in Connections and
+  persistent History without weakening per-user filtering, and emit `[]`
+  instead of `null` for an empty `connections --json` result.
+- Show the complete Mihomo proxy chain (selected node through proxy group) and
+  close Dashboard network-detection transports promptly so their idle sockets
+  do not pollute Connections or History.
+- Make `flclash port` report the configured port as documented while status
+  continues to expose configured and active runtime ports independently.
+- Resolve duplicate and reserved node names during subscription conversion
+  instead of rejecting an otherwise valid feed.
+- Add integration coverage for stale FLC repair before the first command, Core
+  startup, and Profile hot reload, plus connection ownership and route tests.
+
 ## FlClash TUI v0.5.19
 
 - Import Base64-wrapped node subscriptions such as the common plain-text

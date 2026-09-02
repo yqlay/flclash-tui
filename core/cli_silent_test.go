@@ -319,6 +319,144 @@ rules:
 	}
 }
 
+func TestSilentFLCRepairsUnavailableOutboundBeforeFirstCommandAndReload(
+	t *testing.T,
+) {
+	directory, err := os.MkdirTemp("/tmp", "flclash-silent-repair-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	previousRuntimeDirectory := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = directory
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntimeDirectory })
+
+	proxyPort := freeTUITestPort(t)
+	configPath := filepath.Join(directory, "config.yaml")
+	writeRepairProfile := func(path, group string) {
+		source := fmt.Appendf(nil, `mixed-port: %d
+mode: rule
+log-level: silent
+proxy-groups:
+  - name: %s
+    type: select
+    proxies: [DIRECT]
+rules:
+  - MATCH,%s
+`, proxyPort, group, group)
+		if err := os.WriteFile(path, source, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRepairProfile(configPath, "PROXY")
+	if err := rememberTUIFLCOutbound(directory, "Proxies"); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceDone := make(chan error, 1)
+	go func() {
+		serviceDone <- runTUIService(
+			cliPaths{homeDir: directory, configPath: configPath},
+			defaultCLITestURL,
+			nil,
+			false,
+		)
+	}()
+	service := newTUIServiceClient(directory)
+	t.Cleanup(func() {
+		_ = service.shutdown()
+		select {
+		case <-serviceDone:
+		case <-time.After(2 * time.Second):
+		}
+	})
+	status := waitForTUIServiceStatus(t, service)
+	if status.FLCOutbound != "Proxies" || status.Running {
+		t.Fatalf("initial stale FLC status = %+v", status)
+	}
+
+	status, err = service.flcProxy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Running || !status.FLCEnabled || status.FLCOutbound != "PROXY" ||
+		status.FLCProxyURL == "" {
+		t.Fatalf("repaired first-command status = %+v", status)
+	}
+	if saved := loadTUIFLCOutbound(directory); saved != "PROXY" {
+		t.Fatalf("saved repaired FLC outbound = %q, want PROXY", saved)
+	}
+
+	nextPath := filepath.Join(directory, "next.yaml")
+	writeRepairProfile(nextPath, "NEXT")
+	status, err = service.reloadAtRevision(nextPath, status.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Running || !status.FLCEnabled || status.FLCOutbound != "NEXT" {
+		t.Fatalf("repaired reload status = %+v", status)
+	}
+	if saved := loadTUIFLCOutbound(directory); saved != "NEXT" {
+		t.Fatalf("saved reload FLC outbound = %q, want NEXT", saved)
+	}
+}
+
+func TestSilentCoreStartRepairsUnavailableOutbound(t *testing.T) {
+	directory, err := os.MkdirTemp("/tmp", "flclash-silent-start-repair-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	previousRuntimeDirectory := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = directory
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntimeDirectory })
+
+	proxyPort := freeTUITestPort(t)
+	configPath := filepath.Join(directory, "config.yaml")
+	source := fmt.Appendf(nil, `mixed-port: %d
+mode: rule
+log-level: silent
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [DIRECT]
+rules:
+  - MATCH,PROXY
+`, proxyPort)
+	if err := os.WriteFile(configPath, source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rememberTUIFLCOutbound(directory, "Proxies"); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceDone := make(chan error, 1)
+	go func() {
+		serviceDone <- runTUIService(
+			cliPaths{homeDir: directory, configPath: configPath},
+			defaultCLITestURL,
+			nil,
+			false,
+		)
+	}()
+	service := newTUIServiceClient(directory)
+	t.Cleanup(func() {
+		_ = service.shutdown()
+		select {
+		case <-serviceDone:
+		case <-time.After(2 * time.Second):
+		}
+	})
+	status := waitForTUIServiceStatus(t, service)
+	status, err = service.startAtRevision(status.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Running || !status.FLCEnabled || status.FLCOutbound != "PROXY" {
+		t.Fatalf("repaired Core start status = %+v", status)
+	}
+}
+
 func TestNewTUIFLCListenerStateCreatesAuthenticatedLoopbackURL(t *testing.T) {
 	state, err := newTUIFLCListenerState("PROXY")
 	if err != nil {

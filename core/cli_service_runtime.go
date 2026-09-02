@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -442,6 +443,9 @@ func tuiRuntimeProxyPort(
 }
 
 func (r *tuiServiceRuntime) startCoreListeners() (bool, error) {
+	if _, err := r.repairFLCOutbound(); err != nil {
+		return false, err
+	}
 	r.mu.RLock()
 	if r.running {
 		r.mu.RUnlock()
@@ -587,11 +591,14 @@ func (r *tuiServiceRuntime) ensureFLCProxy() (bool, error) {
 	if status.Mode != tuiSilentMode {
 		return false, errors.New("private FLC listener is only active in silent mode")
 	}
+	changed, err := r.repairFLCOutbound()
+	if err != nil {
+		return false, err
+	}
 	r.mu.RLock()
 	proxyURL := r.flc.proxyURL()
 	configPath := r.paths.configPath
 	r.mu.RUnlock()
-	changed := false
 	if proxyURL == "" {
 		outbound, err := chooseDefaultTUIFLCOutbound(r.coreController, configPath)
 		if err != nil {
@@ -609,6 +616,41 @@ func (r *tuiServiceRuntime) ensureFLCProxy() (bool, error) {
 			return changed, err
 		}
 		changed = changed || started
+	}
+	return changed, nil
+}
+
+func (r *tuiServiceRuntime) repairFLCOutbound() (bool, error) {
+	r.mu.RLock()
+	mode := r.trafficMode
+	outbound := r.flc.Outbound
+	configPath := r.paths.configPath
+	r.mu.RUnlock()
+	if mode != tuiSilentMode || strings.TrimSpace(outbound) == "" {
+		return false, nil
+	}
+	if err := validateTUIFLCOutbound(r.coreController, outbound); err == nil {
+		return false, nil
+	}
+	replacement, err := chooseDefaultTUIFLCOutbound(
+		r.coreController,
+		configPath,
+	)
+	if err != nil {
+		return false, fmt.Errorf(
+			"saved FLC outbound %q is unavailable and no replacement was found: %w",
+			outbound,
+			err,
+		)
+	}
+	changed, err := r.applyFLCOutbound(replacement)
+	if err != nil {
+		return false, fmt.Errorf(
+			"replace unavailable FLC outbound %q with %q: %w",
+			outbound,
+			replacement,
+			err,
+		)
 	}
 	return changed, nil
 }
@@ -740,7 +782,10 @@ func (r *tuiServiceRuntime) putProfile(
 		return cause
 	}
 	if active {
-		if _, err := r.reloadUnlocked(target, tuiBytesSHA256(request.ProfileData)); err != nil {
+		if _, err := r.reloadAndRepairFLCUnlocked(
+			target,
+			tuiBytesSHA256(request.ProfileData),
+		); err != nil {
 			return false, "", rollback(fmt.Errorf("reload profile: %w", err))
 		}
 	}
@@ -919,7 +964,7 @@ func (r *tuiServiceRuntime) restoreProfile(path string) (bool, string, error) {
 	if path != filepath.Clean(paths.configPath) {
 		return true, backupPath, nil
 	}
-	if _, err := r.reloadUnlocked(path, backup.updatedSHA256); err != nil {
+	if _, err := r.reloadAndRepairFLCUnlocked(path, backup.updatedSHA256); err != nil {
 		if restoreErr := restoreTUISubscriptionProfile(path, backup); restoreErr != nil {
 			return false, "", fmt.Errorf("reload restored profile: %v; file rollback failed: %w", err, restoreErr)
 		}
@@ -1324,8 +1369,12 @@ func validateTUIFLCOutbound(controller controllerClient, outbound string) error 
 	if err := json.Unmarshal(data, &response); err != nil {
 		return fmt.Errorf("parse proxy list: %w", err)
 	}
-	if _, ok := response.Proxies[outbound]; !ok {
+	proxy, ok := response.Proxies[outbound]
+	if !ok {
 		return fmt.Errorf("proxy or group %q was not found", outbound)
+	}
+	if isTUIGroup(proxy.Type) && len(proxy.All) == 0 {
+		return fmt.Errorf("proxy group %q has no nodes", outbound)
 	}
 	return nil
 }
@@ -1394,11 +1443,27 @@ func filterTUIConnections(
 	}
 	filtered := connections[:0]
 	for _, connection := range connections {
-		if connection.UID == uid {
+		if isTUIOwnedConnection(connection, uid, false) {
 			filtered = append(filtered, connection)
 		}
 	}
 	return filtered
+}
+
+func isTUIOwnedConnection(
+	connection tuiConnection,
+	uid uint32,
+	systemTun bool,
+) bool {
+	if systemTun || connection.UID == uid {
+		return true
+	}
+	if connection.UID != 0 || connection.InboundName != tuiFLCListenerName ||
+		connection.InboundUser != "flc" {
+		return false
+	}
+	address := net.ParseIP(strings.TrimSpace(connection.SourceIP))
+	return address != nil && address.IsLoopback()
 }
 
 func loadTUIActiveConnections(controller controllerClient) ([]tuiConnection, error) {
@@ -1420,6 +1485,9 @@ func loadTUIActiveConnections(controller controllerClient) ([]tuiConnection, err
 				Process         string `json:"process"`
 				ProcessPath     string `json:"processPath"`
 				UID             uint32 `json:"uid"`
+				SourceIP        string `json:"sourceIP"`
+				InboundName     string `json:"inboundName"`
+				InboundUser     string `json:"inboundUser"`
 				Network         string `json:"network"`
 			} `json:"metadata"`
 			Upload   int64    `json:"upload"`
@@ -1432,10 +1500,7 @@ func loadTUIActiveConnections(controller controllerClient) ([]tuiConnection, err
 	}
 	connections := make([]tuiConnection, 0, len(value.Connections))
 	for _, item := range value.Connections {
-		chain := "DIRECT"
-		if len(item.Chains) > 0 {
-			chain = item.Chains[len(item.Chains)-1]
-		}
+		chain := formatTUIProxyChain(item.Chains)
 		host := item.Metadata.Host
 		if host == "" {
 			host = formatTUIDestination(
@@ -1449,6 +1514,9 @@ func loadTUIActiveConnections(controller controllerClient) ([]tuiConnection, err
 			Process:     item.Metadata.Process,
 			ProcessPath: item.Metadata.ProcessPath,
 			UID:         item.Metadata.UID,
+			SourceIP:    item.Metadata.SourceIP,
+			InboundName: item.Metadata.InboundName,
+			InboundUser: item.Metadata.InboundUser,
 			Network:     item.Metadata.Network,
 			Chain:       chain,
 			Upload:      item.Upload,
@@ -1456,6 +1524,13 @@ func loadTUIActiveConnections(controller controllerClient) ([]tuiConnection, err
 		})
 	}
 	return connections, nil
+}
+
+func formatTUIProxyChain(chains []string) string {
+	if len(chains) == 0 {
+		return "DIRECT"
+	}
+	return strings.Join(chains, " → ")
 }
 
 func (r *tuiServiceRuntime) completeMutation(
@@ -1546,7 +1621,7 @@ func (r *tuiServiceRuntime) reloadExpected(
 		return false, err
 	}
 	defer lease.release()
-	changed, err := r.reloadUnlocked(configPath, expectedSHA256)
+	changed, err := r.reloadAndRepairFLCUnlocked(configPath, expectedSHA256)
 	if err != nil || !systemProxy {
 		return changed, err
 	}
@@ -1579,6 +1654,18 @@ func (r *tuiServiceRuntime) reloadExpected(
 	}
 	r.setSystemProxyState(true, activePort)
 	return changed, nil
+}
+
+func (r *tuiServiceRuntime) reloadAndRepairFLCUnlocked(
+	configPath,
+	expectedSHA256 string,
+) (bool, error) {
+	changed, err := r.reloadUnlocked(configPath, expectedSHA256)
+	if err != nil {
+		return changed, err
+	}
+	repaired, err := r.repairFLCOutbound()
+	return changed || repaired, err
 }
 
 func (r *tuiServiceRuntime) rollbackReloadProxy(

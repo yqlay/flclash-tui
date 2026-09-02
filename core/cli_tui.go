@@ -71,6 +71,9 @@ type tuiConnection struct {
 	Process     string `json:"process,omitempty"`
 	ProcessPath string `json:"process_path,omitempty"`
 	UID         uint32 `json:"uid,omitempty"`
+	SourceIP    string `json:"source_ip,omitempty"`
+	InboundName string `json:"inbound_name,omitempty"`
+	InboundUser string `json:"inbound_user,omitempty"`
 	Network     string `json:"network,omitempty"`
 	Chain       string `json:"chain,omitempty"`
 	Upload      int64  `json:"upload"`
@@ -1430,6 +1433,9 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 					Process         string `json:"process"`
 					ProcessPath     string `json:"processPath"`
 					UID             uint32 `json:"uid"`
+					SourceIP        string `json:"sourceIP"`
+					InboundName     string `json:"inboundName"`
+					InboundUser     string `json:"inboundUser"`
 					Network         string `json:"network"`
 				} `json:"metadata"`
 				Upload   int64    `json:"upload"`
@@ -1441,13 +1447,7 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 			activeConnections := make([]tuiConnection, 0, len(value.Connections))
 			systemTun := snapshot.Settings.TunEnabled && snapshot.Settings.TunScope == tuiTunScopeSystem
 			for _, item := range value.Connections {
-				if snapshot.ManagedService && !systemTun && item.Metadata.UID != uint32(os.Getuid()) {
-					continue
-				}
-				chain := "DIRECT"
-				if len(item.Chains) > 0 {
-					chain = item.Chains[len(item.Chains)-1]
-				}
+				chain := formatTUIProxyChain(item.Chains)
 				host := item.Metadata.Host
 				if host == "" {
 					host = formatTUIDestination(
@@ -1455,12 +1455,19 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 						item.Metadata.DestinationPort,
 					)
 				}
-				activeConnections = append(activeConnections, tuiConnection{
+				connection := tuiConnection{
 					ID: item.ID, Host: host, Process: item.Metadata.Process,
 					ProcessPath: item.Metadata.ProcessPath, UID: item.Metadata.UID,
-					Network: item.Metadata.Network, Chain: chain,
+					SourceIP: item.Metadata.SourceIP, InboundName: item.Metadata.InboundName,
+					InboundUser: item.Metadata.InboundUser,
+					Network:     item.Metadata.Network, Chain: chain,
 					Upload: item.Upload, Download: item.Download,
-				})
+				}
+				if snapshot.ManagedService &&
+					!isTUIOwnedConnection(connection, uint32(os.Getuid()), systemTun) {
+					continue
+				}
+				activeConnections = append(activeConnections, connection)
 			}
 			snapshot.Requests = updateTUIRequestHistory(
 				snapshot.Requests,
