@@ -83,6 +83,10 @@ func TestNormalizeTUISubscriptionRenamesDuplicateAndReservedNodeNames(t *testing
 		{"name": "Same", "type": "direct"},
 		{"name": "Same", "type": "direct"},
 		{"name": "DIRECT", "type": "direct"},
+		{"name": "REJECT", "type": "direct"},
+		{"name": "PASS-RULE", "type": "direct"},
+		{"name": "PROXY", "type": "direct"},
+		{"name": "GLOBAL", "type": "direct"},
 	}, "test")
 	if err != nil {
 		t.Fatal(err)
@@ -95,9 +99,20 @@ func TestNormalizeTUISubscriptionRenamesDuplicateAndReservedNodeNames(t *testing
 	for _, proxy := range raw.Proxy {
 		got = append(got, tuiAnyString(proxy["name"]))
 	}
-	want := []string{"Same", "Same 2", "DIRECT 2"}
+	want := []string{
+		"Same",
+		"Same 2",
+		"DIRECT 2",
+		"REJECT 2",
+		"PASS-RULE 2",
+		"PROXY 2",
+		"GLOBAL 2",
+	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("renamed proxy nodes = %v, want %v", got, want)
+	}
+	if _, err := config.Parse(payload.Data); err != nil {
+		t.Fatalf("converted profile must start: %v", err)
 	}
 }
 
@@ -118,6 +133,63 @@ func TestNormalizeTUISubscriptionConvertsSIP008JSON(t *testing.T) {
 	}
 	if payload.Format != "SIP008 JSON" || payload.Nodes != 1 {
 		t.Fatalf("payload = %+v", payload)
+	}
+}
+
+func TestNormalizeTUISubscriptionPreservesSIP008PluginOptions(t *testing.T) {
+	data := []byte(`{
+  "version": 1,
+  "servers": [{
+    "remarks": "WebSocket SS",
+    "server": "example.com",
+    "server_port": 443,
+    "method": "aes-128-gcm",
+    "password": "secret",
+    "plugin": "v2ray-plugin",
+    "plugin_opts": "mode=websocket;host=cdn.example.com;path=/ws;tls;mux=false"
+  }, {
+    "remarks": "Simple obfs",
+    "server": "example.net",
+    "server_port": 443,
+    "method": "aes-128-gcm",
+    "password": "secret",
+    "plugin": "obfs-local",
+    "plugin_opts": "obfs=tls;obfs-host=cover.example.net"
+  }]
+}`)
+	payload, err := normalizeTUISubscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := config.UnmarshalRawConfig(payload.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.Proxy) != 2 {
+		t.Fatalf("converted proxies = %#v", raw.Proxy)
+	}
+	firstOptions, ok := tuiAnyMap(raw.Proxy[0]["plugin-opts"])
+	if !ok || firstOptions["mode"] != "websocket" ||
+		firstOptions["host"] != "cdn.example.com" ||
+		firstOptions["path"] != "/ws" ||
+		firstOptions["tls"] != true || firstOptions["mux"] != false {
+		t.Fatalf("v2ray plugin options = %#v", firstOptions)
+	}
+	if raw.Proxy[1]["plugin"] != "obfs" {
+		t.Fatalf("simple-obfs plugin = %#v", raw.Proxy[1]["plugin"])
+	}
+	secondOptions, ok := tuiAnyMap(raw.Proxy[1]["plugin-opts"])
+	if !ok || secondOptions["mode"] != "tls" ||
+		secondOptions["host"] != "cover.example.net" {
+		t.Fatalf("simple-obfs plugin options = %#v", secondOptions)
+	}
+}
+
+func TestNormalizeTUISubscriptionRejectsTrailingJSONData(t *testing.T) {
+	data := []byte(`{"servers": []}{"ignored": true}`)
+	_, err := normalizeTUISubscription(data)
+	if err == nil || !strings.Contains(err.Error(), "exactly one document") {
+		t.Fatalf("trailing JSON error = %v", err)
 	}
 }
 

@@ -1,3 +1,14 @@
+## FlClash TUI v0.5.21
+
+- Preserve standard SIP008 Shadowsocks `plugin_opts` during profile import,
+  including v2ray-plugin and simple-obfs transport settings, instead of
+  accepting a node whose effective transport configuration was lost.
+- Reject concatenated or trailing JSON subscription data, and reserve every
+  Mihomo built-in and generated proxy-group name while converting a feed so an
+  imported profile remains valid when the Core starts.
+- Add conversion coverage that exercises a full Mihomo configuration parse,
+  not only raw YAML decoding.
+
 ## FlClash TUI v0.5.20
 
 - Repair a saved silent-mode FLC outbound automatically when a Profile import,
