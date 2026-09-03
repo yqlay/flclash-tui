@@ -918,6 +918,141 @@ esac
 	}
 }
 
+func TestOpenSSHUsesSavedPasswordWithoutTerminalPrompt(t *testing.T) {
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Skip("OpenSSH client is unavailable")
+	}
+	_, hostPrivateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostSigner, err := cryptossh.NewSignerFromKey(hostPrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticated := make(chan struct{}, 1)
+	serverConfig := &cryptossh.ServerConfig{
+		PasswordCallback: func(
+			metadata cryptossh.ConnMetadata,
+			password []byte,
+		) (*cryptossh.Permissions, error) {
+			if metadata.User() != "student" || string(password) != "stored-password" {
+				return nil, errors.New("invalid test credentials")
+			}
+			select {
+			case authenticated <- struct{}{}:
+			default:
+			}
+			return nil, nil
+		},
+	}
+	serverConfig.AddHostKey(hostSigner)
+	server, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverErrors := make(chan error, 8)
+	go func() {
+		for {
+			connection, acceptErr := server.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() {
+				sshConnection, channels, requests, handshakeErr := cryptossh.NewServerConn(
+					connection,
+					serverConfig,
+				)
+				if handshakeErr != nil {
+					serverErrors <- handshakeErr
+					return
+				}
+				go cryptossh.DiscardRequests(requests)
+				go func() {
+					for channel := range channels {
+						_ = channel.Reject(cryptossh.UnknownChannelType, "unsupported test channel")
+					}
+				}()
+				serverErrors <- sshConnection.Wait()
+			}()
+		}
+	}()
+	t.Cleanup(func() { _ = server.Close() })
+
+	askpassPath := filepath.Join(t.TempDir(), "askpass")
+	askpassScript := `#!/bin/sh
+case "$1" in
+  *assword*) sed -n 's/.*"password":"\([^"]*\)".*/\1/p' "$FLCLASH_SSH_ASKPASS_FILE" ;;
+  *) exit 51 ;;
+esac
+`
+	if err := os.WriteFile(askpassPath, []byte(askpassScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	previousRuntime := cliRuntimeDirectoryOverride
+	previousAskpassExecutable := cliSSHAskpassExecutable
+	cliRuntimeDirectoryOverride = t.TempDir()
+	cliSSHAskpassExecutable = func() (string, error) { return askpassPath, nil }
+	t.Cleanup(func() {
+		cliRuntimeDirectoryOverride = previousRuntime
+		cliSSHAskpassExecutable = previousAskpassExecutable
+	})
+
+	type tunnelResult struct {
+		state cliSSHTunnelState
+		err   error
+	}
+	result := make(chan tunnelResult, 1)
+	serverPort := server.Addr().(*net.TCPAddr).Port
+	go func() {
+		state, startErr := startCLISSHTunnel(cliSSHProfile{
+			Name:     "password",
+			Username: "student",
+			Host:     "127.0.0.1",
+			Port:     serverPort,
+			Password: "stored-password",
+			Options: []string{
+				"StrictHostKeyChecking=no",
+				"UserKnownHostsFile=/dev/null",
+				"LogLevel=ERROR",
+			},
+		}, "transient")
+		result <- tunnelResult{state: state, err: startErr}
+	}()
+	var state cliSSHTunnelState
+	select {
+	case started := <-result:
+		state, err = started.state, started.err
+		if err != nil {
+			select {
+			case serverErr := <-serverErrors:
+				t.Fatalf("real OpenSSH password tunnel = %v; server: %v", err, serverErr)
+			default:
+				t.Fatalf("real OpenSSH password tunnel = %v", err)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("real OpenSSH password tunnel did not finish authentication")
+	}
+	select {
+	case <-authenticated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OpenSSH did not authenticate with the saved password")
+	}
+	if err := stopCLIStateTunnel(state); err != nil {
+		t.Fatalf("stop real OpenSSH password tunnel: %v", err)
+	}
+	select {
+	case serverErr := <-serverErrors:
+		if serverErr != nil && !errors.Is(serverErr, net.ErrClosed) &&
+			!strings.Contains(serverErr.Error(), "disconnected by user") {
+			t.Fatalf("test SSH server: %v", serverErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OpenSSH master did not close")
+	}
+}
+
 func TestCLISSHTunnelArgumentsUseDeterministicAuthenticationMatrix(t *testing.T) {
 	tests := []struct {
 		name       string

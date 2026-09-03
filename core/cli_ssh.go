@@ -1834,6 +1834,10 @@ func startCLISSHTunnel(profile cliSSHProfile, kind string) (cliSSHTunnelState, e
 	if err != nil {
 		return cliSSHTunnelState{}, err
 	}
+	socketDirectory, err := ensureCLISSHSocketDirectory(runtimeDirectory)
+	if err != nil {
+		return cliSSHTunnelState{}, err
+	}
 	configuredPort := configuredCLISSHLocalPort(profile, kind)
 	fixedPort := configuredPort > 0
 	attemptLimit := 3
@@ -1851,7 +1855,7 @@ func startCLISSHTunnel(profile cliSSHProfile, kind string) (cliSSHTunnelState, e
 			return cliSSHTunnelState{}, err
 		}
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d:%s", profile.Name, os.Getpid(), time.Now().UnixNano(), kind)))
-		controlPath := filepath.Join(runtimeDirectory, fmt.Sprintf("ctl-%x.sock", digest[:8]))
+		controlPath := filepath.Join(socketDirectory, fmt.Sprintf("ctl-%x.sock", digest[:8]))
 		upstreamPort := port
 		if kind == "persistent" {
 			upstreamPort, err = allocateCLISSHPort()
@@ -2323,6 +2327,35 @@ func ensureCLISSHRuntimeDirectory() (string, error) {
 	}
 	if info.Mode().Perm()&0o077 != 0 {
 		_ = os.Chmod(directory, 0o700)
+	}
+	return directory, nil
+}
+
+func ensureCLISSHSocketDirectory(runtimeDirectory string) (string, error) {
+	maximumPath := len((syscall.RawSockaddrUnix{}).Path) - 1
+	probePath := filepath.Join(runtimeDirectory, "ctl-0000000000000000.sock")
+	// OpenSSH creates a temporary control socket with an additional random
+	// suffix before atomically moving it into place.
+	if len(probePath)+24 <= maximumPath {
+		return runtimeDirectory, nil
+	}
+	digest := sha256.Sum256([]byte(runtimeDirectory))
+	directory := filepath.Join(
+		"/tmp",
+		fmt.Sprintf("flclash-ssh-%d-%x", os.Getuid(), digest[:4]),
+	)
+	if err := os.Mkdir(directory, 0o700); err != nil && !os.IsExist(err) {
+		return "", err
+	}
+	info, err := os.Lstat(directory)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 ||
+		!cliPathOwnedByCurrentUser(info) {
+		return "", fmt.Errorf("unsafe SSH socket directory %q", directory)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(directory, 0o700); err != nil {
+			return "", err
+		}
 	}
 	return directory, nil
 }

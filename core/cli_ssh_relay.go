@@ -332,8 +332,12 @@ func startCLISSHRelay(state *cliSSHTunnelState) error {
 	if err != nil {
 		return err
 	}
+	socketDirectory, err := ensureCLISSHSocketDirectory(runtimeDirectory)
+	if err != nil {
+		return err
+	}
 	digest := fmt.Sprintf("%x", time.Now().UnixNano())
-	state.RelayControl = filepath.Join(runtimeDirectory, "relay-"+digest+".sock")
+	state.RelayControl = filepath.Join(socketDirectory, "relay-"+digest+".sock")
 	command := exec.Command(
 		executable,
 		"_ssh_relay",
