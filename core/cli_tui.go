@@ -172,6 +172,7 @@ const (
 	tuiDashboardSystemProxyRow
 	tuiDashboardTunRow
 	tuiDashboardModeRow
+	tuiDashboardFLCOutboundRow
 	tuiDashboardMixedPortRow
 	tuiDashboardDelayRow
 	tuiDashboardSpeedRow
@@ -226,10 +227,13 @@ type tuiSSHProfile struct {
 	Destination   string
 	Port          int
 	LocalPort     int
+	Jump          string
 	Identity      string
 	PassphraseSet bool
 	PasswordSet   bool
 	NeedsUsername bool
+	Default       bool
+	LastError     string
 	Options       []string
 	Connected     bool
 	Ready         bool
@@ -241,6 +245,7 @@ const (
 	tuiSSHFormNameRow = iota
 	tuiSSHFormUsernameRow
 	tuiSSHFormHostRow
+	tuiSSHFormJumpRow
 	tuiSSHFormPortRow
 	tuiSSHFormLocalPortRow
 	tuiSSHFormIdentityRow
@@ -259,6 +264,7 @@ type tuiSSHFormView struct {
 	Username          string
 	Host              string
 	Destination       string
+	Jump              string
 	Port              int
 	LocalPort         int
 	Identity          string
@@ -736,7 +742,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 		SelectedNode:      0,
 		SelectedRow:       tuiProfileImportSubscriptionRow,
 		SelectedMenu:      int(tuiPageDashboard),
-		SelectedDashboard: tuiDashboardSystemProxyRow,
+		SelectedDashboard: tuiDashboardServiceRow,
 		FocusSidebar:      true,
 	}
 	refreshTUISnapshot(&snapshot, client)
@@ -1056,6 +1062,11 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 						updateTUISettings(&snapshot, client, tuiKeyTun)
 					case tuiDashboardModeRow:
 						updateTUISettings(&snapshot, client, tuiKeyMode)
+					case tuiDashboardFLCOutboundRow:
+						snapshot.Page = tuiPageProxies
+						snapshot.SelectedMenu = int(tuiPageProxies)
+						snapshot.FocusSidebar = false
+						snapshot.Status = "Select a proxy node; flc follows that group"
 					case tuiDashboardMixedPortRow:
 						screen.invalidate()
 						setTUIMixedPort(&snapshot, client, &oldState)
@@ -1703,10 +1714,13 @@ func refreshTUISSH(snapshot *tuiSnapshot) {
 			Destination:   view.Destination,
 			Port:          view.Port,
 			LocalPort:     view.LocalPort,
+			Jump:          view.Jump,
 			Identity:      view.Identity,
 			PassphraseSet: view.PassphraseSet,
 			PasswordSet:   view.PasswordSet,
 			NeedsUsername: view.NeedsUsername,
+			Default:       view.Default,
+			LastError:     view.LastError,
 			Connected:     view.Connected,
 			Ready:         view.Ready,
 			SocksPort:     view.SocksPort,
@@ -1880,6 +1894,37 @@ func switchTUIProfile(
 		}
 	}
 	refreshTUIProfiles(snapshot, *paths)
+}
+
+func tuiProxyGroupNow(controller controllerClient, group string) string {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return ""
+	}
+	data, err := controller.request(nethttp.MethodGet, "/proxies", nil)
+	if err != nil {
+		return ""
+	}
+	var response tuiProxyResponse
+	if err := json.Unmarshal(data, &response); err != nil {
+		return ""
+	}
+	proxy, ok := response.Proxies[group]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(proxy.Now)
+}
+
+func formatCLIFLCOutbound(status tuiServiceStatus) string {
+	group := strings.TrimSpace(status.FLCOutbound)
+	if group == "" {
+		return cliDisplayValue(group)
+	}
+	if node := tuiProxyGroupNow(managedController(status), group); node != "" {
+		return group + " → " + node
+	}
+	return group
 }
 
 func isTUIGroup(proxyType string) bool {
@@ -2759,12 +2804,12 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 		b.WriteByte('\n')
 	}
 
-	footer := "  ←→ panel  ↑↓/ws move  Enter apply  Esc nav  ? help  q exit TUI  ^C shutdown"
+	footer := "  ←→ panel  ↑↓/ws move  Enter apply  Esc nav  ? help  q exit TUI  ^C full exit"
 	if width >= 110 {
-		footer = "  ←→ panel  ↑↓/ws move  Enter open/apply  Esc back  d delay  ? help  q exit TUI  ^C shutdown"
+		footer = "  ←→ panel  ↑↓/ws move  Enter open/apply  Esc back  d delay  ? help  q exit TUI  ^C full exit"
 	}
 	if snapshot.Page == tuiPageDashboard && bodyHeight < 33 {
-		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  q exit TUI  ^C shutdown"
+		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  q exit TUI  ^C full exit"
 	}
 	b.WriteString(tuiNotificationFooter(snapshot, footer, width))
 	return b.String()
@@ -2851,13 +2896,13 @@ func renderTUICompact(
 		b.WriteString(tuiClampAnsiLine(line, width))
 		b.WriteByte('\n')
 	}
-	footer := "  1-9 page · ←/Esc nav · ↑↓/ws · Enter · q"
+	footer := "  1-9 page · ←/Esc nav · ↑↓/ws · Enter · q exit TUI · ^C full exit"
 	if snapshot.FocusSidebar {
-		footer = "  ↑↓/ws page · →/Enter open · 1-9 direct · q"
+		footer = "  ↑↓/ws page · →/Enter open · 1-9 direct · q exit TUI"
 	} else if snapshot.Page == tuiPageDashboard {
-		footer = "  ↑↓/ws select · PgUp/PgDn scroll · Esc nav · q"
+		footer = "  ↑↓/ws select · Enter Core/flc · PgUp/PgDn · q exit TUI"
 	} else if snapshot.Page == tuiPageSSH {
-		footer = "  Tab profiles/Dashboard/sidebar · ↑↓/ws · Enter · Esc · q"
+		footer = "  Tab list/Dashboard · ↑↓/ws · Enter · u default · n add · q"
 	}
 	b.WriteString(tuiNotificationFooter(snapshot, footer, width))
 	return b.String()
@@ -2986,7 +3031,7 @@ func renderTUITooSmall(width, height int) string {
 		fmt.Sprintf("  Terminal: %dx%d", width, height),
 		"  Resize to at least 40x10",
 		"",
-		"  q exit TUI · Ctrl+C shutdown",
+		"  q exit TUI · Ctrl+C full exit",
 	}
 	var b strings.Builder
 	for row := 0; row < height; row++ {
@@ -3021,7 +3066,7 @@ func renderTUITiny(
 	if height > 0 && len(lines) >= height {
 		lines = lines[:height-1]
 	}
-	lines = append(lines, "q exit TUI · ^C shutdown")
+	lines = append(lines, "q exit TUI · ^C full exit")
 	var b strings.Builder
 	for row := 0; row < height; row++ {
 		line := ""
@@ -3245,6 +3290,10 @@ func drawTUISSHForm(
 		struct {
 			label string
 			color string
+		}{label: "Jump host              " + cliDisplayValue(form.Jump)},
+		struct {
+			label string
+			color string
 		}{label: fmt.Sprintf("SSH port               %d", form.Port)},
 		struct {
 			label string
@@ -3354,6 +3403,8 @@ func drawTUISSHForm(
 			if form.PasswordConfirm {
 				label = "Confirm password       " + form.FieldInput
 			}
+		} else if form.Selected == tuiSSHFormJumpRow {
+			label = "Jump host              " + form.FieldInput
 		}
 		rows[form.Selected].label = label
 	}
@@ -3867,17 +3918,17 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 	rows := []string{
 		"Navigation     ← sidebar · → content · ↑↓/ws move · Enter opens/applies · Esc back",
 		"Sections       1-9 open directly · Tab changes focus · [/] changes proxy view",
-		"Dashboard      d rule-route latency (5 samples) · v Cloudflare 4-stream speed · n refresh",
+		"Dashboard      flc Enter opens Proxies · d latency · v speed · n refresh",
 		"Proxies        Enter nodes · d node RTT (5 samples) · v node speed · Esc groups",
-		"Profiles       Enter activate · U refresh · F2/u rename · e edit · n import · x delete",
-		"SSH            Tab profiles/Dashboard · Enter connect/run · n add/IP · d RTT · v speed",
+		"Profiles       Enter activate · U refresh · u/F2 rename · e edit · n import · x delete",
+		"SSH            Tab list/Dashboard · n add · e edit · u default · d RTT · v speed",
 		"History        x clears shared history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
 		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
-		"Settings       Enter applies row · a LAN · v IPv6 · p port",
+		"Settings       Enter applies row · a LAN · v IPv6 · p port · flc Enter opens Proxies",
 		"Maintenance    Edit, backup, restore, Geo, traffic reset, and updates",
 		"Notifications  Ctrl+N opens history/details · Enter confirms · Esc closes",
-		"Exit           q exits this TUI · Ctrl+C shuts down Backend and Core",
+		"Exit           q exits this TUI only · Ctrl+C shuts down Backend, Core, and SSH",
 	}
 	if height < 28 {
 		rows = rows[:minTUI(5, len(rows))]
@@ -3898,6 +3949,7 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 		fmt.Sprintf("System proxy  %s", systemProxyLabel),
 		fmt.Sprintf("TUN           %s", tuiTUNLabel(snapshot)),
 		fmt.Sprintf("Mode          %s", snapshot.Settings.Mode),
+		fmt.Sprintf("flc           %s", tuiFLCOutboundLabel(snapshot)),
 		fmt.Sprintf("Proxy port    %s", tuiProxyPortLabel(snapshot)),
 	}
 	tuiTitle(
@@ -4078,6 +4130,7 @@ func tuiCompactDashboardRows(
 		),
 		fmt.Sprintf("TUN           %s", tuiTUNLabel(snapshot)),
 		fmt.Sprintf("Mode          %s", snapshot.Settings.Mode),
+		fmt.Sprintf("flc           %s", tuiFLCOutboundLabel(snapshot)),
 		fmt.Sprintf("Proxy port    %s", tuiProxyPortLabel(snapshot)),
 	}
 	rows := make([]tuiDashboardCompactRow, 0, 28)
@@ -4718,7 +4771,7 @@ func drawTUISettings(b *strings.Builder, snapshot tuiSnapshot, width, height int
 func tuiSettingsRows(snapshot tuiSnapshot) []string {
 	return []string{
 		fmt.Sprintf("Mode          %s", snapshot.Settings.Mode),
-		fmt.Sprintf("FLC outbound  %s", tuiFLCOutboundLabel(snapshot)),
+		fmt.Sprintf("flc           %s", tuiFLCOutboundLabel(snapshot)),
 		fmt.Sprintf("Proxy port    %s", tuiProxyPortLabel(snapshot)),
 		fmt.Sprintf("Allow LAN     %s", tuiOnOff(snapshot.Settings.AllowLAN)),
 		fmt.Sprintf("IPv6          %s", tuiOnOff(snapshot.Settings.IPv6)),
@@ -4739,8 +4792,18 @@ func tuiSettingsRows(snapshot tuiSnapshot) []string {
 }
 
 func tuiFLCOutboundLabel(snapshot tuiSnapshot) string {
-	value := cliDisplayValue(snapshot.FLCOutbound)
-	if snapshot.Settings.Mode != tuiSilentMode || snapshot.FLCOutbound == "" {
+	group := strings.TrimSpace(snapshot.FLCOutbound)
+	if group == "" {
+		return "pick a node in Proxies"
+	}
+	value := group
+	for _, candidate := range snapshot.Groups {
+		if strings.EqualFold(candidate.Name, group) && strings.TrimSpace(candidate.Now) != "" {
+			value = group + " → " + candidate.Now
+			break
+		}
+	}
+	if snapshot.Settings.Mode != tuiSilentMode {
 		return value
 	}
 	if snapshot.FLCEnabled {
@@ -4891,11 +4954,11 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 	tuiTitle(
 		b,
 		fmt.Sprintf("SSH profiles · %d configured", len(snapshot.SSHProfiles)),
-		"↑↓ select · Enter connect/Dashboard · Tab focus · n add · e edit · x delete",
+		"↑↓ select · Enter connect/Dashboard · Tab focus · n add · e edit · u default · x delete",
 		width,
 	)
 	if len(snapshot.SSHProfiles) == 0 {
-		tuiRow(b, "No SSH profiles · press n to add one", width, false, tuiDim)
+		tuiRow(b, "No SSH profiles · press n to add or import from ~/.ssh/config", width, false, tuiDim)
 		tuiEndPanel(b, width)
 		tuiEmptyPanel(b, "SSH Dashboard", "Add an SSH profile to start a tunnel", width)
 		return
@@ -4938,14 +5001,24 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 		} else {
 			endpoint = " · local auto"
 		}
+		if profile.Jump != "" {
+			endpoint += " · via " + profile.Jump
+		}
+		if profile.LastError != "" && !(profile.Connected && profile.Ready) {
+			endpoint += " · " + truncateTUI(profile.LastError, 48)
+		}
 		auth := cliSSHAuthenticationLabel(
 			profile.Identity,
 			profile.PassphraseSet,
 			profile.PasswordSet,
 		)
+		name := truncateTUI(profile.Name, 16)
+		if profile.Default {
+			name = "*" + truncateTUI(profile.Name, 15)
+		}
 		row := fmt.Sprintf(
 			"%-18s %-12s %s:%d · %s%s",
-			truncateTUI(profile.Name, 18),
+			name,
 			status,
 			truncateTUI(profile.Destination, 28),
 			profile.Port,
@@ -4988,7 +5061,16 @@ func drawTUISSHDashboard(
 		statusColor = tuiGreen
 	} else if profile.Connected {
 		status = "BROKEN · Enter to reconnect"
+		if profile.LastError != "" {
+			status += " · " + profile.LastError
+		}
 		statusColor = tuiRed
+	} else if profile.LastError != "" {
+		status = "DISCONNECTED · Enter to connect · last error: " + profile.LastError
+		statusColor = tuiYellow
+	}
+	if profile.Default && !profile.NeedsUsername {
+		status = "DEFAULT · " + status
 	}
 	managedIP := tuiSSHNetworkLabel(snapshot.SSHNetwork, "Not checked · press n")
 	directIP := tuiSSHNetworkLabel(snapshot.SSHDirectNetwork, "Not checked · press n")
@@ -5022,6 +5104,9 @@ func drawTUISSHDashboard(
 	)
 	tuiRow(b, "Tunnel        "+status, width, focused && snapshot.SelectedSSHDetail == 0, statusColor)
 	tuiRow(b, "SSH host      "+profile.Destination+":"+strconv.Itoa(profile.Port), width, false, tuiCyan)
+	if profile.Jump != "" {
+		tuiRow(b, "Jump host     "+profile.Jump, width, false, tuiCyan)
+	}
 	tuiEndPanel(b, width)
 
 	networkSubtitle := "B direct first · managed follows · direct requires B TUN off · d RTT×5 · v CF speed"

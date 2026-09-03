@@ -30,6 +30,7 @@ const (
 	cliSSHConfigLockFilename   = ".flclash-ssh.lock"
 	cliSSHRuntimeDirectoryName = "ssh"
 	cliSSHPersistentStateFile  = "persistent.json"
+	cliSSHLastErrorFile        = "last-error.json"
 	cliSSHConfigVersion        = 2
 	cliSSHAskpassFileEnv       = "FLCLASH_SSH_ASKPASS_FILE"
 	cliSSHRemoteProbeVersion   = 1
@@ -47,6 +48,7 @@ type cliSSHProfile struct {
 	Destination        string   `json:"-"`
 	Port               int      `json:"port"`
 	LocalPort          int      `json:"local_port,omitempty"`
+	Jump               string   `json:"jump,omitempty"`
 	Identity           string   `json:"identity,omitempty"`
 	IdentityPassphrase string   `json:"identity_passphrase,omitempty"`
 	Password           string   `json:"password,omitempty"`
@@ -55,7 +57,14 @@ type cliSSHProfile struct {
 
 type cliSSHConfig struct {
 	Version  int             `json:"version"`
+	Default  string          `json:"default,omitempty"`
 	Profiles []cliSSHProfile `json:"profiles"`
+}
+
+type cliSSHLastError struct {
+	Name  string    `json:"name"`
+	Error string    `json:"error"`
+	At    time.Time `json:"at"`
 }
 
 type cliSSHTunnelState struct {
@@ -78,25 +87,29 @@ type cliSSHProfileView struct {
 	Destination   string    `json:"destination"`
 	Port          int       `json:"port"`
 	LocalPort     int       `json:"local_port,omitempty"`
+	Jump          string    `json:"jump,omitempty"`
 	Identity      string    `json:"identity,omitempty"`
 	Options       []string  `json:"options,omitempty"`
 	PassphraseSet bool      `json:"identity_passphrase_set"`
 	PasswordSet   bool      `json:"password_set"`
 	NeedsUsername bool      `json:"needs_username"`
+	Default       bool      `json:"default,omitempty"`
 	Connected     bool      `json:"connected"`
 	Ready         bool      `json:"ready"`
 	SocksPort     int       `json:"socks_port,omitempty"`
 	StartedAt     time.Time `json:"started_at,omitempty"`
+	LastError     string    `json:"last_error,omitempty"`
 }
 
 type cliSSHProfileEdit struct {
-	Name, Username, Host, Destination      string
-	Identity, IdentityPassphrase, Password string
-	Port, LocalPort                        int
-	Options                                []string
-	PortSet, LocalPortSet, IdentitySet     bool
-	PassphraseSet, ClearPassphrase         bool
-	PasswordSet, ClearPassword, OptionsSet bool
+	Name, Username, Host, Destination            string
+	Jump, Identity, IdentityPassphrase, Password string
+	Port, LocalPort                              int
+	Options                                      []string
+	PortSet, LocalPortSet, IdentitySet           bool
+	JumpSet, ClearJump                           bool
+	PassphraseSet, ClearPassphrase               bool
+	PasswordSet, ClearPassword, OptionsSet       bool
 }
 
 type cliSSHProfileJSON struct {
@@ -106,6 +119,7 @@ type cliSSHProfileJSON struct {
 	Destination        string   `json:"destination,omitempty"`
 	Port               int      `json:"port"`
 	LocalPort          int      `json:"local_port,omitempty"`
+	Jump               string   `json:"jump,omitempty"`
 	Identity           string   `json:"identity,omitempty"`
 	IdentityPassphrase string   `json:"identity_passphrase,omitempty"`
 	Password           string   `json:"password,omitempty"`
@@ -120,6 +134,7 @@ func (profile cliSSHProfile) MarshalJSON() ([]byte, error) {
 		Host:               profile.Host,
 		Port:               profile.Port,
 		LocalPort:          profile.LocalPort,
+		Jump:               profile.Jump,
 		Identity:           profile.Identity,
 		IdentityPassphrase: profile.IdentityPassphrase,
 		Password:           profile.Password,
@@ -139,6 +154,7 @@ func (profile *cliSSHProfile) UnmarshalJSON(data []byte) error {
 		Destination:        value.Destination,
 		Port:               value.Port,
 		LocalPort:          value.LocalPort,
+		Jump:               value.Jump,
 		Identity:           value.Identity,
 		IdentityPassphrase: value.IdentityPassphrase,
 		Password:           value.Password,
@@ -166,6 +182,7 @@ func formatCLISSHDestination(username, host string) string {
 func normalizeCLISSHProfile(profile cliSSHProfile) cliSSHProfile {
 	profile.Username = strings.TrimSpace(profile.Username)
 	profile.Host = strings.TrimSpace(profile.Host)
+	profile.Jump = strings.TrimSpace(profile.Jump)
 	if profile.Host == "" && profile.Destination != "" {
 		profile.Username, profile.Host = splitCLISSHDestination(profile.Destination)
 	}
@@ -266,6 +283,10 @@ func sshManagementCommand(args []string) error {
 		return cliSSHStatusCommand(args[1:])
 	case "test":
 		return cliSSHTestCommand(args[1:])
+	case "default":
+		return cliSSHDefaultCommand(args[1:])
+	case "import":
+		return cliSSHImportCommand(args[1:])
 	case "probe":
 		return cliSSHProbeCommand(args[1:])
 	default:
@@ -276,23 +297,32 @@ func sshManagementCommand(args []string) error {
 func printSSHManagementUsage(w io.Writer) {
 	fmt.Fprintln(w, "Proxy local traffic through an SSH host's network exit.")
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  flclash ssh add NAME HOST --user USER [--port PORT] [--local-port PORT|auto] [--identity PATH] [--passphrase] [--password] [--option KEY=VALUE]")
+	fmt.Fprintln(w, "  flclash ssh add NAME HOST --user USER [--port PORT] [--local-port PORT|auto] [--jump HOST] [--identity PATH] [--passphrase] [--password] [--option KEY=VALUE]")
 	fmt.Fprintln(w, "  flclash ssh add NAME user@host [OPTIONS]  # compatibility syntax")
 	fmt.Fprintln(w, "  flclash ssh edit NAME [HOST] [--user USER] [OPTIONS]")
+	fmt.Fprintln(w, "  flclash ssh import [HOST...] [--file PATH]")
+	fmt.Fprintln(w, "  flclash ssh default [NAME|--clear]")
 	fmt.Fprintln(w, "  flclash ssh delete|show NAME")
 	fmt.Fprintln(w, "  flclash ssh list|status [--json]")
-	fmt.Fprintln(w, "  flclash ssh connect|disconnect [NAME|all]")
+	fmt.Fprintln(w, "  flclash ssh connect [NAME]")
+	fmt.Fprintln(w, "  flclash ssh disconnect [NAME|all]")
 	fmt.Fprintln(w, "  flclash ssh test [NAME]")
 	fmt.Fprintln(w, "  flclash ssh probe --json  # read-only endpoint check for flc ssh -d")
 	fmt.Fprintln(w, "`ssh add` with no arguments and `ssh edit NAME` open an interactive prompt.")
+	fmt.Fprintln(w, "`ssh connect` and `flc ssh COMMAND` use the default profile, or the only profile, when NAME is omitted.")
+	fmt.Fprintln(w, "A broken persistent tunnel is rebuilt automatically before `flc ssh COMMAND` runs.")
 }
 
 var (
-	activeCLIPersistentSSHTunnelForCommand = activeCLIPersistentSSHTunnel
-	startCLITransientSSHTunnelForCommand   = startCLITransientSSHTunnel
-	stopCLITransientSSHTunnelForCommand    = stopCLITransientSSHTunnel
-	runCLICommandWithSSHProxyForCommand    = runCLICommandWithSSHProxy
-	probeCLISSHRemoteForCommand            = probeCLISSHRemote
+	activeCLIPersistentSSHTunnelForCommand        = activeCLIPersistentSSHTunnel
+	connectCLISSHProfileForCommand                = connectCLISSHProfile
+	connectCLISSHProfileWithCredentialsForCommand = connectCLISSHProfileWithCredentials
+	ensureCLIPersistentSSHTunnelForCommand        = ensureCLIPersistentSSHTunnel
+	promptCLISSHSecretOnceForCommand              = promptCLISSHSecretOnce
+	startCLITransientSSHTunnelForCommand          = startCLITransientSSHTunnel
+	stopCLITransientSSHTunnelForCommand           = stopCLITransientSSHTunnel
+	runCLICommandWithSSHProxyForCommand           = runCLICommandWithSSHProxy
+	probeCLISSHRemoteForCommand                   = probeCLISSHRemote
 )
 
 func flcSSHCommand(args []string) error {
@@ -335,19 +365,8 @@ command:
 			return err
 		}
 		state, err := startCLITransientSSHTunnelForCommand(profile)
-		var required *cliSSHCredentialRequiredError
-		if errors.As(err, &required) {
-			passphrase, promptErr := promptCLISSHSecretOnce("Private key passphrase")
-			if promptErr != nil {
-				return promptErr
-			}
-			profile, err = prepareCLISSHProfileCredentials(
-				profile,
-				cliSSHCredentials{IdentityPassphrase: passphrase},
-			)
-			if err == nil {
-				state, err = startCLITransientSSHTunnelForCommand(profile)
-			}
+		if err != nil {
+			state, err = startCLITransientSSHTunnelAfterPassphrase(profile, err)
 		}
 		if err != nil {
 			return err
@@ -356,20 +375,135 @@ command:
 		stopErr := stopCLITransientSSHTunnelForCommand(state)
 		return errors.Join(commandErr, stopErr)
 	}
-	state, active, err := activeCLIPersistentSSHTunnelForCommand()
+	state, err := ensureCLIPersistentSSHTunnelForCommand("")
+	if err != nil {
+		state, err = retryCLISSHConnectWithPassphrase("", err)
+	}
 	if err != nil {
 		return err
 	}
-	if !active {
-		return errors.New("no SSH tunnel is open; run `flclash ssh connect NAME` or use `flc ssh -u NAME COMMAND`")
-	}
 	if !cliSSHTunnelReady(state) {
 		return fmt.Errorf(
-			"SSH tunnel %q is connected but its SOCKS5 listener is unavailable; reconnect it before running a command",
+			"SSH tunnel %q is connected but its SOCKS5 listener is unavailable",
 			state.Name,
 		)
 	}
 	return runCLICommandThroughSSHForCommand(args, state, direct)
+}
+
+func startCLITransientSSHTunnelAfterPassphrase(
+	profile cliSSHProfile,
+	err error,
+) (cliSSHTunnelState, error) {
+	passphrase, name, promptErr := promptCLISSHPassphraseFromError(err)
+	if promptErr != nil {
+		return cliSSHTunnelState{}, promptErr
+	}
+	if name != "" && !strings.EqualFold(name, profile.Name) {
+		return cliSSHTunnelState{}, err
+	}
+	profile, prepErr := prepareCLISSHProfileCredentials(
+		profile,
+		cliSSHCredentials{IdentityPassphrase: passphrase},
+	)
+	if prepErr != nil {
+		return cliSSHTunnelState{}, prepErr
+	}
+	return startCLITransientSSHTunnelForCommand(profile)
+}
+
+func retryCLISSHConnectWithPassphrase(
+	name string,
+	err error,
+) (cliSSHTunnelState, error) {
+	passphrase, profileName, promptErr := promptCLISSHPassphraseFromError(err)
+	if promptErr != nil {
+		return cliSSHTunnelState{}, promptErr
+	}
+	if name == "" {
+		name = profileName
+	}
+	state, _, connErr := connectCLISSHProfileWithCredentialsForCommand(
+		name,
+		cliSSHCredentials{IdentityPassphrase: passphrase},
+	)
+	return state, connErr
+}
+
+func promptCLISSHPassphraseFromError(err error) (string, string, error) {
+	var required *cliSSHCredentialRequiredError
+	if !errors.As(err, &required) {
+		return "", "", err
+	}
+	passphrase, promptErr := promptCLISSHSecretOnceForCommand("Private key passphrase")
+	if promptErr != nil {
+		return "", required.Profile, promptErr
+	}
+	return passphrase, required.Profile, nil
+}
+
+func ensureCLIPersistentSSHTunnel(name string) (cliSSHTunnelState, error) {
+	state, active, err := activeCLIPersistentSSHTunnelForCommand()
+	if err != nil {
+		return cliSSHTunnelState{}, err
+	}
+	if active && cliSSHTunnelReady(state) &&
+		(name == "" || strings.EqualFold(state.Name, name)) {
+		return state, nil
+	}
+	if name == "" && active {
+		name = state.Name
+	}
+	if name == "" {
+		name, err = resolveCLISSHConnectName("")
+		if err != nil {
+			return cliSSHTunnelState{}, err
+		}
+	} else if !active || !strings.EqualFold(state.Name, name) {
+		if _, err := resolveCLISSHConnectName(name); err != nil {
+			return cliSSHTunnelState{}, err
+		}
+	}
+	state, _, err = connectCLISSHProfileForCommand(name)
+	if err != nil {
+		return cliSSHTunnelState{}, fmt.Errorf("open SSH tunnel %q: %w", name, err)
+	}
+	if !cliSSHTunnelReady(state) {
+		message := fmt.Sprintf(
+			"SSH tunnel %q is connected but its SOCKS5 listener is unavailable",
+			state.Name,
+		)
+		_ = saveCLISSHLastError(state.Name, message)
+		return state, errors.New(message)
+	}
+	return state, nil
+}
+
+func resolveCLISSHConnectName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	config, err := loadCLISSHConfig()
+	if err != nil {
+		return "", err
+	}
+	if name != "" {
+		if _, found := findCLISSHProfile(config.Profiles, name); !found {
+			return "", fmt.Errorf("SSH profile %q does not exist; add it with `flclash ssh add` or `flclash ssh import`", name)
+		}
+		return name, nil
+	}
+	if defaultName := strings.TrimSpace(config.Default); defaultName != "" {
+		if _, found := findCLISSHProfile(config.Profiles, defaultName); found {
+			return defaultName, nil
+		}
+	}
+	switch len(config.Profiles) {
+	case 0:
+		return "", errors.New("no SSH profiles configured; add one with `flclash ssh add` or `flclash ssh import`")
+	case 1:
+		return config.Profiles[0].Name, nil
+	default:
+		return "", errors.New("no SSH tunnel is open; run `flclash ssh connect NAME`, set a default with `flclash ssh default NAME`, or use `flc ssh -u NAME COMMAND`")
+	}
 }
 
 func runCLICommandThroughSSHForCommand(
@@ -421,6 +555,8 @@ func printFLCSSHUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  flc ssh COMMAND [ARG...]")
 	fmt.Fprintln(w, "  flc ssh [-d|--direct] [-u NAME|--use NAME] COMMAND [ARG...]")
+	fmt.Fprintln(w, "Without -u, a persistent tunnel is opened for the default or only SSH profile.")
+	fmt.Fprintln(w, "A broken persistent tunnel is rebuilt before the command runs.")
 	fmt.Fprintln(w, "-u creates a temporary tunnel which is always closed after the command.")
 	fmt.Fprintln(w, "Without -d, the SSH host decides whether Clash/TUN/routing handles the flow.")
 	fmt.Fprintln(w, "-d fails closed when the SSH host reports a transparent FlClash TUN.")
@@ -545,6 +681,10 @@ func cliSSHListCommand(args []string) error {
 	}
 	for _, view := range views {
 		status, endpoint := "DISCONNECTED", ""
+		marker := "  "
+		if view.Default {
+			marker = "* "
+		}
 		if view.NeedsUsername {
 			status, endpoint = "NEEDS USER", " · edit before connecting"
 		} else if view.Connected && view.Ready {
@@ -567,12 +707,18 @@ func cliSSHListCommand(args []string) error {
 		} else {
 			endpoint = " · local auto"
 		}
+		if view.Jump != "" {
+			endpoint += " · via " + view.Jump
+		}
+		if view.LastError != "" && !(view.Connected && view.Ready) {
+			endpoint += " · last error: " + view.LastError
+		}
 		auth := cliSSHAuthenticationLabel(
 			view.Identity,
 			view.PassphraseSet,
 			view.PasswordSet,
 		)
-		fmt.Printf("%-18s %-12s %-28s · %s%s\n", view.Name, status, view.Destination, auth, endpoint)
+		fmt.Printf("%s%-16s %-12s %-28s · %s%s\n", marker, view.Name, status, view.Destination, auth, endpoint)
 	}
 	return nil
 }
@@ -600,10 +746,12 @@ func cliSSHShowCommand(args []string) error {
 			localPort = strconv.Itoa(view.LocalPort)
 		}
 		fmt.Printf(
-			"Name:                  %s\nSSH username:          %s\nSSH host:              %s\nSSH port:              %d\nLocal SOCKS:           %s\nIdentity(private key): %s\nKey passphrase:        %s\nSSH password:          %s\nConnected:             %s\nSOCKS5 ready:          %s\n",
+			"Name:                  %s\nDefault:               %s\nSSH username:          %s\nSSH host:              %s\nJump host:             %s\nSSH port:              %d\nLocal SOCKS:           %s\nIdentity(private key): %s\nKey passphrase:        %s\nSSH password:          %s\nConnected:             %s\nSOCKS5 ready:          %s\n",
 			view.Name,
+			cliOnOff(view.Default),
 			cliDisplayValue(view.Username),
 			view.Host,
+			cliDisplayValue(view.Jump),
 			view.Port,
 			localPort,
 			cliDisplayValue(view.Identity),
@@ -615,26 +763,27 @@ func cliSSHShowCommand(args []string) error {
 		if view.SocksPort > 0 {
 			fmt.Printf("SOCKS5:      127.0.0.1:%d\n", view.SocksPort)
 		}
+		if view.LastError != "" {
+			fmt.Printf("Last error:            %s\n", view.LastError)
+		}
 		return nil
 	}
 	return fmt.Errorf("SSH profile %q does not exist", args[0])
 }
 
 func cliSSHConnectCommand(args []string) error {
-	if len(args) != 1 || cliSubcommandHelp(args) {
-		return errors.New("usage: flclash ssh connect NAME")
+	if cliSubcommandHelp(args) || len(args) > 1 {
+		return errors.New("usage: flclash ssh connect [NAME]")
 	}
-	state, alreadyConnected, err := connectCLISSHProfile(args[0])
-	var required *cliSSHCredentialRequiredError
-	if errors.As(err, &required) {
-		passphrase, promptErr := promptCLISSHSecretOnce("Private key passphrase")
-		if promptErr != nil {
-			return promptErr
-		}
-		state, alreadyConnected, err = connectCLISSHProfileWithCredentials(
-			args[0],
-			cliSSHCredentials{IdentityPassphrase: passphrase},
-		)
+	name := firstCLIArgument(args)
+	resolved, err := resolveCLISSHConnectName(name)
+	if err != nil {
+		return err
+	}
+	state, alreadyConnected, err := connectCLISSHProfile(resolved)
+	if err != nil {
+		state, err = retryCLISSHConnectWithPassphrase(resolved, err)
+		alreadyConnected = false
 	}
 	if err != nil {
 		return err
@@ -684,15 +833,41 @@ func cliSSHTestCommand(args []string) error {
 	if len(args) > 1 {
 		return errors.New("usage: flclash ssh test [NAME]")
 	}
-	name := ""
-	if len(args) == 1 {
-		name = args[0]
-	}
-	state, latency, err := testCLISSHProfile(name)
+	state, latency, err := testCLISSHProfile(firstCLIArgument(args))
 	if err != nil {
 		return err
 	}
-	fmt.Printf("SSH %s ready · SOCKS5 127.0.0.1:%d · TCP %s\n", state.Name, state.Port, latency)
+	fmt.Printf("SSH %s ready · SOCKS5 127.0.0.1:%d · handshake %s\n", state.Name, state.Port, latency)
+	return nil
+}
+
+func cliSSHDefaultCommand(args []string) error {
+	if cliSubcommandHelp(args) || len(args) > 1 {
+		return errors.New("usage: flclash ssh default [NAME|--clear]")
+	}
+	if len(args) == 0 {
+		config, err := loadCLISSHConfig()
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(config.Default) == "" {
+			fmt.Println("No default SSH profile")
+			return nil
+		}
+		fmt.Printf("Default SSH profile %s\n", config.Default)
+		return nil
+	}
+	if args[0] == "--clear" || args[0] == "clear" {
+		if err := setCLISSHDefault(""); err != nil {
+			return err
+		}
+		fmt.Println("Default SSH profile cleared")
+		return nil
+	}
+	if err := setCLISSHDefault(args[0]); err != nil {
+		return err
+	}
+	fmt.Printf("Default SSH profile %s\n", args[0])
 	return nil
 }
 
@@ -734,6 +909,15 @@ func parseCLISSHProfileEdit(args []string, editing bool) (cliSSHProfileEdit, boo
 	}
 	if arguments["--password"] && arguments["--clear-password"] {
 		return edit, false, errors.New("--password and --clear-password cannot be used together")
+	}
+	jumpAssigned := arguments["--jump"]
+	for argument := range arguments {
+		if strings.HasPrefix(argument, "--jump=") {
+			jumpAssigned = true
+		}
+	}
+	if jumpAssigned && arguments["--clear-jump"] {
+		return edit, false, errors.New("--jump and --clear-jump cannot be used together")
 	}
 	positionals := []string{}
 	for index := 0; index < len(args); index++ {
@@ -782,6 +966,18 @@ func parseCLISSHProfileEdit(args []string, editing bool) (cliSSHProfileEdit, boo
 				return edit, false, err
 			}
 			edit.LocalPortSet = true
+		case argument == "--jump":
+			value, err := next()
+			if err != nil {
+				return edit, false, err
+			}
+			edit.Jump = value
+			edit.JumpSet = true
+		case strings.HasPrefix(argument, "--jump="):
+			edit.Jump = strings.TrimPrefix(argument, "--jump=")
+			edit.JumpSet = true
+		case argument == "--clear-jump":
+			edit.ClearJump = true
 		case argument == "--identity":
 			value, err := next()
 			if err != nil {
@@ -845,6 +1041,9 @@ func parseCLISSHProfileEdit(args []string, editing bool) (cliSSHProfileEdit, boo
 	if !editing && edit.ClearPassword {
 		return edit, false, errors.New("--clear-password is only valid with `ssh edit`")
 	}
+	if !editing && edit.ClearJump {
+		return edit, false, errors.New("--clear-jump is only valid with `ssh edit`")
+	}
 	if editing {
 		if len(positionals) < 1 || len(positionals) > 2 {
 			return edit, false, errors.New("usage: flclash ssh edit NAME [HOST] [--user USER] [OPTIONS]")
@@ -899,6 +1098,11 @@ func cliSSHProfileFromEdit(existing cliSSHProfile, edit cliSSHProfileEdit, editi
 	if !editing || edit.LocalPortSet {
 		profile.LocalPort = edit.LocalPort
 	}
+	if edit.JumpSet || !editing {
+		profile.Jump = edit.Jump
+	} else if edit.ClearJump {
+		profile.Jump = ""
+	}
 	if edit.IdentitySet || !editing {
 		profile.Identity = edit.Identity
 	}
@@ -949,6 +1153,9 @@ func addCLISSHProfile(profile cliSSHProfile) error {
 			return strings.ToLower(config.Profiles[i].Name) <
 				strings.ToLower(config.Profiles[j].Name)
 		})
+		if strings.TrimSpace(config.Default) == "" {
+			config.Default = profile.Name
+		}
 		return nil
 	})
 }
@@ -1004,6 +1211,9 @@ func replaceCLISSHProfile(
 		}
 		profile.Options = append([]string(nil), profile.Options...)
 		config.Profiles[index] = profile
+		if strings.EqualFold(config.Default, originalName) {
+			config.Default = profile.Name
+		}
 		sort.Slice(config.Profiles, func(i, j int) bool {
 			return strings.ToLower(config.Profiles[i].Name) <
 				strings.ToLower(config.Profiles[j].Name)
@@ -1038,6 +1248,9 @@ func deleteCLISSHProfile(name string) error {
 			return fmt.Errorf("SSH profile %q does not exist", name)
 		}
 		config.Profiles = append(config.Profiles[:index], config.Profiles[index+1:]...)
+		if strings.EqualFold(config.Default, name) {
+			config.Default = ""
+		}
 		return nil
 	})
 	if err == nil || !wasConnected {
@@ -1091,10 +1304,12 @@ func connectCLISSHProfileWithCredentials(
 	defer lock.release()
 	profile, err := loadCLISSHProfile(name)
 	if err != nil {
+		_ = saveCLISSHLastError(name, err.Error())
 		return cliSSHTunnelState{}, false, err
 	}
 	profile, err = prepareCLISSHProfileCredentials(profile, credentials)
 	if err != nil {
+		_ = saveCLISSHLastError(profile.Name, err.Error())
 		return cliSSHTunnelState{}, false, err
 	}
 	old, oldActive, err := activeCLIPersistentSSHTunnelForOperation()
@@ -1103,17 +1318,21 @@ func connectCLISSHProfileWithCredentials(
 	}
 	if oldActive && strings.EqualFold(old.Name, profile.Name) {
 		if cliSSHTunnelReady(old) {
+			_ = clearCLISSHLastError(profile.Name)
 			return old, true, nil
 		}
 		if err := stopCLIStateTunnelForOperation(old); err != nil {
+			_ = saveCLISSHLastError(old.Name, err.Error())
 			return cliSSHTunnelState{}, false,
 				fmt.Errorf("stop broken SSH tunnel %q: %w", old.Name, err)
 		}
 		state, err := startCLIPersistentSSHTunnelForOperation(profile)
 		if err != nil {
+			_ = saveCLISSHLastError(profile.Name, err.Error())
 			return cliSSHTunnelState{}, false,
 				fmt.Errorf("restart broken SSH tunnel %q: %w", profile.Name, err)
 		}
+		_ = clearCLISSHLastError(profile.Name)
 		return state, false, nil
 	}
 	var oldProfile cliSSHProfile
@@ -1133,8 +1352,10 @@ func connectCLISSHProfileWithCredentials(
 	}
 	state, err := startCLIPersistentSSHTunnelForOperation(profile)
 	if err == nil {
+		_ = clearCLISSHLastError(profile.Name)
 		return state, false, nil
 	}
+	_ = saveCLISSHLastError(profile.Name, err.Error())
 	if !oldActive {
 		return cliSSHTunnelState{}, false, err
 	}
@@ -1180,29 +1401,37 @@ func disconnectCLISSHProfile(name string) (cliSSHTunnelState, bool, error) {
 }
 
 func testCLISSHProfile(name string) (cliSSHTunnelState, time.Duration, error) {
-	state, active, err := activeCLIPersistentSSHTunnel()
+	resolved, err := resolveCLISSHConnectName(name)
 	if err != nil {
 		return cliSSHTunnelState{}, 0, err
 	}
-	if !active {
-		return cliSSHTunnelState{}, 0, errors.New("no persistent SSH tunnel is open")
-	}
-	if name != "" && !strings.EqualFold(name, state.Name) {
-		return cliSSHTunnelState{}, 0,
-			fmt.Errorf("SSH profile %q is not connected", name)
-	}
 	started := time.Now()
-	connection, err := net.DialTimeout(
-		"tcp",
-		net.JoinHostPort("127.0.0.1", strconv.Itoa(state.Port)),
-		2*time.Second,
-	)
+	state, err := ensureCLIPersistentSSHTunnel(resolved)
 	if err != nil {
-		return cliSSHTunnelState{}, 0,
-			fmt.Errorf("SSH SOCKS5 listener is unavailable: %w", err)
+		state, err = retryCLISSHConnectWithPassphrase(resolved, err)
 	}
-	_ = connection.Close()
+	if err != nil {
+		return cliSSHTunnelState{}, 0, err
+	}
+	if err := probeCLISSHSOCKS(state.Port, 2*time.Second); err != nil {
+		return state, 0, fmt.Errorf("SSH SOCKS5 handshake failed: %w", err)
+	}
 	return state, time.Since(started).Round(time.Millisecond), nil
+}
+
+func setCLISSHDefault(name string) error {
+	name = strings.TrimSpace(name)
+	return updateCLISSHConfig(func(config *cliSSHConfig) error {
+		if name == "" {
+			config.Default = ""
+			return nil
+		}
+		if _, found := findCLISSHProfile(config.Profiles, name); !found {
+			return fmt.Errorf("SSH profile %q does not exist", name)
+		}
+		config.Default = name
+		return nil
+	})
 }
 
 func promptCLISSHProfile(existing cliSSHProfile, editing bool) (cliSSHProfileEdit, error) {
@@ -1225,6 +1454,11 @@ func promptCLISSHProfile(existing cliSSHProfile, editing bool) (cliSSHProfileEdi
 		return edit, err
 	}
 	edit.Destination = formatCLISSHDestination(edit.Username, edit.Host)
+	edit.Jump, err = promptCLISSHLine(reader, "Jump host (optional)", existing.Jump, true)
+	if err != nil {
+		return edit, err
+	}
+	edit.JumpSet = true
 	port := existing.Port
 	if port == 0 {
 		port = 22
@@ -1387,6 +1621,11 @@ func validateCLISSHProfile(profile cliSSHProfile) error {
 	if profile.Identity == "" && profile.IdentityPassphrase != "" {
 		return errors.New("private key passphrase requires an Identity(private key)")
 	}
+	if profile.Jump != "" &&
+		(cliSSHOptionConfigured(profile.Options, "ProxyJump") ||
+			cliSSHOptionConfigured(profile.Options, "JumpHost")) {
+		return errors.New("Jump host cannot be combined with a ProxyJump/JumpHost option")
+	}
 	for _, option := range profile.Options {
 		if err := validateCLISSHOption(option); err != nil {
 			return err
@@ -1418,6 +1657,9 @@ func validateCLISSHProfileStructure(profile cliSSHProfile) error {
 	}
 	if profile.LocalPort < 0 || profile.LocalPort > 65535 {
 		return errors.New("local SOCKS5 port must be auto or between 1 and 65535")
+	}
+	if err := validateCLISSHJump(profile.Jump); err != nil {
+		return err
 	}
 	for _, option := range profile.Options {
 		if err := validateCLISSHOptionSyntax(option); err != nil {
@@ -1544,6 +1786,17 @@ func validateCLISSHOption(option string) error {
 	}
 	if disallowed[strings.ToLower(strings.TrimSpace(key))] {
 		return fmt.Errorf("SSH option %q conflicts with FlClash tunnel management", key)
+	}
+	return nil
+}
+
+func validateCLISSHJump(jump string) error {
+	jump = strings.TrimSpace(jump)
+	if jump == "" {
+		return nil
+	}
+	if strings.HasPrefix(jump, "-") || strings.ContainsAny(jump, " \t\r\n\x00") {
+		return errors.New("SSH jump host is invalid")
 	}
 	return nil
 }
@@ -1679,6 +1932,7 @@ func loadCLISSHProfileViews() ([]cliSSHProfileView, error) {
 	if err != nil {
 		return nil, err
 	}
+	lastError, _ := loadCLISSHLastError()
 	views := make([]cliSSHProfileView, 0, len(config.Profiles))
 	for _, profile := range config.Profiles {
 		profile = normalizeCLISSHProfile(profile)
@@ -1689,17 +1943,22 @@ func loadCLISSHProfileViews() ([]cliSSHProfileView, error) {
 			Destination:   profile.Destination,
 			Port:          profile.Port,
 			LocalPort:     profile.LocalPort,
+			Jump:          profile.Jump,
 			Identity:      profile.Identity,
 			Options:       append([]string(nil), profile.Options...),
 			PassphraseSet: profile.IdentityPassphrase != "",
 			PasswordSet:   profile.Password != "",
 			NeedsUsername: profile.Username == "",
+			Default:       strings.EqualFold(config.Default, profile.Name),
 		}
 		if connected && strings.EqualFold(active.Name, profile.Name) {
 			view.Connected = true
 			view.Ready = cliSSHTunnelReady(active)
 			view.SocksPort = active.Port
 			view.StartedAt = active.StartedAt
+		}
+		if strings.EqualFold(lastError.Name, profile.Name) {
+			view.LastError = lastError.Error
 		}
 		views = append(views, view)
 	}
@@ -1741,7 +2000,15 @@ func runCLISSHCommand(
 	if summary == "" {
 		return err
 	}
-	return fmt.Errorf("%w: %s", err, summary)
+	return fmt.Errorf("%w: %s", err, formatCLISSHErrorSummary(summary))
+}
+
+func formatCLISSHErrorSummary(summary string) string {
+	friendly := cliSSHFriendlyError(summary)
+	if friendly == summary {
+		return summary
+	}
+	return friendly + " · " + summary
 }
 
 func runCLISSHProbe(command *exec.Cmd) error {
@@ -1788,7 +2055,7 @@ func probeCLISSHRemote(state cliSSHTunnelState) (cliSSHRemoteProbe, error) {
 			summary = cliSSHOutputSummary(stdout.String())
 		}
 		if summary != "" {
-			return cliSSHRemoteProbe{}, fmt.Errorf("run remote FlClash probe: %w: %s", err, summary)
+			return cliSSHRemoteProbe{}, fmt.Errorf("run remote FlClash probe: %w: %s", err, formatCLISSHErrorSummary(summary))
 		}
 		return cliSSHRemoteProbe{}, fmt.Errorf("run remote FlClash probe: %w", err)
 	}
@@ -1811,6 +2078,36 @@ func cliSSHOutputSummary(output string) string {
 		return truncateTUI(line, 320)
 	}
 	return ""
+}
+
+func cliSSHFriendlyError(summary string) string {
+	lower := strings.ToLower(summary)
+	switch {
+	case strings.Contains(lower, "permission denied"):
+		return "authentication failed; check username, private key, passphrase, or password"
+	case strings.Contains(lower, "connection timed out") || strings.Contains(lower, "operation timed out"):
+		return "connection timed out; check the SSH host, port, and network path"
+	case strings.Contains(lower, "connection refused"):
+		return "connection refused; the SSH server is not accepting connections on that port"
+	case strings.Contains(lower, "no route to host"):
+		return "no route to the SSH host; check the destination and local network"
+	case strings.Contains(lower, "network is unreachable"):
+		return "network is unreachable; check the destination and local network"
+	case strings.Contains(lower, "could not resolve hostname") || strings.Contains(lower, "name or service not known"):
+		return "SSH host name could not be resolved"
+	case strings.Contains(lower, "host key verification failed"):
+		return "SSH host key changed or is not trusted; inspect known_hosts before retrying"
+	case strings.Contains(lower, "too many authentication"):
+		return "too many authentication failures; specify Identity(private key) or a saved password"
+	case strings.Contains(lower, "identity file") && strings.Contains(lower, "not accessible"):
+		return "private key is not accessible; copy it out of /mnt/c and chmod 600"
+	case strings.Contains(lower, "bad permissions"):
+		return "private key permissions are too open; copy it to ~/.ssh and chmod 600"
+	case strings.Contains(lower, "connection reset"):
+		return "SSH connection reset by the remote host"
+	default:
+		return summary
+	}
 }
 
 func cliSSHMaskedSecret(set bool) string {
@@ -1996,6 +2293,12 @@ func cliSSHTunnelArguments(
 		"-o", "ServerAliveInterval=30",
 		"-o", "ServerAliveCountMax=3",
 	}
+	if !cliSSHOptionConfigured(profile.Options, "ConnectTimeout") {
+		args = append(args, "-o", "ConnectTimeout=15")
+	}
+	if !cliSSHOptionConfigured(profile.Options, "ConnectionAttempts") {
+		args = append(args, "-o", "ConnectionAttempts=1")
+	}
 	if profile.IdentityPassphrase == "" && profile.Password == "" {
 		args = append(args, "-o", "BatchMode=yes")
 	}
@@ -2031,6 +2334,11 @@ func cliSSHTunnelArguments(
 	}
 	if profile.Identity != "" {
 		args = append(args, "-i", profile.Identity)
+	}
+	if profile.Jump != "" &&
+		!cliSSHOptionConfigured(profile.Options, "ProxyJump") &&
+		!cliSSHOptionConfigured(profile.Options, "JumpHost") {
+		args = append(args, "-o", "ProxyJump="+profile.Jump)
 	}
 	for _, option := range profile.Options {
 		args = append(args, "-o", option)
@@ -2410,6 +2718,97 @@ func cliSSHSOCKSReady(port int) bool {
 	}
 	_ = connection.Close()
 	return true
+}
+
+func probeCLISSHSOCKS(port int, timeout time.Duration) error {
+	if port < 1 || port > 65535 {
+		return errors.New("SSH SOCKS5 port is invalid")
+	}
+	connection, err := net.DialTimeout(
+		"tcp",
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		timeout,
+	)
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(timeout))
+	if _, err := connection.Write([]byte{5, 1, 0}); err != nil {
+		return err
+	}
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(connection, reply); err != nil {
+		return err
+	}
+	if reply[0] != 5 {
+		return errors.New("listener is not SOCKS5")
+	}
+	if reply[1] != 0 {
+		return errors.New("SOCKS5 authentication is required")
+	}
+	return nil
+}
+
+func saveCLISSHLastError(name, message string) error {
+	name = strings.TrimSpace(name)
+	message = strings.TrimSpace(message)
+	if name == "" || message == "" {
+		return nil
+	}
+	directory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(cliSSHLastError{
+		Name:  name,
+		Error: truncateTUI(message, 320),
+		At:    time.Now(),
+	})
+	if err != nil {
+		return err
+	}
+	return writeCLISSHFileAtomically(
+		filepath.Join(directory, cliSSHLastErrorFile),
+		append(data, '\n'),
+	)
+}
+
+func clearCLISSHLastError(name string) error {
+	lastError, err := loadCLISSHLastError()
+	if err != nil || lastError.Name == "" {
+		return err
+	}
+	if name != "" && !strings.EqualFold(lastError.Name, name) {
+		return nil
+	}
+	directory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(directory, cliSSHLastErrorFile)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func loadCLISSHLastError() (cliSSHLastError, error) {
+	directory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		return cliSSHLastError{}, err
+	}
+	data, err := os.ReadFile(filepath.Join(directory, cliSSHLastErrorFile))
+	if os.IsNotExist(err) {
+		return cliSSHLastError{}, nil
+	}
+	if err != nil {
+		return cliSSHLastError{}, err
+	}
+	var lastError cliSSHLastError
+	if err := json.Unmarshal(data, &lastError); err != nil {
+		return cliSSHLastError{}, err
+	}
+	return lastError, nil
 }
 
 func cliSSHMasterAlive(sshPath string, state cliSSHTunnelState) bool {

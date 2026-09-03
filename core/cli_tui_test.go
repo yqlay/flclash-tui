@@ -1088,6 +1088,42 @@ func TestTUIProxyPortShowsOneCurrentValue(t *testing.T) {
 	if label := tuiFLCOutboundLabel(snapshot); label != "PROXY · WAITING FOR CORE" {
 		t.Fatalf("waiting FLC label = %q", label)
 	}
+	snapshot.Groups = []tuiGroup{{Name: "PROXY", Now: "hk-1", Nodes: []string{"hk-1"}}}
+	if label := tuiFLCOutboundLabel(snapshot); label != "PROXY → hk-1 · WAITING FOR CORE" {
+		t.Fatalf("FLC label with selected node = %q", label)
+	}
+}
+
+func TestTUIDashboardDefaultsToCoreRow(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	if model.snapshot.SelectedDashboard != tuiDashboardServiceRow {
+		t.Fatalf(
+			"default Dashboard row = %d, want Core",
+			model.snapshot.SelectedDashboard,
+		)
+	}
+}
+
+func TestTUIDashboardFLCOutboundOpensProxies(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageDashboard
+	model.snapshot.FocusSidebar = false
+	model.snapshot.FLCOutbound = "PROXY"
+	model.snapshot.Groups = []tuiGroup{{
+		Name:  "PROXY",
+		Now:   "hk-1",
+		Nodes: []string{"DIRECT", "hk-1"},
+	}}
+	model.snapshot.SelectedDashboard = tuiDashboardFLCOutboundRow
+	if command := model.selectCurrent(); command != nil {
+		t.Fatal("FLC outbound row unexpectedly scheduled a backend mutation")
+	}
+	if model.snapshot.Page != tuiPageProxies ||
+		!model.snapshot.ProxyNodeFocus ||
+		model.snapshot.SelectedGroup != 0 ||
+		model.snapshot.Groups[model.snapshot.SelectedGroup].Nodes[model.snapshot.SelectedNode] != "hk-1" {
+		t.Fatalf("FLC row did not open Proxies on the current node: %+v", model.snapshot)
+	}
 }
 
 func TestBackendRenamesProfileRequestedByFrontend(t *testing.T) {
@@ -1714,7 +1750,7 @@ func TestTUISettingsExposeAllInteractiveRows(t *testing.T) {
 	plain := stripTUIANSI(output.String())
 	for _, row := range []string{
 		"Mode          rule",
-		"FLC outbound  NOT SELECTED",
+		"flc           pick a node in Proxies",
 		"Proxy port    17890",
 		"Allow LAN     ON",
 		"IPv6          OFF",
@@ -1959,7 +1995,7 @@ func TestTUISeparatesSettingsAndMaintenance(t *testing.T) {
 	plain := stripTUIANSI(output.String())
 	for _, expected := range []string{
 		"Mode          rule",
-		"FLC outbound  NOT SELECTED",
+		"flc           pick a node in Proxies",
 		"Proxy port    7891",
 		"Unified delay",
 		"TCP concurrent",

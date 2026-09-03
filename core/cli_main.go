@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.5.23"
+const cliVersion = "0.5.25"
 
 type cliPaths struct {
 	homeDir    string
@@ -70,7 +70,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  tun               Turn TUN on/off or inspect it")
 	fmt.Fprintln(w, "  mode              Select rule/global/direct/silent mode")
 	fmt.Fprintln(w, "  port              Get, set, or disable the normal Proxy port")
-	fmt.Fprintln(w, "  flc               Select or test the private silent-mode command proxy")
+	fmt.Fprintln(w, "  flc               Inspect silent flc; Proxies selection sets its group")
 	fmt.Fprintln(w, "  ssh               Manage independent SSH SOCKS5 profiles and tunnels")
 	fmt.Fprintln(w, "  net               Show or test Dashboard network detection")
 	fmt.Fprintln(w)
@@ -304,6 +304,16 @@ func proxyCommand(args []string) error {
 		)
 		if err != nil {
 			return err
+		}
+		if strings.EqualFold(status.Mode, tuiSilentMode) {
+			fmt.Printf(
+				"selected %q in %q · flc follows %q (revision %d)\n",
+				positional[1],
+				positional[0],
+				status.FLCOutbound,
+				status.Revision,
+			)
+			return nil
 		}
 		fmt.Printf(
 			"selected %q in %q (revision %d)\n",

@@ -196,7 +196,6 @@ type tuiInputMode byte
 const (
 	tuiInputNone tuiInputMode = iota
 	tuiInputMixedPort
-	tuiInputFLCOutbound
 	tuiInputSubscription
 	tuiInputProfileFile
 	tuiInputProfileName
@@ -320,7 +319,7 @@ func newTUIModel(
 			SelectedNode:      0,
 			SelectedRow:       tuiProfileImportSubscriptionRow,
 			SelectedMenu:      int(tuiPageDashboard),
-			SelectedDashboard: tuiDashboardSystemProxyRow,
+			SelectedDashboard: tuiDashboardServiceRow,
 			FocusSidebar:      true,
 		},
 		client:           client,
@@ -1076,6 +1075,7 @@ func (m *tuiModel) sshFormView() tuiSSHFormView {
 		Username:          profile.Username,
 		Host:              profile.Host,
 		Destination:       profile.Destination,
+		Jump:              profile.Jump,
 		Port:              m.sshForm.Port,
 		LocalPort:         m.sshForm.LocalPort,
 		Identity:          m.sshForm.Identity,
@@ -1114,8 +1114,6 @@ func (m *tuiModel) inputPresentation() (string, string) {
 	switch m.inputMode {
 	case tuiInputMixedPort:
 		return "Set proxy port", "Type 0-65535; silent mode keeps it closed"
-	case tuiInputFLCOutbound:
-		return "Select FLC outbound", "Type an exact proxy or proxy-group name"
 	case tuiInputSubscription:
 		return "Import subscription", "Paste a YAML, URI, Base64, JSON, or client-format URL"
 	case tuiInputProfileFile:
@@ -1938,6 +1936,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			return m.startNetworkCheck()
 		}
 	case tuiKeyRenameProfile:
+		if m.snapshot.Page == tuiPageSSH {
+			return m.toggleSelectedSSHDefault()
+		}
 		if m.snapshot.Page == tuiPageProfiles {
 			m.beginProfileRename()
 		}
@@ -2912,7 +2913,11 @@ func startTUIManagedCore(
 	state.stagedSettings = nil
 	state.settingsDirty = false
 	if mode == tuiSilentMode {
-		state.snapshot.Status = "Core started in silent mode; only flc uses the private listener"
+		if outbound := strings.TrimSpace(state.snapshot.FLCOutbound); outbound != "" {
+			state.snapshot.Status = "Core started in silent mode · FLC " + outbound + " · only flc uses the private listener"
+		} else {
+			state.snapshot.Status = "Core started in silent mode; only flc uses the private listener"
+		}
 	} else {
 		state.snapshot.Status = fmt.Sprintf("Core listeners started on port %d", port)
 	}
@@ -2958,6 +2963,8 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			return m.handleKey(tuiKeyTun)
 		case tuiDashboardModeRow:
 			return m.handleKey(tuiKeyMode)
+		case tuiDashboardFLCOutboundRow:
+			return m.openProxiesForFLCOutbound()
 		case tuiDashboardMixedPortRow:
 			m.beginInput(tuiInputMixedPort)
 		case tuiDashboardDelayRow:
@@ -3106,6 +3113,28 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 	return nil
 }
 
+func (m *tuiModel) openProxiesForFLCOutbound() tea.Cmd {
+	m.snapshot.Page = tuiPageProxies
+	m.snapshot.SelectedMenu = int(tuiPageProxies)
+	m.snapshot.FocusSidebar = false
+	m.snapshot.ProxyView = tuiProxyViewGroups
+	m.snapshot.SSHDashboardFocus = false
+	if name := strings.TrimSpace(m.snapshot.FLCOutbound); name != "" {
+		m.snapshot.SelectedGroup = findTUIGroup(m.snapshot.Groups, name)
+	}
+	if m.snapshot.SelectedGroup >= 0 &&
+		m.snapshot.SelectedGroup < len(m.snapshot.Groups) {
+		group := m.snapshot.Groups[m.snapshot.SelectedGroup]
+		m.snapshot.ProxyNodeFocus = true
+		m.snapshot.SelectedNode = findTUIString(group.Nodes, group.Now)
+		m.snapshot.Status = "flc uses " + group.Name + " · select a node"
+		return nil
+	}
+	m.snapshot.ProxyNodeFocus = false
+	m.snapshot.Status = "Select a proxy node; flc follows that group"
+	return nil
+}
+
 func selectTUIServiceProxy(
 	state *tuiOperationState,
 	service *tuiServiceClient,
@@ -3131,7 +3160,11 @@ func selectTUIServiceProxy(
 		state.snapshot.Status = "Switch failed: " + err.Error()
 		return
 	}
-	state.snapshot.Status = fmt.Sprintf("Switched %s to %s", group.Name, node)
+	state.snapshot.Status = fmt.Sprintf(
+		"Switched %s to %s · silent flc follows this group",
+		group.Name,
+		node,
+	)
 	refreshTUISnapshot(&state.snapshot, client)
 	applyTUIOperationServiceStatus(state, status)
 	state.networkChanged = true
@@ -3188,7 +3221,7 @@ func (m *tuiModel) selectTUISetting(index int) tea.Cmd {
 	case tuiSettingsModeRow:
 		return m.handleKey(tuiKeyMode)
 	case tuiSettingsFLCOutboundRow:
-		m.beginInput(tuiInputFLCOutbound)
+		return m.openProxiesForFLCOutbound()
 	case tuiSettingsMixedPortRow:
 		m.beginInput(tuiInputMixedPort)
 	case tuiSettingsAllowLANRow:
@@ -3749,7 +3782,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 			message.err = err
 			if err == nil {
 				message.status = fmt.Sprintf(
-					"SSH %s ready · SOCKS5 127.0.0.1:%d · TCP %s",
+					"SSH %s ready · SOCKS5 127.0.0.1:%d · handshake %s",
 					state.Name,
 					state.Port,
 					latency,
@@ -3767,6 +3800,37 @@ func (m *tuiModel) selectedSSHName() string {
 		return ""
 	}
 	return m.snapshot.SSHProfiles[m.snapshot.SelectedSSH].Name
+}
+
+func (m *tuiModel) toggleSelectedSSHDefault() tea.Cmd {
+	if m.snapshot.FocusSidebar || m.snapshot.SSHDashboardFocus {
+		m.snapshot.Status = "Focus SSH profiles before setting a default"
+		return nil
+	}
+	if m.snapshot.SelectedSSH < 0 || m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
+		m.snapshot.Status = "Select an SSH profile first"
+		return nil
+	}
+	profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
+	name := profile.Name
+	clear := profile.Default
+	m.busy = true
+	m.snapshot.Status = "Updating default SSH profile..."
+	return func() tea.Msg {
+		message := tuiSSHCommandResultMsg{action: "default", selectedName: name}
+		if clear {
+			message.err = setCLISSHDefault("")
+			if message.err == nil {
+				message.status = "Default SSH profile cleared"
+			}
+			return message
+		}
+		message.err = setCLISSHDefault(name)
+		if message.err == nil {
+			message.status = "Default SSH profile " + name
+		}
+		return message
+	}
 }
 
 func (m *tuiModel) resetSelectedSSHMetrics() {
@@ -4174,6 +4238,8 @@ func (m *tuiModel) beginSSHFormFieldEdit() {
 		value = m.sshForm.Username
 	case tuiSSHFormHostRow:
 		value = m.sshForm.Host
+	case tuiSSHFormJumpRow:
+		value = m.sshForm.Jump
 	case tuiSSHFormPortRow:
 		value = strconv.Itoa(m.sshForm.Port)
 	case tuiSSHFormLocalPortRow:
@@ -4233,6 +4299,12 @@ func (m *tuiModel) commitSSHFormField() bool {
 		m.sshForm.Username = strings.TrimSpace(value)
 	case tuiSSHFormHostRow:
 		m.sshForm.Host = strings.TrimSpace(value)
+	case tuiSSHFormJumpRow:
+		m.sshForm.Jump = strings.TrimSpace(value)
+		if err := validateCLISSHJump(m.sshForm.Jump); err != nil {
+			m.snapshot.Status = err.Error()
+			return false
+		}
 	case tuiSSHFormPortRow:
 		port, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || port < 1 || port > 65535 {
@@ -4456,6 +4528,7 @@ func (m *tuiModel) saveSSHForm() tea.Cmd {
 	profile.Name = strings.TrimSpace(profile.Name)
 	profile.Username = strings.TrimSpace(profile.Username)
 	profile.Host = strings.TrimSpace(profile.Host)
+	profile.Jump = strings.TrimSpace(profile.Jump)
 	profile.Identity = strings.TrimSpace(profile.Identity)
 	profile = normalizeCLISSHProfile(profile)
 	if profile.Identity != "" {
@@ -4751,10 +4824,6 @@ func (m *tuiModel) beginInput(mode tuiInputMode) {
 		m.inputValue = []rune(strconv.Itoa(m.snapshot.Settings.MixedPort))
 		m.inputCursor = len(m.inputValue)
 		m.inputSelectAll = true
-	} else if mode == tuiInputFLCOutbound {
-		m.inputValue = []rune(m.snapshot.FLCOutbound)
-		m.inputCursor = len(m.inputValue)
-		m.inputSelectAll = true
 	} else if mode == tuiInputProfileName {
 		name := strings.TrimSuffix(
 			filepath.Base(m.renameProfilePath),
@@ -4851,7 +4920,15 @@ func (m *tuiModel) changeMode(mode string) tea.Cmd {
 			return
 		}
 		applyTUIOperationServiceStatus(state, status)
-		state.snapshot.Status = "Mode changed to " + status.Mode
+		if status.Mode == tuiSilentMode {
+			if outbound := strings.TrimSpace(status.FLCOutbound); outbound != "" {
+				state.snapshot.Status = "Mode silent · flc follows " + outbound + " · pick nodes in Proxies"
+			} else {
+				state.snapshot.Status = "Mode silent · pick a node in Proxies for flc"
+			}
+		} else {
+			state.snapshot.Status = "Mode changed to " + status.Mode
+		}
 		state.networkChanged = true
 	})
 	if command != nil {
@@ -5056,8 +5133,6 @@ func (m *tuiModel) handleInput(message tea.KeyMsg) tea.Cmd {
 		limit := 4096
 		if m.inputMode == tuiInputMixedPort {
 			limit = 5
-		} else if m.inputMode == tuiInputFLCOutbound {
-			limit = 256
 		} else if m.inputMode == tuiInputProfileName {
 			limit = 128
 		}
@@ -5145,28 +5220,6 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			settings := state.snapshot.Settings
 			settings.MixedPort = port
 			commitTUIOperationSettings(state, m.service, m.client, settings)
-		})
-	case tuiInputFLCOutbound:
-		if value == "" {
-			m.snapshot.Status = "FLC outbound selection cancelled"
-			return nil
-		}
-		if m.service == nil {
-			m.snapshot.Status = "FLC outbound selection requires the managed backend"
-			return nil
-		}
-		return m.startOperation(func(state *tuiOperationState) {
-			if !prepareTUIBackendRevision(state, m.service) {
-				return
-			}
-			status, err := m.service.setFLCOutbound(value, state.backendRevision)
-			if err != nil {
-				state.snapshot.Status = "FLC outbound selection failed: " + err.Error()
-				return
-			}
-			applyTUIOperationServiceStatus(state, status)
-			state.snapshot.Status = "FLC outbound selected: " + status.FLCOutbound
-			state.networkChanged = true
 		})
 	case tuiInputSubscription:
 		if value == "" {

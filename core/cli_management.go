@@ -54,6 +54,15 @@ func startManagedCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+	if status.Mode == tuiSilentMode && strings.TrimSpace(status.FLCOutbound) != "" {
+		fmt.Printf(
+			"Core started in silent mode · flc follows %s (PID %d, revision %d)\n",
+			formatCLIFLCOutbound(status),
+			status.PID,
+			status.Revision,
+		)
+		return nil
+	}
 	fmt.Printf("Core started (PID %d, revision %d)\n", status.PID, status.Revision)
 	return nil
 }
@@ -198,7 +207,9 @@ func printManagedStatus(status tuiServiceStatus, jsonOutput bool) error {
 		fmt.Printf("Mode:         %s\n", mode)
 	}
 	if status.FLCOutbound != "" {
-		fmt.Printf("FLC outbound: %s\n", status.FLCOutbound)
+		fmt.Printf("flc:          %s\n", formatCLIFLCOutbound(status))
+	} else if strings.EqualFold(status.Mode, tuiSilentMode) {
+		fmt.Println("flc:          pick a node in Proxies")
 	}
 	fmt.Printf("System proxy: %s\n", cliOnOff(status.SystemProxy))
 	fmt.Printf("TUN:          %s · %s\n", strings.ToUpper(status.TunState), status.TunScope)
@@ -231,6 +242,7 @@ func serviceManagementCommand(args []string) error {
 	if cliSubcommandHelp(args) {
 		fmt.Println("Usage: flclash backend [start|stop|restart|status|logs|clients]")
 		fmt.Println("backend stop terminates Backend and Core and disconnects all frontends.")
+		fmt.Println("SSH tunnels stay up; use `flclash ssh disconnect` or `flclash exit`.")
 		fmt.Println("Compatibility alias: flclash service")
 		return nil
 	}
@@ -620,7 +632,9 @@ func portCommand(args []string) error {
 func flcManagementCommand(args []string) error {
 	if cliSubcommandHelp(args) {
 		fmt.Println("Usage: flclash flc [status|select NAME|test|env|ssh ...]")
-		fmt.Println("Manage the private command proxy used by flc in silent mode.")
+		fmt.Println("Inspect the private command proxy used by flc in silent mode.")
+		fmt.Println("Selecting a node in Proxies, or `flclash proxy select GROUP NODE`, points flc at that group.")
+		fmt.Println("`flc select NAME` is an optional override.")
 		return nil
 	}
 	if len(args) == 0 {
@@ -640,7 +654,7 @@ func flcManagementCommand(args []string) error {
 		}
 		fmt.Printf("Mode:     %s\n", status.Mode)
 		fmt.Printf("Listener: %s\n", cliEnabledDisabled(status.FLCEnabled))
-		fmt.Printf("Outbound: %s\n", cliDisplayValue(status.FLCOutbound))
+		fmt.Printf("Exit:     %s\n", formatCLIFLCOutbound(status))
 		return nil
 	case "select":
 		if len(args) != 2 {
@@ -650,7 +664,7 @@ func flcManagementCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("FLC outbound %s (revision %d)\n", status.FLCOutbound, status.Revision)
+		fmt.Printf("flc exit %s (revision %d)\n", status.FLCOutbound, status.Revision)
 		return nil
 	case "test":
 		if len(args) != 1 {
@@ -1087,7 +1101,7 @@ func completionCommand(args []string) error {
 		{"mode", "rule global direct silent"},
 		{"port", "off"},
 		{"flc", "status select test env ssh"},
-		{"ssh", "add edit delete list show connect disconnect status test probe --port --local-port --identity --passphrase --clear-passphrase --password --clear-password --option"},
+		{"ssh", "add edit delete list show connect disconnect status test default import probe --user --port --local-port --jump --identity --passphrase --clear-passphrase --password --clear-password --clear-jump --option --file"},
 		{"net", "show refresh delay speed"},
 		{"status", "--json --watch"},
 		{"backend", "start stop restart status logs clients"},

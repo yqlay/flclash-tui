@@ -1,3 +1,22 @@
+## FlClash TUI v0.5.25
+
+- Keep SSH independent of the proxy Backend: `flclash backend stop` ends Backend and Core only; use `flclash ssh disconnect` or `flclash exit` to tear down tunnels, and document that split in CLI help and the READMEs.
+- Prompt once for an encrypted-key passphrase when `flc ssh COMMAND` auto-opens the default persistent tunnel, matching `flclash ssh connect`.
+- Record a last-error when a rebuilt SSH tunnel comes up without a SOCKS5 listener, and inject every HTTP/HTTPS/ALL_PROXY environment variant into `flc ssh` child commands.
+- Complete the user-facing silent/`flc` path from v0.5.24: Proxies selection drives the exit, Dashboard defaults to Core, and the TUI labels the row `flc` instead of `FLC outbound`.
+
+## FlClash TUI v0.5.24
+
+- Rename the Dashboard/Settings `FLC outbound` row to `flc`, default Dashboard focus to Core so silent mode does not land on a locked System proxy row, and drop the leftover typed FLC name prompt.
+- Point silent-mode `flc` at the proxy group chosen in Proxies: selecting a node also becomes the FLC outbound, and Dashboard/Settings Enter opens that group instead of asking for a typed name.
+- Keep CLI and TUI on the same silent path: switching to silent auto-selects a group, `flclash status`/`flc status` show `GROUP → node`, and leftover `flc select NAME` errors now tell you to pick a node in Proxies.
+- Auto-select a usable FLC outbound when starting Core in silent mode from the TUI or `flclash core start`, instead of failing with `run flclash flc select NAME first` when none was saved.
+- Make `flc ssh COMMAND` open the default or only SSH profile automatically, and rebuild a broken persistent tunnel instead of asking the user to reconnect first.
+- Add `flclash ssh default`, TUI `u` to star a default profile, and `flclash ssh connect` without a name.
+- Import OpenSSH `~/.ssh/config` Host entries with `flclash ssh import`, including User, Port, IdentityFile, ProxyJump, and Include files.
+- Add a first-class Jump host field, fail SSH connects in 15 seconds by default, and map common OpenSSH failures into short actionable errors.
+- Make `flclash ssh test` perform a SOCKS5 handshake after opening the tunnel, and show the last connect error on the SSH list and Dashboard.
+
 ## FlClash TUI v0.5.23
 
 - Keep every OpenSSH helper detached from the terminal, use a saved password through the private askpass channel, and make stale control connections fail closed instead of displaying an interactive password prompt over the TUI.

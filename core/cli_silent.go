@@ -168,7 +168,7 @@ func newTUIFLCListenerStateAtPort(
 	outbound = strings.TrimSpace(outbound)
 	if outbound == "" {
 		return tuiFLCListenerState{}, errors.New(
-			"silent mode requires an FLC outbound; run `flclash flc select NAME` first",
+			"silent mode has no flc group yet; select a node in Proxies, or run `flclash proxy select GROUP NODE`",
 		)
 	}
 	if port <= 0 {

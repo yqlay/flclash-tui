@@ -31,9 +31,10 @@ q in TUI                 exit and clean up only this frontend process
 close TUI terminal       exit and clean up only this frontend process
 Ctrl+C in managed TUI    stop Backend + Core + SSH tunnels, disconnect all frontends, wait for cleanup
 flclash core stop        stop Core, keep Backend
-flclash backend stop     stop Backend + Core
-flclash shutdown         alias for backend stop
-flclash exit             idempotently stop all TUI frontends, Backend, Core, and SSH tunnels; remove runtime state
+flclash backend stop     stop Backend + Core; SSH tunnels stay up
+flclash shutdown         alias for backend stop (SSH stays)
+flclash ssh disconnect   stop SSH tunnels only
+flclash exit             stop TUI frontends, Backend, Core, and SSH tunnels; remove runtime state
 ```
 
 ## Core command map
@@ -68,7 +69,7 @@ flclash mode rule|global|direct|silent
 flclash port                         # get
 flclash port PORT|off
 flclash flc status
-flclash flc select NAME
+flclash flc select NAME            # optional override; Proxies selection also sets this
 flclash flc test
 flclash flc env
 flclash net show|refresh|delay|speed
@@ -80,7 +81,7 @@ Cloudflare download throughput across four concurrent streams, stopping after
 99,999,999 bytes or five seconds. Both commands use the Backend's active runtime
 Proxy port, including an automatically selected fallback port. In `silent`
 mode they use the authenticated private FLC listener, so the reported public IP,
-latency, and throughput describe the selected FLC outbound rather than the
+latency, and throughput describe the selected flc group rather than the
 machine's direct connection.
 
 Profiles and configuration:
@@ -151,11 +152,11 @@ Compatibility aliases include `service`, `system-proxy`, `outbound-mode`, `mixed
 
 ## Silent mode and `flc`
 
-`silent` is the default. It does not proactively take over user network connections: ordinary applications remain direct and only `flc`-prefixed commands use FlClash. Backend disables System proxy, TUN, LAN/DNS/controller/user listeners in a temporary runtime overlay. Once an FLC outbound is selected it exposes one authenticated loopback listener on the same runtime Proxy port used by native modes; before that it exposes no traffic entry, and Backend remains available with Core stopped. The shared YAML is not modified.
+`silent` is the default. It does not proactively take over user network connections: ordinary applications remain direct and only `flc`-prefixed commands use FlClash. Backend disables System proxy, TUN, LAN/DNS/controller/user listeners in a temporary runtime overlay. `flc` uses the same proxy group you select in Proxies: pick a node there, and silent traffic follows that group's current node. Starting Core, or the first `flc COMMAND`, auto-selects the first usable group when none has been chosen yet. After that it exposes one authenticated loopback listener on the same runtime Proxy port used by native modes; before listeners start it exposes no traffic entry, and Backend remains available with Core stopped. The shared YAML is not modified.
 
 ```bash
-flclash flc select PROXY
 flclash core start
+# In TUI Proxies, select a node; flc follows that group
 flc curl https://example.com
 ```
 
@@ -177,8 +178,9 @@ proxy environment. For example, if FlClash runs only on B and the profile points
 to A, B's selected traffic exits through A; A only needs an SSH server:
 
 ```bash
+flclash ssh import
 flclash ssh add home A --user user --port 2222 --local-port 1080 --password
-flclash ssh connect home
+flclash ssh default home
 flc ssh curl https://example.com
 
 # Strict direct: refuse when the SSH host reports a transparent FlClash TUN
@@ -211,11 +213,17 @@ refuses if FlClash is unavailable, incompatible, or reports a transparent TUN.
 This fail-closed check prevents a TUN-captured flow from being labelled direct.
 Both persistent and temporary (`flc ssh -u NAME`) commands support `-d`.
 
-`flc ssh COMMAND` requires the one persistent tunnel opened from the TUI or
-`flclash ssh connect`. `-u NAME` creates a separate temporary tunnel for that
-command and closes it afterwards; an existing persistent tunnel remains open.
-Commands must support proxy environment variables and SOCKS5. Tunnel setup is
-fail-closed, so a failed SSH connection never runs the command directly.
+`flc ssh COMMAND` opens the default SSH profile, or the only configured
+profile, as a persistent tunnel when none is connected. If the persistent
+tunnel is present but its SOCKS5 listener is down, FlClash rebuilds it before
+running the command. `flclash ssh connect` without a name uses the same
+resolution. `-u NAME` creates a separate temporary tunnel for that command and
+closes it afterwards; an existing persistent tunnel remains open. Commands must
+support proxy environment variables and SOCKS5. Tunnel setup is fail-closed, so
+a failed SSH connection never runs the command directly. `flclash ssh import`
+copies concrete OpenSSH `Host` entries from `~/.ssh/config`. `--jump HOST`
+sets ProxyJump without burying it in raw OpenSSH options. Connects time out in
+15 seconds unless a profile option overrides `ConnectTimeout`.
 
 `--user` is required for new profiles; the compatibility form `user@host` is
 still accepted and split into Username and Host. Legacy bare-host profiles are
@@ -246,8 +254,9 @@ the full-screen interface. Its main view keeps a bordered profile list above
 the selected profile's Dashboard. Tab cycles focus through sidebar, profile
 list, and Dashboard; Shift+Tab reverses it. In the profile list, Enter connects
 a disconnected or broken profile, while Enter on a healthy profile focuses its
-Dashboard without disconnecting it. Press `n` to add, `e` to edit, or `x` to
-delete the selected profile. In the Dashboard, Up/Down selects Tunnel, Public
+Dashboard without disconnecting it. Press `n` to add, `e` to edit, `u` to set
+or clear the default profile, or `x` to delete the selected profile. A `*`
+marks the default profile used by `flc ssh` and `flclash ssh connect`. In the Dashboard, Up/Down selects Tunnel, Public
 IP, SSH route, or Cloudflare download; Enter runs the selected action. `n`, `d`,
 and `v` directly refresh the exit IP, run the five-sample route delay test, or
 run the download speed test. The Dashboard also shows relay-only
@@ -294,7 +303,8 @@ d / v           page-scoped delay / speed       n             network/import
 / / f           search / page-scoped filter
 Ctrl+N          notification history/details
 S / c / t / m   System proxy/Core/TUN/mode list p, +, -       Proxy port
-U, F2/u, e      update/rename/edit Profile      x             delete Profile/SSH; clear page data
+U, F2/u, e      update/rename/edit Profile; SSH u sets default
+x               delete Profile/SSH; clear page data
 q               exit only this TUI               Ctrl+C        exit TUIs + Backend + Core + SSH
 ```
 

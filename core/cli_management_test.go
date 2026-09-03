@@ -62,6 +62,17 @@ func captureCLIOutput(t *testing.T, run func() error) string {
 	return string(output)
 }
 
+func TestBackendStopHelpLeavesSSHIndependent(t *testing.T) {
+	output := captureCLIOutput(t, func() error {
+		return serviceManagementCommand([]string{"-help"})
+	})
+	if !strings.Contains(output, "backend stop terminates Backend and Core") ||
+		!strings.Contains(output, "SSH tunnels stay up") ||
+		!strings.Contains(output, "flclash ssh disconnect") {
+		t.Fatalf("backend help does not keep SSH independent:\n%s", output)
+	}
+}
+
 func TestCompletionCoversPrimaryAndNestedCommands(t *testing.T) {
 	bash := captureCLIOutput(t, func() error {
 		return completionCommand([]string{"bash"})
@@ -71,7 +82,7 @@ func TestCompletionCoversPrimaryAndNestedCommands(t *testing.T) {
 		"backend shutdown exit profile",
 		"flc) words='status select test env ssh'",
 		"complete -F _flc flc",
-		"ssh) words='add edit delete list show connect disconnect status test probe --port --local-port --identity --passphrase --clear-passphrase --password --clear-password --option'",
+		"ssh) words='add edit delete list show connect disconnect status test default import probe --user --port --local-port --jump --identity --passphrase --clear-passphrase --password --clear-password --clear-jump --option --file'",
 		"words='-d --direct -u --use'",
 		"config geo env doctor completion check update run version",
 		"COMP_WORDS[2]} == close",

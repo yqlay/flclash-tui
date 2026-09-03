@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -115,8 +116,10 @@ func TestParseCLISSHProfileEditRejectsCredentialConflicts(t *testing.T) {
 	for _, arguments := range [][]string{
 		{"school", "student@example.edu", "--passphrase", "--clear-passphrase"},
 		{"school", "student@example.edu", "--password", "--clear-password"},
+		{"school", "student@example.edu", "--jump", "bastion", "--clear-jump"},
 		{"school", "student@example.edu", "--clear-passphrase"},
 		{"school", "student@example.edu", "--clear-password"},
+		{"school", "student@example.edu", "--clear-jump"},
 	} {
 		if _, _, err := parseCLISSHProfileEdit(arguments, false); err == nil {
 			t.Fatalf("conflicting SSH credential arguments were accepted: %v", arguments)
@@ -705,6 +708,7 @@ func TestTUISSHFormUsesDistinctHostKeyAndSecretLabels(t *testing.T) {
 		"SSH host",
 		"example.edu",
 		"Identity(private key)",
+		"Jump host",
 		"Key passphrase",
 		"SSH password",
 	} {
@@ -785,6 +789,8 @@ func TestCLISSHTunnelArgumentsUseSafeFirstConnectPolicy(t *testing.T) {
 		"PasswordAuthentication=no",
 		"BatchMode=yes",
 		"ClearAllForwardings=yes",
+		"ConnectTimeout=15",
+		"ConnectionAttempts=1",
 		"StrictHostKeyChecking=accept-new",
 	} {
 		if !strings.Contains(joined, expected) {
@@ -805,6 +811,11 @@ func TestCLISSHTunnelArgumentsUseSafeFirstConnectPolicy(t *testing.T) {
 	})
 	if joined := strings.Join(forwardArguments, " "); !strings.Contains(joined, "-O forward -D 127.0.0.1:1080") {
 		t.Fatalf("dynamic forward control arguments are incomplete: %v", forwardArguments)
+	}
+	profile.Jump = "bastion.example.edu"
+	joined = strings.Join(cliSSHTunnelArguments(profile, "/tmp/control.sock"), " ")
+	if !strings.Contains(joined, "ProxyJump=bastion.example.edu") {
+		t.Fatalf("jump host was not passed to OpenSSH: %v", joined)
 	}
 }
 
@@ -1305,11 +1316,17 @@ func TestRunCLICommandWithSSHProxySetsEnvironmentAndExitCode(t *testing.T) {
 	err := runCLICommandWithSSHProxy([]string{
 		"sh",
 		"-c",
-		"test \"$ALL_PROXY\" = socks5h://127.0.0.1:45678 && exit 7",
+		"test \"$ALL_PROXY\" = socks5h://127.0.0.1:45678 && " +
+			"test \"$all_proxy\" = socks5h://127.0.0.1:45678 && " +
+			"test \"$HTTP_PROXY\" = socks5h://127.0.0.1:45678 && " +
+			"test \"$HTTPS_PROXY\" = socks5h://127.0.0.1:45678 && " +
+			"test \"$http_proxy\" = socks5h://127.0.0.1:45678 && " +
+			"test \"$https_proxy\" = socks5h://127.0.0.1:45678 && " +
+			"exit 7",
 	}, 45678)
 	var exitError *cliExitCodeError
 	if !errors.As(err, &exitError) || exitError.ExitCode() != 7 {
-		t.Fatalf("SSH wrapper exit = %v, want exit code 7", err)
+		t.Fatalf("SSH wrapper exit = %v, want exit code 7 with socks5h env", err)
 	}
 }
 
@@ -1411,10 +1428,16 @@ func TestFLCSSHPersistentCommandRejectsBrokenSOCKSListener(t *testing.T) {
 		t.Fatal(err)
 	}
 	previousActive := activeCLIPersistentSSHTunnelForCommand
+	previousConnect := connectCLISSHProfileForCommand
 	previousRun := runCLICommandWithSSHProxyForCommand
 	runCalled := false
+	connectCalled := false
 	activeCLIPersistentSSHTunnelForCommand = func() (cliSSHTunnelState, bool, error) {
 		return cliSSHTunnelState{Name: "school", Port: port}, true, nil
+	}
+	connectCLISSHProfileForCommand = func(string) (cliSSHTunnelState, bool, error) {
+		connectCalled = true
+		return cliSSHTunnelState{}, false, errors.New("reconnect failed")
 	}
 	runCLICommandWithSSHProxyForCommand = func([]string, int) error {
 		runCalled = true
@@ -1422,11 +1445,15 @@ func TestFLCSSHPersistentCommandRejectsBrokenSOCKSListener(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		activeCLIPersistentSSHTunnelForCommand = previousActive
+		connectCLISSHProfileForCommand = previousConnect
 		runCLICommandWithSSHProxyForCommand = previousRun
 	})
 	err = flcSSHCommand([]string{"curl", "https://example.com"})
-	if err == nil || !strings.Contains(err.Error(), "SOCKS5 listener is unavailable") {
+	if err == nil || !strings.Contains(err.Error(), "reconnect failed") {
 		t.Fatalf("broken persistent SSH command error = %v", err)
+	}
+	if !connectCalled {
+		t.Fatal("broken SSH tunnel was not rebuilt before failing closed")
 	}
 	if runCalled {
 		t.Fatal("command ran while the persistent SSH SOCKS5 listener was unavailable")
@@ -2585,5 +2612,357 @@ func TestTUISSHFormRenderingFitsTerminal(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestParseCLISSHProfileEditJump(t *testing.T) {
+	edit, interactive, err := parseCLISSHProfileEdit([]string{
+		"school",
+		"student@example.edu",
+		"--jump",
+		"bastion.example.edu",
+	}, false)
+	if err != nil || interactive || edit.Jump != "bastion.example.edu" || !edit.JumpSet {
+		t.Fatalf("jump parse = %+v interactive:%t err:%v", edit, interactive, err)
+	}
+	profile, err := cliSSHProfileFromEdit(cliSSHProfile{}, edit, false)
+	if err != nil || profile.Jump != "bastion.example.edu" {
+		t.Fatalf("jump profile = %+v err:%v", profile, err)
+	}
+}
+
+func TestResolveCLISSHConnectNameUsesDefaultThenOnlyProfile(t *testing.T) {
+	configRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:     "home",
+		Username: "user",
+		Host:     "example.edu",
+		Port:     22,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:     "school",
+		Username: "student",
+		Host:     "school.example.edu",
+		Port:     22,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	name, err := resolveCLISSHConnectName("")
+	if err != nil || name != "home" {
+		t.Fatalf("first profile should become default, got %q err:%v", name, err)
+	}
+	if err := setCLISSHDefault("school"); err != nil {
+		t.Fatal(err)
+	}
+	name, err = resolveCLISSHConnectName("")
+	if err != nil || name != "school" {
+		t.Fatalf("explicit default = %q err:%v", name, err)
+	}
+	if err := setCLISSHDefault(""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveCLISSHConnectName(""); err == nil || !strings.Contains(err.Error(), "default") {
+		t.Fatalf("ambiguous profiles without default error = %v", err)
+	}
+}
+
+func TestFLCSSHCommandAutoConnectsDefaultProfile(t *testing.T) {
+	configRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:     "home",
+		Username: "user",
+		Host:     "example.edu",
+		Port:     22,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	previousActive := activeCLIPersistentSSHTunnelForCommand
+	previousConnect := connectCLISSHProfileForCommand
+	previousRun := runCLICommandWithSSHProxyForCommand
+	connectName := ""
+	runPort := 0
+	activeCLIPersistentSSHTunnelForCommand = func() (cliSSHTunnelState, bool, error) {
+		return cliSSHTunnelState{}, false, nil
+	}
+	connectCLISSHProfileForCommand = func(name string) (cliSSHTunnelState, bool, error) {
+		connectName = name
+		return cliSSHTunnelState{Name: name, Port: port}, false, nil
+	}
+	runCLICommandWithSSHProxyForCommand = func(args []string, gotPort int) error {
+		runPort = gotPort
+		return nil
+	}
+	t.Cleanup(func() {
+		activeCLIPersistentSSHTunnelForCommand = previousActive
+		connectCLISSHProfileForCommand = previousConnect
+		runCLICommandWithSSHProxyForCommand = previousRun
+	})
+	if err := flcSSHCommand([]string{"curl", "https://example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if connectName != "home" || runPort != port {
+		t.Fatalf("auto-connect name=%q port=%d, want home/%d", connectName, runPort, port)
+	}
+}
+
+func TestFLCSSHPersistentCommandReconnectsBrokenSOCKSListener(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	previousActive := activeCLIPersistentSSHTunnelForCommand
+	previousConnect := connectCLISSHProfileForCommand
+	previousRun := runCLICommandWithSSHProxyForCommand
+	runPort := 0
+	activeCLIPersistentSSHTunnelForCommand = func() (cliSSHTunnelState, bool, error) {
+		return cliSSHTunnelState{Name: "school", Port: 1}, true, nil
+	}
+	connectCLISSHProfileForCommand = func(name string) (cliSSHTunnelState, bool, error) {
+		if name != "school" {
+			t.Fatalf("reconnect name = %q", name)
+		}
+		return cliSSHTunnelState{Name: name, Port: port}, false, nil
+	}
+	runCLICommandWithSSHProxyForCommand = func(args []string, gotPort int) error {
+		runPort = gotPort
+		return nil
+	}
+	t.Cleanup(func() {
+		activeCLIPersistentSSHTunnelForCommand = previousActive
+		connectCLISSHProfileForCommand = previousConnect
+		runCLICommandWithSSHProxyForCommand = previousRun
+	})
+	if err := flcSSHCommand([]string{"curl", "https://example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if runPort != port {
+		t.Fatalf("rebuilt SSH command used port %d, want %d", runPort, port)
+	}
+}
+
+func TestFLCSSHPersistentCommandPromptsForEncryptedKey(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	previousEnsure := ensureCLIPersistentSSHTunnelForCommand
+	previousPrompt := promptCLISSHSecretOnceForCommand
+	previousConnect := connectCLISSHProfileWithCredentialsForCommand
+	previousRun := runCLICommandWithSSHProxyForCommand
+	prompted := false
+	runPort := 0
+	ensureCLIPersistentSSHTunnelForCommand = func(string) (cliSSHTunnelState, error) {
+		return cliSSHTunnelState{}, &cliSSHCredentialRequiredError{
+			Profile:  "school",
+			Identity: "/tmp/id_ed25519",
+		}
+	}
+	promptCLISSHSecretOnceForCommand = func(string) (string, error) {
+		prompted = true
+		return "one-time-secret", nil
+	}
+	connectCLISSHProfileWithCredentialsForCommand = func(
+		name string,
+		credentials cliSSHCredentials,
+	) (cliSSHTunnelState, bool, error) {
+		if name != "school" || credentials.IdentityPassphrase != "one-time-secret" {
+			t.Fatalf("passphrase retry = name %q credentials %+v", name, credentials)
+		}
+		return cliSSHTunnelState{Name: name, Port: port}, false, nil
+	}
+	runCLICommandWithSSHProxyForCommand = func(args []string, gotPort int) error {
+		runPort = gotPort
+		return nil
+	}
+	t.Cleanup(func() {
+		ensureCLIPersistentSSHTunnelForCommand = previousEnsure
+		promptCLISSHSecretOnceForCommand = previousPrompt
+		connectCLISSHProfileWithCredentialsForCommand = previousConnect
+		runCLICommandWithSSHProxyForCommand = previousRun
+	})
+	if err := flcSSHCommand([]string{"curl", "https://example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if !prompted {
+		t.Fatal("encrypted default SSH profile did not prompt for a passphrase")
+	}
+	if runPort != port {
+		t.Fatalf("passphrase retry used port %d, want %d", runPort, port)
+	}
+}
+
+func TestEnsureCLIPersistentSSHTunnelRecordsLastErrorWhenSOCKSNotReady(t *testing.T) {
+	configRoot := t.TempDir()
+	runtimeRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:     "school",
+		Username: "student",
+		Host:     "example.edu",
+		Port:     22,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previousActive := activeCLIPersistentSSHTunnelForCommand
+	previousConnect := connectCLISSHProfileForCommand
+	activeCLIPersistentSSHTunnelForCommand = func() (cliSSHTunnelState, bool, error) {
+		return cliSSHTunnelState{}, false, nil
+	}
+	connectCLISSHProfileForCommand = func(name string) (cliSSHTunnelState, bool, error) {
+		return cliSSHTunnelState{Name: name, Port: 1}, false, nil
+	}
+	t.Cleanup(func() {
+		cliRuntimeDirectoryOverride = previousRuntime
+		activeCLIPersistentSSHTunnelForCommand = previousActive
+		connectCLISSHProfileForCommand = previousConnect
+	})
+	_, err := ensureCLIPersistentSSHTunnel("school")
+	if err == nil || !strings.Contains(err.Error(), "SOCKS5 listener is unavailable") {
+		t.Fatalf("unready SSH tunnel error = %v", err)
+	}
+	lastError, loadErr := loadCLISSHLastError()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if lastError.Name != "school" || !strings.Contains(lastError.Error, "SOCKS5 listener is unavailable") {
+		t.Fatalf("last SSH error = %+v", lastError)
+	}
+}
+
+func TestProbeCLISSHSOCKSAcceptsNoAuthGreeting(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		header := make([]byte, 3)
+		if _, readErr := io.ReadFull(connection, header); readErr != nil {
+			return
+		}
+		_, _ = connection.Write([]byte{5, 0})
+	}()
+	if err := probeCLISSHSOCKS(port, time.Second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCLISSHFriendlyErrorMapsOpenSSHFailures(t *testing.T) {
+	got := formatCLISSHErrorSummary("user@host: Permission denied (publickey).")
+	if !strings.Contains(got, "authentication failed") || !strings.Contains(got, "Permission denied") {
+		t.Fatalf("friendly auth error = %q", got)
+	}
+	if got := cliSSHFriendlyError("custom remote failure"); got != "custom remote failure" {
+		t.Fatalf("unknown SSH error was rewritten: %q", got)
+	}
+}
+
+func TestTUISSHPageRendersDefaultAndLastError(t *testing.T) {
+	output := stripTUIANSI(renderTUIAtSize(
+		tuiSnapshot{
+			Page: tuiPageSSH,
+			SSHProfiles: []tuiSSHProfile{{
+				Name:        "school",
+				Default:     true,
+				LastError:   "authentication failed; check username",
+				Destination: "student@example.edu",
+				Port:        22,
+			}},
+		},
+		cliPaths{},
+		"private Unix socket",
+		true,
+		false,
+		180,
+		30,
+	))
+	for _, expected := range []string{
+		"*school",
+		"DEFAULT",
+		"authentication failed; check username",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("SSH page does not contain %q:\n%s", expected, output)
+		}
+	}
+}
+
+func TestTUISSHToggleDefault(t *testing.T) {
+	configRoot := t.TempDir()
+	runtimeRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntime })
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:     "home",
+		Username: "user",
+		Host:     "home.example.edu",
+		Port:     22,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:     "school",
+		Username: "student",
+		Host:     "example.edu",
+		Port:     22,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	refreshTUISSH(&model.snapshot)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.FocusSidebar = false
+	model.snapshot.SelectedSSH = 0
+	if model.snapshot.SSHProfiles[0].Name != "home" || !model.snapshot.SSHProfiles[0].Default {
+		t.Fatalf("unexpected initial SSH views: %+v", model.snapshot.SSHProfiles)
+	}
+	command := model.toggleSelectedSSHDefault()
+	if command == nil {
+		t.Fatal("default toggle did not schedule an update")
+	}
+	message := command().(tuiSSHCommandResultMsg)
+	if message.err != nil {
+		t.Fatal(message.err)
+	}
+	_, _ = model.Update(message)
+	if model.snapshot.SSHProfiles[0].Default {
+		t.Fatal("default SSH profile was not cleared")
+	}
+	model.snapshot.SelectedSSH = 1
+	command = model.toggleSelectedSSHDefault()
+	if command == nil {
+		t.Fatal("second default toggle did not schedule an update")
+	}
+	message = command().(tuiSSHCommandResultMsg)
+	if message.err != nil {
+		t.Fatal(message.err)
+	}
+	_, _ = model.Update(message)
+	if !model.snapshot.SSHProfiles[1].Default || model.snapshot.SSHProfiles[1].Name != "school" {
+		t.Fatalf("school was not marked default: %+v", model.snapshot.SSHProfiles)
 	}
 }

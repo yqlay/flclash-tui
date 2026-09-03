@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-0.5.23}"
+VERSION="${VERSION:-$(sed -n 's/^const cliVersion = "\(.*\)"/\1/p' "$ROOT_DIR/core/cli_main.go")}"
 ARCH="${ARCH:-amd64}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist}"
 PACKAGE_NAME="flclash-tui_${VERSION}_${ARCH}"

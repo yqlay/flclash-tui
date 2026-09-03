@@ -436,7 +436,7 @@ func tuiRuntimeProxyPort(
 	}
 	if flc.proxyURL() == "" {
 		return 0, errors.New(
-			"silent mode requires an FLC outbound; run `flclash flc select NAME` first",
+			"silent mode has no flc group yet; select a node in Proxies, or run `flclash proxy select GROUP NODE`",
 		)
 	}
 	return flc.Port, nil
@@ -595,21 +595,6 @@ func (r *tuiServiceRuntime) ensureFLCProxy() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	r.mu.RLock()
-	proxyURL := r.flc.proxyURL()
-	configPath := r.paths.configPath
-	r.mu.RUnlock()
-	if proxyURL == "" {
-		outbound, err := chooseDefaultTUIFLCOutbound(r.coreController, configPath)
-		if err != nil {
-			return false, err
-		}
-		selected, err := r.applyFLCOutbound(outbound)
-		if err != nil {
-			return false, err
-		}
-		changed = selected
-	}
 	if !status.Running {
 		started, err := r.startCoreListeners()
 		if err != nil {
@@ -623,20 +608,33 @@ func (r *tuiServiceRuntime) ensureFLCProxy() (bool, error) {
 func (r *tuiServiceRuntime) repairFLCOutbound() (bool, error) {
 	r.mu.RLock()
 	mode := r.trafficMode
-	outbound := r.flc.Outbound
+	outbound := strings.TrimSpace(r.flc.Outbound)
+	incomplete := r.flc.proxyURL() == ""
 	configPath := r.paths.configPath
 	r.mu.RUnlock()
-	if mode != tuiSilentMode || strings.TrimSpace(outbound) == "" {
+	if mode != tuiSilentMode {
 		return false, nil
 	}
-	if err := validateTUIFLCOutbound(r.coreController, outbound); err == nil {
-		return false, nil
+	if outbound != "" {
+		if err := validateTUIFLCOutbound(r.coreController, outbound); err == nil {
+			if !incomplete {
+				return false, nil
+			}
+			changed, err := r.applyFLCOutbound(outbound)
+			if err != nil {
+				return false, fmt.Errorf("restore FLC outbound %q: %w", outbound, err)
+			}
+			return changed, nil
+		}
 	}
 	replacement, err := chooseDefaultTUIFLCOutbound(
 		r.coreController,
 		configPath,
 	)
 	if err != nil {
+		if outbound == "" {
+			return false, err
+		}
 		return false, fmt.Errorf(
 			"saved FLC outbound %q is unavailable and no replacement was found: %w",
 			outbound,
@@ -645,6 +643,9 @@ func (r *tuiServiceRuntime) repairFLCOutbound() (bool, error) {
 	}
 	changed, err := r.applyFLCOutbound(replacement)
 	if err != nil {
+		if outbound == "" {
+			return false, fmt.Errorf("auto-select FLC outbound %q: %w", replacement, err)
+		}
 		return false, fmt.Errorf(
 			"replace unavailable FLC outbound %q with %q: %w",
 			outbound,
@@ -689,7 +690,7 @@ func chooseDefaultTUIFLCOutbound(controller controllerClient, configPath string)
 		return names[0], nil
 	}
 	return "", errors.New(
-		"silent mode has no usable proxy group for FLC; run `flclash flc select NAME`",
+		"silent mode has no usable proxy group; import a Profile, then select a node in Proxies",
 	)
 }
 
@@ -1070,6 +1071,7 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 			return false, fmt.Errorf("save silent mode: %w", err)
 		}
 		oldTunLease.release()
+		_, _ = r.repairFLCOutbound()
 		return true, nil
 	}
 	if currentMode != tuiSilentMode {
@@ -1259,7 +1261,8 @@ func (r *tuiServiceRuntime) applyFLCOutbound(outbound string) (bool, error) {
 	runtimePort := r.runtimePort
 	activePort := r.activePort
 	r.mu.RUnlock()
-	if outbound == previous.Outbound {
+	if outbound == previous.Outbound &&
+		(mode != tuiSilentMode || previous.proxyURL() != "") {
 		return false, nil
 	}
 	if err := validateTUIFLCOutbound(r.coreController, outbound); err != nil {
@@ -1357,7 +1360,31 @@ func (r *tuiServiceRuntime) selectProxy(group, proxy string) (bool, error) {
 		}
 		return false, fmt.Errorf("save proxy selection: %w; Core selection restored", err)
 	}
-	return proxy != current.Now, nil
+	changed := proxy != current.Now
+	followed, followErr := r.followFLCOutboundGroup(group)
+	if followErr != nil {
+		return changed || followed, fmt.Errorf(
+			"selected %s in %s, but silent flc was not pointed at that group: %w",
+			proxy,
+			group,
+			followErr,
+		)
+	}
+	return changed || followed, nil
+}
+
+func (r *tuiServiceRuntime) followFLCOutboundGroup(group string) (bool, error) {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return false, nil
+	}
+	r.mu.RLock()
+	current := strings.TrimSpace(r.flc.Outbound)
+	r.mu.RUnlock()
+	if strings.EqualFold(current, group) {
+		return false, nil
+	}
+	return r.applyFLCOutbound(group)
 }
 
 func validateTUIFLCOutbound(controller controllerClient, outbound string) error {

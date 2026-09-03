@@ -33,7 +33,7 @@ flclash
 1. 打开 **Profiles**，导入订阅 URL 或本地配置文件。
 2. 选中 Profile，按 Enter 激活。
 3. 打开 **Proxies**，选择代理组和节点。
-4. 默认是 `silent` 模式，使用 `flc` 运行需要代理的命令：
+4. 默认是 `silent` 模式；在 **Proxies** 里选节点后，用 `flc` 跑需要代理的命令：
 
 ```bash
 flc curl https://example.com
@@ -48,27 +48,28 @@ flc sh -c 'curl -s https://example.com | jq .'
 只在需要代理流量的机器上运行 FlClash。下面的例子表示本机流量通过 `user@host` 的网络出口访问互联网：
 
 ```bash
+flclash ssh import                 # 从 ~/.ssh/config 导入 Host
 flclash ssh add home host --user user --password --local-port 1080
-flclash ssh connect home
-flc ssh curl https://example.com
+flclash ssh default home
+flc ssh curl https://example.com   # 自动连接默认配置；断线会重建隧道
 
 # 默认交给 host 的网络策略；-d 只在 host 的 FlClash TUN 关闭时允许直连
 flc ssh -d curl https://example.com
 
-# 加密私钥；也可同时保存私钥口令和 SSH 登录密码
-flclash ssh add school host --user user --identity ~/.ssh/id_ed25519 --passphrase --password
+# 加密私钥、跳板机；也可同时保存私钥口令和 SSH 登录密码
+flclash ssh add school host --user user --jump bastion --identity ~/.ssh/id_ed25519 --passphrase --password
 
 # 让其他支持 SOCKS5 的本机程序使用同一隧道
 ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
 
 flclash ssh list
-flclash ssh test home
+flclash ssh test                 # 打开隧道并做 SOCKS5 握手
 flclash ssh disconnect home
 ```
 
 `flc ssh COMMAND` 不主动指定 B 的代理端口：流量在 B 解密后，由 B 的 Clash、TUN、路由规则或其他网络策略决定出口。`flc ssh -d COMMAND` 是严格直连检查：B 必须安装兼容 FlClash 且 Backend 可查询，若 B 开启透明 TUN、状态未知或版本不兼容，命令会拒绝执行而不会误标直连。
 
-SSH 配置也可以直接在 TUI 的 **SSH** 页面管理。主页面同时显示 SSH 配置列表方框和当前配置的 Dashboard；用 Tab 在侧栏、配置列表和 Dashboard 间切换焦点。Username 和 Host 分开填写，避免误用 WSL 当前用户名。未加密私钥无需口令；加密私钥未保存口令时，连接会在 TUI 内安全询问一次且不落盘。密钥和 SSH 登录密码同时存在时先尝试指定密钥，密码仅用于回退或服务器要求的第二因素。OpenSSH 警告只写入 Logs，不会破坏 TUI 画面。列表 Enter 会连接未就绪的配置，已连接时转到 Dashboard；Dashboard 先显示 A 与 B 的 inet IP，再依序显示可验证直连出口和 B 决定的 managed 出口的 IP、延迟、下载速度；透明 TUN 开启时直连卡会明确显示已阻止。
+`flc ssh COMMAND` 在没有已打开的隧道时，会连接默认配置（或唯一配置）并保持为持久隧道；已连接但 SOCKS5 不可用时会先重建再执行命令。SSH 配置也可以直接在 TUI 的 **SSH** 页面管理。主页面同时显示 SSH 配置列表方框和当前配置的 Dashboard；用 Tab 在侧栏、配置列表和 Dashboard 间切换焦点。`u` 将选中配置标为默认。Username、Host 和 Jump host 分开填写，避免误用 WSL 当前用户名。未加密私钥无需口令；加密私钥未保存口令时，连接会在 TUI 内安全询问一次且不落盘。密钥和 SSH 登录密码同时存在时先尝试指定密钥，密码仅用于回退或服务器要求的第二因素。OpenSSH 警告只写入 Logs，不会破坏 TUI 画面。连接失败会留下可读的 last error。列表 Enter 会连接未就绪的配置，已连接时转到 Dashboard；Dashboard 先显示 A 与 B 的 inet IP，再依序显示可验证直连出口和 B 决定的 managed 出口的 IP、延迟、下载速度；透明 TUN 开启时直连卡会明确显示已阻止。
 
 WSL 中不要直接使用权限显示为 `0777` 的 `/mnt/c/...` 私钥；OpenSSH 会拒绝它。先复制到 `~/.ssh/` 并执行 `chmod 600 ~/.ssh/KEY`。
 
@@ -86,6 +87,8 @@ flclash profile import URL
 flclash profile import-file /path/to/nodes.txt
 flclash logs --lines 100 --follow
 flclash history show --limit 20
+flclash ssh disconnect             # 只关 SSH 隧道
+flclash backend stop               # 停代理 Backend+Core，SSH 还在
 flclash exit                       # 完全退出前端、Backend、Core 和 SSH
 ```
 

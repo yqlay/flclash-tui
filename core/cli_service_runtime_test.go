@@ -427,6 +427,7 @@ func TestTUIServiceRuntimeSelectProxyValidatesAndRollsBack(t *testing.T) {
 		nil,
 		nil,
 	)
+	runtime.trafficMode = "rule"
 	if _, err := runtime.selectProxy("PROXY", "missing"); err == nil {
 		t.Fatal("proxy outside the selected group was accepted")
 	}
@@ -442,6 +443,9 @@ func TestTUIServiceRuntimeSelectProxyValidatesAndRollsBack(t *testing.T) {
 	}
 	if saved := loadTUISelectedProxies(directory)["PROXY"]; saved != "Node A" {
 		t.Fatalf("saved selection = %q, want Node A", saved)
+	}
+	if saved := loadTUIFLCOutbound(directory); saved != "PROXY" {
+		t.Fatalf("FLC outbound after Proxies selection = %q, want PROXY", saved)
 	}
 
 	statePath := filepath.Join(directory, tuiStateFilename)

@@ -33,7 +33,7 @@ flclash
 1. Open **Profiles** and import a subscription URL or local profile file.
 2. Select the Profile and press Enter to activate it.
 3. Open **Proxies** and select a proxy group and node.
-4. The default mode is `silent`; use `flc` for commands that need the proxy:
+4. The default mode is `silent`; pick a node in **Proxies**, then use `flc` for commands that need the proxy:
 
 ```bash
 flc curl https://example.com
@@ -48,27 +48,28 @@ For desktop applications, switch to `rule` or `global` and enable **System proxy
 Run FlClash only on the machine whose traffic needs proxying. This example sends local traffic through the network exit of `user@host`:
 
 ```bash
+flclash ssh import                 # import Host entries from ~/.ssh/config
 flclash ssh add home host --user user --password --local-port 1080
-flclash ssh connect home
-flc ssh curl https://example.com
+flclash ssh default home
+flc ssh curl https://example.com   # opens the default profile; rebuilds a broken tunnel
 
 # Follow host policy by default; direct mode requires the host FlClash TUN off
 flc ssh -d curl https://example.com
 
-# Encrypted private key; key passphrase and SSH password may both be saved
-flclash ssh add school host --user user --identity ~/.ssh/id_ed25519 --passphrase --password
+# Encrypted key and jump host; key passphrase and SSH password may both be saved
+flclash ssh add school host --user user --jump bastion --identity ~/.ssh/id_ed25519 --passphrase --password
 
 # Reuse the tunnel from another local SOCKS5-aware application
 ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
 
 flclash ssh list
-flclash ssh test home
+flclash ssh test                 # open the tunnel and run a SOCKS5 handshake
 flclash ssh disconnect home
 ```
 
 `flc ssh COMMAND` does not force a remote proxy port. After SSH decrypts on B, B's Clash, TUN, routing rules, or other network policy determines the exit. `flc ssh -d COMMAND` is a strict direct check: B must have compatible FlClash with a queryable Backend, and it refuses to run if B reports a transparent TUN, an unknown state, or an incompatible version.
 
-SSH profiles can also be managed from the TUI **SSH** page. Its main view keeps a bordered profile list and the selected profile's Dashboard visible together; Tab cycles focus through the sidebar, profile list, and Dashboard. Username and Host are separate fields, preventing accidental use of the current WSL username. Unencrypted keys need no passphrase; an encrypted key without a saved passphrase opens a masked one-time prompt inside the TUI. When a key and login password coexist, the specified key is tried first and the password is reserved for fallback or a required second factor. OpenSSH warnings go to Logs without corrupting the TUI. The Dashboard shows A and B inet IPs first, then the verified-direct exit followed by B-managed exit IP, latency, and speed; direct is visibly blocked while a transparent TUN is active.
+`flc ssh COMMAND` opens the default profile (or the only profile) as a persistent tunnel when none is connected, and rebuilds a broken SOCKS5 listener before running the command. SSH profiles can also be managed from the TUI **SSH** page. Its main view keeps a bordered profile list and the selected profile's Dashboard visible together; Tab cycles focus through the sidebar, profile list, and Dashboard. Press `u` to star the selected profile as default. Username, Host, and Jump host are separate fields, preventing accidental use of the current WSL username. Unencrypted keys need no passphrase; an encrypted key without a saved passphrase opens a masked one-time prompt inside the TUI. When a key and login password coexist, the specified key is tried first and the password is reserved for fallback or a required second factor. OpenSSH warnings go to Logs without corrupting the TUI. Failed connects leave a readable last error on the list and Dashboard. The Dashboard shows A and B inet IPs first, then the verified-direct exit followed by B-managed exit IP, latency, and speed; direct is visibly blocked while a transparent TUN is active.
 
 Under WSL, do not use a `/mnt/c/...` key that appears as mode `0777`; OpenSSH rejects it. Copy it into `~/.ssh/` and run `chmod 600 ~/.ssh/KEY` first.
 
@@ -86,6 +87,8 @@ flclash profile import URL
 flclash profile import-file /path/to/nodes.txt
 flclash logs --lines 100 --follow
 flclash history show --limit 20
+flclash ssh disconnect             # SSH tunnels only
+flclash backend stop               # stop proxy Backend+Core; SSH stays
 flclash exit                       # stop frontends, Backend, Core, and SSH
 ```
 
