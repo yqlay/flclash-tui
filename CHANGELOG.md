@@ -1,3 +1,9 @@
+## FlClash TUI v0.5.23
+
+- Keep every OpenSSH helper detached from the terminal, use a saved password through the private askpass channel, and make stale control connections fail closed instead of displaying an interactive password prompt over the TUI.
+- Prevent control, forwarding, health-check, remote-probe, and disconnect commands from starting a second authenticated SSH connection when their existing control socket is unavailable.
+- Place OpenSSH and SSH traffic-meter sockets in a secure short runtime directory when the normal runtime path would exceed the Unix socket limit, with a real OpenSSH password-authentication regression test.
+
 ## FlClash TUI v0.5.22
 
 - Make Dashboard public-IP detection event-driven instead of polling while the TUI is open.
