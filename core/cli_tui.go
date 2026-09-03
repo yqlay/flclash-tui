@@ -1996,19 +1996,19 @@ func selectTUIProxy(
 	snapshot *tuiSnapshot,
 	client controllerClient,
 	homeDir string,
-) {
+) bool {
 	if snapshot.SelectedGroup < 0 || snapshot.SelectedGroup >= len(snapshot.Groups) {
 		snapshot.Status = "Select a proxy group before applying it"
-		return
+		return false
 	}
 	group := snapshot.Groups[snapshot.SelectedGroup]
 	if snapshot.SelectedNode < 0 || snapshot.SelectedNode >= len(group.Nodes) {
 		snapshot.Status = "Select a proxy node before applying it"
-		return
+		return false
 	}
 	if err := client.setProxy(group.Name, group.Nodes[snapshot.SelectedNode]); err != nil {
 		snapshot.Status = "Switch failed: " + err.Error()
-		return
+		return false
 	}
 	snapshot.Status = fmt.Sprintf("Switched %s to %s", group.Name, group.Nodes[snapshot.SelectedNode])
 	if err := rememberTUIProxySelection(
@@ -2019,6 +2019,7 @@ func selectTUIProxy(
 		snapshot.Status += "; selection save failed: " + err.Error()
 	}
 	refreshTUISnapshot(snapshot, client)
+	return true
 }
 
 func updateTUIProvider(snapshot *tuiSnapshot, client controllerClient) {

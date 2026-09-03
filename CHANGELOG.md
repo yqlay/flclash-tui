@@ -1,3 +1,9 @@
+## FlClash TUI v0.5.22
+
+- Make Dashboard public-IP detection event-driven instead of polling while the TUI is open.
+- Refresh network detection at startup, on an explicit refresh, and after a route-changing operation such as a profile, proxy, mode, or TUN change.
+- Keep local status and traffic refreshes independent from external network-detection requests.
+
 ## FlClash TUI v0.5.21
 
 - Preserve standard SIP008 Shadowsocks `plugin_opts` during profile import,

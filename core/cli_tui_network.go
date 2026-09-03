@@ -53,13 +53,11 @@ type tuiNetworkRoute struct {
 	service  *tuiServiceClient
 }
 
-func (m *tuiModel) startNetworkCheck(force bool) tea.Cmd {
+// startNetworkCheck is invoked for an explicit refresh or an event that can
+// change the selected network exit. It deliberately has no timer: rendering
+// and local status refreshes must not continuously contact public IP services.
+func (m *tuiModel) startNetworkCheck() tea.Cmd {
 	if m.networkCheckActive {
-		return nil
-	}
-	if !force &&
-		!m.snapshot.Network.CheckedAt.IsZero() &&
-		time.Since(m.snapshot.Network.CheckedAt) < tuiNetworkRefreshInterval {
 		return nil
 	}
 	m.networkCheckActive = true

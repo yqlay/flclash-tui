@@ -26,7 +26,6 @@ import (
 )
 
 const tuiRefreshInterval = time.Second
-const tuiNetworkRefreshInterval = time.Minute
 
 const (
 	tuiSubscriptionUserAgent = "mihomo"
@@ -132,6 +131,7 @@ type tuiOperationState struct {
 	settingsDirty      bool
 	backendRevision    uint64
 	profileSelection   string
+	networkChanged     bool
 }
 
 type tuiOperationResultMsg struct {
@@ -482,7 +482,7 @@ func (m *tuiModel) Init() tea.Cmd {
 	return tea.Batch(
 		tuiTickCommand(),
 		m.startRefresh(),
-		m.startNetworkCheck(true),
+		m.startNetworkCheck(),
 		m.startMemoryRefresh(),
 		m.waitCoreMemoryUpdate(),
 		m.waitTrafficUpdate(),
@@ -500,7 +500,6 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			tuiTickCommand(),
 			m.startRefresh(),
-			m.startNetworkCheck(false),
 			m.startMemoryRefresh(),
 			m.pollSelectedSSHRelay(),
 		)
@@ -551,7 +550,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tuiNetworkResultMsg:
 		m.networkCheckActive = false
 		if message.route != m.networkCheckRoute() {
-			return m, m.startNetworkCheck(true)
+			return m, m.startNetworkCheck()
 		}
 		m.snapshot.Network = message.info
 		if message.info.Error != "" {
@@ -769,8 +768,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			)
 		}
 		commands := []tea.Cmd{m.startRefresh()}
-		if m.networkCheckRoute() != previousRoute {
-			commands = append(commands, m.startNetworkCheck(true))
+		if message.state.networkChanged ||
+			m.networkCheckRoute() != previousRoute {
+			commands = append(commands, m.startNetworkCheck())
 		}
 		return m, tea.Batch(commands...)
 	case tuiProxyGroupSpeedResultMsg:
@@ -849,6 +849,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if filepath.Clean(editorPath) == filepath.Clean(state.paths.configPath) {
 				state.snapshot.Status = "Configuration saved and hot-reloaded"
 				syncStoppedTUISettings(state)
+				state.networkChanged = true
 			} else {
 				state.snapshot.Status = "Configuration saved: " + filepath.Base(editorPath) +
 					" · activate it to apply"
@@ -1934,7 +1935,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		} else if m.snapshot.Page == tuiPageProfiles {
 			m.beginInput(tuiInputSubscription)
 		} else if m.snapshot.Page == tuiPageDashboard {
-			return m.startNetworkCheck(true)
+			return m.startNetworkCheck()
 		}
 	case tuiKeyRenameProfile:
 		if m.snapshot.Page == tuiPageProfiles {
@@ -2388,6 +2389,7 @@ func applyTUIOperationSetting(
 		}
 		applyTUIOperationServiceStatus(state, status)
 		state.snapshot.Status = "TUN " + strings.ToUpper(status.TunScope) + " " + strings.ToUpper(status.TunState)
+		state.networkChanged = true
 		return
 	}
 	settings := state.snapshot.Settings
@@ -2454,6 +2456,7 @@ func commitTUIOperationSettings(
 	)
 	refreshTUISnapshot(&state.snapshot, client)
 	applyTUIOperationServiceStatus(state, status)
+	state.networkChanged = true
 }
 
 func tuiProfileSettingsForCommit(
@@ -2990,8 +2993,12 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 		return m.startOperation(func(state *tuiOperationState) {
 			if m.service != nil {
 				selectTUIServiceProxy(state, m.service, m.client)
-			} else {
-				selectTUIProxy(&state.snapshot, m.client, state.paths.homeDir)
+			} else if selectTUIProxy(
+				&state.snapshot,
+				m.client,
+				state.paths.homeDir,
+			) {
+				state.networkChanged = true
 			}
 		})
 	case tuiPageProfiles:
@@ -3127,6 +3134,7 @@ func selectTUIServiceProxy(
 	state.snapshot.Status = fmt.Sprintf("Switched %s to %s", group.Name, node)
 	refreshTUISnapshot(&state.snapshot, client)
 	applyTUIOperationServiceStatus(state, status)
+	state.networkChanged = true
 }
 
 func switchTUIServiceProfile(
@@ -3171,6 +3179,7 @@ func switchTUIServiceProfile(
 	state.snapshot.Status = "Active profile: " + profile.Name
 	refreshTUISnapshot(&state.snapshot, client)
 	applyTUIOperationServiceStatus(state, status)
+	state.networkChanged = true
 	refreshTUIProfiles(&state.snapshot, state.paths)
 }
 
@@ -4843,6 +4852,7 @@ func (m *tuiModel) changeMode(mode string) tea.Cmd {
 		}
 		applyTUIOperationServiceStatus(state, status)
 		state.snapshot.Status = "Mode changed to " + status.Mode
+		state.networkChanged = true
 	})
 	if command != nil {
 		m.snapshot.Status = "Changing mode to " + mode + "..."
@@ -4949,6 +4959,7 @@ func (m *tuiModel) startProfileSubscriptionUpdate(
 			state.snapshot.Status = "Subscription refreshed and hot-reloaded: " +
 				filepath.Base(profilePath)
 			syncStoppedTUISettings(state)
+			state.networkChanged = true
 		} else {
 			state.snapshot.Status = "Subscription refreshed: " + filepath.Base(profilePath)
 		}
@@ -5155,6 +5166,7 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			}
 			applyTUIOperationServiceStatus(state, status)
 			state.snapshot.Status = "FLC outbound selected: " + status.FLCOutbound
+			state.networkChanged = true
 		})
 	case tuiInputSubscription:
 		if value == "" {

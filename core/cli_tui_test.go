@@ -1902,7 +1902,7 @@ func TestSilentNetworkCheckDoesNotCreateListenerWhileCoreStopped(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.coreRunning = false
 	model.snapshot.Settings.Mode = tuiSilentMode
-	command := model.startNetworkCheck(true)
+	command := model.startNetworkCheck()
 	if command == nil {
 		t.Fatal("silent stopped-Core check did not return a result command")
 	}
@@ -2827,6 +2827,35 @@ func TestTUINetworkCheckDiscardsResultFromOldRoute(t *testing.T) {
 	}
 	if model.snapshot.Network.PublicIP != "" {
 		t.Fatal("stale direct-route IP replaced the proxy-route result")
+	}
+}
+
+func TestTUINetworkCheckHasNoPeriodicCooldown(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Network.CheckedAt = time.Now()
+
+	if command := model.startNetworkCheck(); command == nil {
+		t.Fatal("event-triggered network check was suppressed by a cooldown")
+	}
+}
+
+func TestTUIOperationRefreshesNetworkAfterExitChange(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.coreRunning = true
+	model.snapshot.Settings.Mode = "rule"
+	model.snapshot.Settings.MixedPort = 7890
+	model.snapshot.ActiveProxyPort = 7890
+
+	state := tuiOperationState{
+		snapshot:        model.snapshot,
+		paths:           model.paths,
+		coreRunning:     model.coreRunning,
+		backendRevision: model.backendRevision,
+		networkChanged:  true,
+	}
+	_, command := model.Update(tuiOperationResultMsg{state: state})
+	if command == nil || !model.networkCheckActive {
+		t.Fatal("exit-changing operation did not request a network refresh")
 	}
 }
 
