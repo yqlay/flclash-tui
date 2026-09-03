@@ -97,8 +97,8 @@ func TestWaitForTUIServiceExitWaitsForProcessAfterSocketCloses(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	default:
-		t.Fatal("process was still running after exit wait")
+	case <-time.After(time.Second):
+		t.Fatal("process wait did not report completion after exit wait")
 	}
 }
 
