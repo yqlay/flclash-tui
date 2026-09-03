@@ -808,6 +808,116 @@ func TestCLISSHTunnelArgumentsUseSafeFirstConnectPolicy(t *testing.T) {
 	}
 }
 
+func TestCLISSHControlArgumentsCannotPromptOrReauthenticate(t *testing.T) {
+	state := cliSSHTunnelState{
+		Destination: "student@example.edu",
+		Port:        1080,
+		ControlPath: "/tmp/control.sock",
+	}
+	for name, arguments := range map[string][]string{
+		"forward": cliSSHDynamicForwardArguments(state),
+		"check":   cliSSHControlOperationArguments(state, "check"),
+		"exit":    cliSSHControlOperationArguments(state, "exit"),
+		"probe":   cliSSHControlClientArguments(state),
+	} {
+		joined := " " + strings.Join(arguments, " ") + " "
+		for _, expected := range []string{
+			" -S /tmp/control.sock ",
+			" BatchMode=yes ",
+			" StrictHostKeyChecking=yes ",
+			" PubkeyAuthentication=no ",
+			" PasswordAuthentication=no ",
+			" KbdInteractiveAuthentication=no ",
+			" PreferredAuthentications=none ",
+		} {
+			if !strings.Contains(joined, expected) {
+				t.Fatalf("%s control arguments omit %q: %v", name, expected, arguments)
+			}
+		}
+	}
+}
+
+func TestStartCLISSHTunnelUsesSavedPasswordThroughAskpass(t *testing.T) {
+	binDirectory := t.TempDir()
+	sshPath := filepath.Join(binDirectory, "ssh")
+	sshScript := "#!/bin/sh\n" +
+		"control=''\n" +
+		"previous=''\n" +
+		"for argument in \"$@\"; do\n" +
+		"  if [ \"$previous\" = '-S' ]; then control=\"$argument\"; fi\n" +
+		"  previous=\"$argument\"\n" +
+		"done\n" +
+		"case \" $* \" in\n" +
+		"  *' -O check '*) test -e \"$control\" ;;\n" +
+		"  *' -O forward '*)\n" +
+		"    case \" $* \" in *' BatchMode=yes '*' PasswordAuthentication=no '*' KbdInteractiveAuthentication=no '*) test -e \"$control\" ;; *) exit 41 ;; esac ;;\n" +
+		"  *' -O exit '*) rm -f \"$control\" ;;\n" +
+		"  *)\n" +
+		"    test \"$SSH_ASKPASS_REQUIRE\" = force || exit 42\n" +
+		"    test \"$DISPLAY\" = flclash-askpass || exit 43\n" +
+		"    answer=\"$(\"$SSH_ASKPASS\" \"student@127.0.0.1's password:\")\"\n" +
+		"    test \"$answer\" = stored-password || exit 44\n" +
+		"    touch \"$control\" ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(sshPath, []byte(sshScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	askpassPath := filepath.Join(binDirectory, "askpass")
+	askpassScript := `#!/bin/sh
+case "$1" in
+  *assword*) sed -n 's/.*"password":"\([^"]*\)".*/\1/p' "$FLCLASH_SSH_ASKPASS_FILE" ;;
+  *) exit 45 ;;
+esac
+`
+	if err := os.WriteFile(askpassPath, []byte(askpassScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	runtimeRoot := t.TempDir()
+	previousRuntime := cliRuntimeDirectoryOverride
+	previousAskpassExecutable := cliSSHAskpassExecutable
+	previousForward := addCLISSHDynamicForwardForOperation
+	cliRuntimeDirectoryOverride = runtimeRoot
+	cliSSHAskpassExecutable = func() (string, error) { return askpassPath, nil }
+	var listener net.Listener
+	addCLISSHDynamicForwardForOperation = func(
+		path string,
+		state cliSSHTunnelState,
+	) error {
+		if err := addCLISSHDynamicForward(path, state); err != nil {
+			return err
+		}
+		var err error
+		listener, err = net.Listen(
+			"tcp4",
+			net.JoinHostPort("127.0.0.1", strconv.Itoa(state.Port)),
+		)
+		return err
+	}
+	t.Cleanup(func() {
+		if listener != nil {
+			_ = listener.Close()
+		}
+		cliRuntimeDirectoryOverride = previousRuntime
+		cliSSHAskpassExecutable = previousAskpassExecutable
+		addCLISSHDynamicForwardForOperation = previousForward
+	})
+
+	state, err := startCLISSHTunnel(cliSSHProfile{
+		Name:     "password",
+		Username: "student",
+		Host:     "127.0.0.1",
+		Port:     22,
+		Password: "stored-password",
+	}, "transient")
+	if err != nil {
+		t.Fatalf("saved-password SSH tunnel = %v", err)
+	}
+	if err := stopCLIStateTunnel(state); err != nil {
+		t.Fatalf("stop saved-password SSH tunnel: %v", err)
+	}
+}
+
 func TestCLISSHTunnelArgumentsUseDeterministicAuthenticationMatrix(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -889,6 +999,14 @@ func TestRunCLISSHCommandCapturesWarningsWithoutTerminalOutput(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Permission denied") ||
 		strings.Contains(err.Error(), "post-quantum") {
 		t.Fatalf("captured SSH failure summary = %v", err)
+	}
+}
+
+func TestPrepareCLISSHNonInteractiveCommandDetachesTerminal(t *testing.T) {
+	command := exec.Command("true")
+	prepareCLISSHNonInteractiveCommand(command)
+	if command.Stdin != nil || command.SysProcAttr == nil || !command.SysProcAttr.Setsid {
+		t.Fatalf("SSH command still has terminal access: %+v", command.SysProcAttr)
 	}
 }
 
@@ -2118,7 +2236,17 @@ func TestDeleteConnectedCLISSHProfileRestoresTunnelOnConfigFailure(t *testing.T)
 func TestStopCLIStateTunnelKeepsStateWhenOpenSSHExitFails(t *testing.T) {
 	binDirectory := t.TempDir()
 	sshPath := filepath.Join(binDirectory, "ssh")
-	if err := os.WriteFile(sshPath, []byte("#!/bin/sh\nif [ \"$4\" = \"check\" ]; then test -f \"$2\"; exit $?; fi\nif [ \"$4\" = \"exit\" ]; then exit 1; fi\nexit 1\n"), 0o700); err != nil {
+	sshScript := "#!/bin/sh\n" +
+		"control=''\noperation=''\nprevious=''\n" +
+		"for argument in \"$@\"; do\n" +
+		"  if [ \"$previous\" = '-S' ]; then control=\"$argument\"; fi\n" +
+		"  if [ \"$previous\" = '-O' ]; then operation=\"$argument\"; fi\n" +
+		"  previous=\"$argument\"\n" +
+		"done\n" +
+		"if [ \"$operation\" = check ]; then test -f \"$control\"; exit $?; fi\n" +
+		"if [ \"$operation\" = exit ]; then exit 1; fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(sshPath, []byte(sshScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -2169,8 +2297,14 @@ func TestActiveCLISSHTunnelKeepsBrokenForwardManageable(t *testing.T) {
 	binDirectory := t.TempDir()
 	sshPath := filepath.Join(binDirectory, "ssh")
 	script := "#!/bin/sh\n" +
-		"if [ \"$4\" = \"check\" ]; then test -f \"$2.master\"; exit $?; fi\n" +
-		"if [ \"$4\" = \"exit\" ]; then rm -f \"$2.master\"; exit 0; fi\n" +
+		"control=''\noperation=''\nprevious=''\n" +
+		"for argument in \"$@\"; do\n" +
+		"  if [ \"$previous\" = '-S' ]; then control=\"$argument\"; fi\n" +
+		"  if [ \"$previous\" = '-O' ]; then operation=\"$argument\"; fi\n" +
+		"  previous=\"$argument\"\n" +
+		"done\n" +
+		"if [ \"$operation\" = check ]; then test -f \"$control.master\"; exit $?; fi\n" +
+		"if [ \"$operation\" = exit ]; then rm -f \"$control.master\"; exit 0; fi\n" +
 		"exit 1\n"
 	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)

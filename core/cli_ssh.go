@@ -213,6 +213,8 @@ type cliSSHCredentialRequiredError struct {
 
 const cliSSHCommandOutputLimit = 64 * 1024
 
+var cliSSHAskpassExecutable = os.Executable
+
 type cliSSHCappedBuffer struct {
 	buffer bytes.Buffer
 }
@@ -1710,7 +1712,7 @@ func runCLISSHCommand(
 	logSuccessOutput bool,
 ) error {
 	var stdout, stderr cliSSHCappedBuffer
-	command.Stdin = nil
+	prepareCLISSHNonInteractiveCommand(command)
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	err := command.Run()
@@ -1744,10 +1746,21 @@ func runCLISSHCommand(
 
 func runCLISSHProbe(command *exec.Cmd) error {
 	var stdout, stderr cliSSHCappedBuffer
-	command.Stdin = nil
+	prepareCLISSHNonInteractiveCommand(command)
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	return command.Run()
+}
+
+// prepareCLISSHNonInteractiveCommand makes every OpenSSH helper incapable of
+// taking over the terminal. Authentication is either supplied through our
+// private askpass file during initial connect or rejected by the control-only
+// arguments below; a TUI must never be obscured by an OpenSSH prompt.
+func prepareCLISSHNonInteractiveCommand(command *exec.Cmd) {
+	command.Stdin = nil
+	if command.SysProcAttr == nil {
+		command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	}
 }
 
 func probeCLISSHRemote(state cliSSHTunnelState) (cliSSHRemoteProbe, error) {
@@ -1758,14 +1771,15 @@ func probeCLISSHRemote(state cliSSHTunnelState) (cliSSHRemoteProbe, error) {
 	if err != nil {
 		return cliSSHRemoteProbe{}, errors.New("OpenSSH client `ssh` is required")
 	}
-	command := exec.Command(
-		sshPath,
-		"-S", state.ControlPath,
+	arguments := cliSSHControlClientArguments(state)
+	arguments = append(
+		arguments,
 		state.Destination,
 		"flclash", "ssh", "probe", "--json",
 	)
+	command := exec.Command(sshPath, arguments...)
 	var stdout, stderr cliSSHCappedBuffer
-	command.Stdin = nil
+	prepareCLISSHNonInteractiveCommand(command)
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
@@ -2026,12 +2040,36 @@ func addCLISSHDynamicForward(sshPath string, state cliSSHTunnelState) error {
 }
 
 func cliSSHDynamicForwardArguments(state cliSSHTunnelState) []string {
-	return []string{
-		"-S", state.ControlPath,
+	arguments := cliSSHControlClientArguments(state)
+	arguments = append(arguments,
 		"-O", "forward",
 		"-D", net.JoinHostPort("127.0.0.1", strconv.Itoa(cliSSHUpstreamPort(state))),
-		state.Destination,
+	)
+	return append(arguments, state.Destination)
+}
+
+// cliSSHControlClientArguments is used only after an authenticated master has
+// been created. If its socket has disappeared, OpenSSH must fail locally
+// rather than fall back to a new network connection and prompt on /dev/tty.
+func cliSSHControlClientArguments(state cliSSHTunnelState) []string {
+	return []string{
+		"-S", state.ControlPath,
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "PubkeyAuthentication=no",
+		"-o", "PasswordAuthentication=no",
+		"-o", "KbdInteractiveAuthentication=no",
+		"-o", "PreferredAuthentications=none",
 	}
+}
+
+func cliSSHControlOperationArguments(
+	state cliSSHTunnelState,
+	operation string,
+) []string {
+	arguments := cliSSHControlClientArguments(state)
+	arguments = append(arguments, "-O", operation)
+	return append(arguments, state.Destination)
 }
 
 func cliSSHUpstreamPort(state cliSSHTunnelState) int {
@@ -2122,7 +2160,7 @@ func configureCLISSHAskpass(
 		cleanup()
 		return nil, err
 	}
-	executable, err := os.Executable()
+	executable, err := cliSSHAskpassExecutable()
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -2345,7 +2383,10 @@ func cliSSHMasterAlive(sshPath string, state cliSSHTunnelState) bool {
 	if state.ControlPath == "" {
 		return false
 	}
-	check := exec.Command(sshPath, "-S", state.ControlPath, "-O", "check", state.Destination)
+	check := exec.Command(
+		sshPath,
+		cliSSHControlOperationArguments(state, "check")...,
+	)
 	return runCLISSHProbe(check) == nil
 }
 func saveCLISSHTunnelState(state cliSSHTunnelState) error {
@@ -2415,11 +2456,7 @@ func stopCLIStateTunnel(state cliSSHTunnelState) error {
 	if cliSSHMasterAlive(sshPath, state) {
 		command := exec.Command(
 			sshPath,
-			"-S",
-			state.ControlPath,
-			"-O",
-			"exit",
-			state.Destination,
+			cliSSHControlOperationArguments(state, "exit")...,
 		)
 		if err := runCLISSHCommand(command, "ssh_disconnect", false); err != nil &&
 			cliSSHMasterAlive(sshPath, state) {
