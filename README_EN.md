@@ -6,7 +6,14 @@
 [![Downloads](https://img.shields.io/github/downloads/yqlay/flclash-tui/total?style=flat-square)](https://github.com/yqlay/flclash-tui/releases)
 [![License](https://img.shields.io/github/license/yqlay/flclash-tui?style=flat-square)](LICENSE)
 
-A Mihomo/Clash terminal proxy manager for Linux, SSH, and headless servers. Run `flclash` for the full-screen TUI or `flc COMMAND` to proxy only one command.
+A Mihomo terminal manager for Linux, SSH, and headless hosts. Run `flclash` for the full-screen TUI. The default mode is **silent**: only `flc COMMAND` uses the proxy.
+
+## Who it is for
+
+- Remote Linux, cloud VMs, lab machines, or WSL, with a subscription or local profile already in hand;
+- Proxying only chosen commands such as Codex, Claude, git, or npm;
+- Leaving other services, containers, and existing SSH sessions on the direct path;
+- Failing closed when the listener, Core, or node is down, instead of silently going direct.
 
 ## Install
 
@@ -22,30 +29,42 @@ Force a portable installation:
 curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh | bash -s -- --method portable
 ```
 
-Packages are also available from [Releases](https://github.com/yqlay/flclash-tui/releases).
+If GitHub is unreachable, download the matching `.deb` or `.tar.gz` from [Releases](https://github.com/yqlay/flclash-tui/releases) and copy it onto the machine. Do not pin a version string; always use the latest Release.
 
-## Quick start
+## Fastest path
 
-```bash
-flclash
-```
-
-1. Open **Profiles** and import a subscription URL or local profile file.
-2. Select the Profile and press Enter to activate it.
-3. Open **Proxies** and select a proxy group and node.
-4. The default mode is `silent`; pick a node in **Proxies**, then use `flc` for commands that need the proxy:
+1. Run `flclash` to open the TUI.
+2. In **Profiles**, import a subscription URL or local file, then press Enter to activate it.
+3. In **Proxies**, pick a group and node. That group is the `flc` exit.
+4. Keep **silent** on the Dashboard, focus **Core**, and press Enter to start it. Do not enable System proxy.
+5. In another terminal, run the commands that need the proxy:
 
 ```bash
-flc curl https://example.com
+flc codex
+flc claude
 flc git clone https://github.com/owner/repository.git
-flc sh -c 'curl -s https://example.com | jq .'
+flc npm install
+flc curl https://example.com
+flc bash    # child commands inherit the proxy; leaving the shell drops it
 ```
 
-For desktop applications, switch to `rule` or `global` and enable **System proxy** on the Dashboard. On headless systems, use `flc`, application-specific proxy settings, or TUN.
+`flc` injects uppercase and lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` into that command only (and into children of `flc bash`). Silent mode uses an authenticated private loopback listener and does not expose a port on the LAN or the public internet. If the listener, Core, or node is unavailable, `flc` errors and refuses to run instead of going direct.
+
+6. When finished:
+
+```bash
+flclash exit    # stop this user's frontends, Backend, Core, and SSH
+```
+
+Press `q` in the TUI, or close that terminal, to leave only the current frontend. Backend stays up, so `flc` still works.
+
+## Desktop / system-wide proxy
+
+To send ordinary apps such as a browser through the proxy, switch Dashboard mode to `rule` or `global`, then enable **System proxy** or TUN. On headless hosts, prefer `flc` above.
 
 ## SSH proxy
 
-Run FlClash only on the machine whose traffic needs proxying. This example sends local traffic through the network exit of `user@host`:
+Run FlClash only on the machine whose traffic needs proxying, and use another already-online host as the SSH peer. `flc ssh COMMAND` then leaves through that host's network. The local machine does not open a public proxy port; the peer only needs SSH.
 
 ```bash
 flclash ssh import                 # import Host entries from ~/.ssh/config
@@ -53,27 +72,17 @@ flclash ssh add home host --user user --password --local-port 1080
 flclash ssh default home
 flc ssh curl https://example.com   # opens the default profile; rebuilds a broken tunnel
 
-# Follow host policy by default; direct mode requires the host FlClash TUN off
+# Follow host policy by default; -d allows direct only when the host FlClash TUN is off
 flc ssh -d curl https://example.com
 
-# Encrypted key and jump host; key passphrase and SSH password may both be saved
 flclash ssh add school host --user user --jump bastion --identity ~/.ssh/id_ed25519 --passphrase --password
-
-# Reuse the tunnel from another local SOCKS5-aware application
-ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
-
-flclash ssh list
-flclash ssh test                 # open the tunnel and run a SOCKS5 handshake
-flclash ssh disconnect home
+flclash ssh test                   # open the tunnel and run a SOCKS5 handshake
+flclash ssh disconnect home        # SSH only; flclash backend stop leaves tunnels up
 ```
 
-`flc ssh COMMAND` does not force a remote proxy port. After SSH decrypts on B, B's Clash, TUN, routing rules, or other network policy determines the exit. `flc ssh -d COMMAND` is a strict direct check: B must have compatible FlClash with a queryable Backend, and it refuses to run if B reports a transparent TUN, an unknown state, or an incompatible version.
+With no tunnel up, `flc ssh` connects the default (or only) profile and keeps it persistent. The TUI **SSH** page manages the same profiles; press `u` to star the default. `flc ssh -d` refuses when the remote transparent TUN is on, the state is unknown, or the version is incompatible. Under WSL, do not use a `/mnt/c/...` key that shows mode `0777`; copy it to `~/.ssh/` and `chmod 600` first.
 
-`flc ssh COMMAND` opens the default profile (or the only profile) as a persistent tunnel when none is connected, and rebuilds a broken SOCKS5 listener before running the command. SSH profiles can also be managed from the TUI **SSH** page. Its main view keeps a bordered profile list and the selected profile's Dashboard visible together; Tab cycles focus through the sidebar, profile list, and Dashboard. Press `u` to star the selected profile as default. Username, Host, and Jump host are separate fields, preventing accidental use of the current WSL username. Unencrypted keys need no passphrase; an encrypted key without a saved passphrase opens a masked one-time prompt inside the TUI. When a key and login password coexist, the specified key is tried first and the password is reserved for fallback or a required second factor. OpenSSH warnings go to Logs without corrupting the TUI. Failed connects leave a readable last error on the list and Dashboard. The Dashboard shows A and B inet IPs first, then the verified-direct exit followed by B-managed exit IP, latency, and speed; direct is visibly blocked while a transparent TUN is active.
-
-Under WSL, do not use a `/mnt/c/...` key that appears as mode `0777`; OpenSSH rejects it. Copy it into `~/.ssh/` and run `chmod 600 ~/.ssh/KEY` first.
-
-History, Connections, and Logs support `/` search and Enter for full details. `f` filters History state or log level. Destructive clears and connection closes require confirmation; Logs combine persistent Backend records with current TUI events.
+SSH fields, key passphrases, Jump, and Dashboard probes are documented in [CLI_LINUX.md](CLI_LINUX.md).
 
 ## Common commands
 
@@ -92,9 +101,9 @@ flclash backend stop               # stop proxy Backend+Core; SSH stays
 flclash exit                       # stop frontends, Backend, Core, and SSH
 ```
 
-In the TUI, `q` or closing its terminal exits only the current frontend and releases its record; `Ctrl+C` exits everything, `Ctrl+N` opens notification details, and `?` shows all keys.
+In the TUI, `q` exits the current frontend only; `Ctrl+C` is a full exit. Dashboard owns Core, mode, flc, proxy port, TUN, and System proxy. `?` lists keys; `Ctrl+N` opens notifications.
 
-Profile import accepts Mihomo/Clash YAML, URI lists and Base64 wrappers, SIP008, sing-box/Xray JSON, and common Surge/Quantumult X/Loon proxy lines; SIP008 v2ray-plugin/simple-obfs settings are preserved. Local files may use any extension. Duplicate or Core-reserved node names are disambiguated; an unsupported or malformed node rejects the whole import instead of being silently dropped.
+Profile import accepts Mihomo/Clash YAML, URI lists and Base64 wrappers, SIP008, sing-box/Xray JSON, and common Surge/Quantumult X/Loon proxy lines. An unsupported or malformed node rejects the whole import instead of being dropped silently.
 
 See [CLI_LINUX.md](CLI_LINUX.md) for all commands, TUN, Profiles, History, logs, data paths, and troubleshooting. Runtime help is available through `flclash --help`, `flclash COMMAND --help`, and `flc --help`.
 
