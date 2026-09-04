@@ -19,7 +19,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const tuiMemoryRefreshInterval = time.Second
+const tuiMemoryRefreshInterval = 2 * time.Second
 
 type tuiCoreMemoryUpdate struct {
 	RSS       uint64
@@ -133,7 +133,10 @@ func readTUIProcessRSS(path string, pageSize uint64) (uint64, error) {
 }
 
 func (m *tuiModel) startCoreMemoryMonitor() {
-	if m.ownsCore && m.service == nil || m.coreMemoryUpdates != nil {
+	if m.stopCoreMemory != nil {
+		return
+	}
+	if m.ownsCore && m.service == nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -148,6 +151,7 @@ func (m *tuiModel) stopCoreMemoryMonitor() {
 		m.stopCoreMemory()
 		m.stopCoreMemory = nil
 	}
+	m.coreMemoryUpdates = nil
 }
 
 func (m *tuiModel) waitCoreMemoryUpdate() tea.Cmd {

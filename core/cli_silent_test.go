@@ -151,6 +151,12 @@ rules:
 	if config["geo-auto-update"] != false {
 		t.Fatalf("geo-auto-update = %#v, want false", config["geo-auto-update"])
 	}
+	if config["geodata-loader"] != "memconservative" {
+		t.Fatalf("geodata-loader = %#v, want memconservative", config["geodata-loader"])
+	}
+	if config["geodata-mode"] != false {
+		t.Fatalf("geodata-mode = %#v, want false", config["geodata-mode"])
+	}
 	dns, ok := config["dns"].(map[string]any)
 	if !ok || dns["listen"] != "" {
 		t.Fatalf("dns = %#v, want an empty listen address", config["dns"])

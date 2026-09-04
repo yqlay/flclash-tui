@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sync"
 
 	"github.com/metacubex/mihomo/adapter"
@@ -289,6 +290,9 @@ func applyConfig(params *SetupParams) error {
 	if err != nil {
 		currentConfig, _ = config.ParseRawConfig(config.DefaultRawConfig())
 	}
+	if currentConfig != nil {
+		currentConfig.General.GeodataLoader = "memconservative"
+	}
 	if params.ExternalController != nil {
 		currentConfig.Controller.ExternalController = *params.ExternalController
 		currentConfig.Controller.ExternalControllerTLS = ""
@@ -313,6 +317,8 @@ func applyConfig(params *SetupParams) error {
 	if updater.GeoAutoUpdate() {
 		updater.RegisterGeoUpdaterWithCancel()
 	}
+	runtime.GC()
+	debug.FreeOSMemory()
 	return err
 }
 

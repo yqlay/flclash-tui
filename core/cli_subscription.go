@@ -285,6 +285,8 @@ func buildTUIProxyProfile(
 		"ipv6":           false,
 		"unified-delay":  true,
 		"tcp-concurrent": true,
+		"geodata-loader": "memconservative",
+		"geodata-mode":   false,
 		"proxies":        proxies,
 		"proxy-groups": []map[string]any{{
 			"name":    "PROXY",

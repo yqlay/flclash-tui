@@ -152,18 +152,12 @@ type tuiUpdateInfo struct {
 }
 
 const (
-	tuiSettingsModeRow = iota
-	tuiSettingsFLCOutboundRow
-	tuiSettingsMixedPortRow
-	tuiSettingsAllowLANRow
+	tuiSettingsAllowLANRow = iota
 	tuiSettingsIPv6Row
 	tuiSettingsUnifiedDelayRow
 	tuiSettingsTCPConcurrentRow
 	tuiSettingsLogLevelRow
 	tuiSettingsTunScopeRow
-	tuiSettingsTunRow
-	tuiSettingsServiceRow
-	tuiSettingsSystemProxyRow
 	tuiSettingsRowCount
 )
 
@@ -440,6 +434,8 @@ log-level: info
 ipv6: false
 unified-delay: true
 tcp-concurrent: true
+geodata-loader: memconservative
+geodata-mode: false
 proxy-groups:
   - name: PROXY
     type: select
@@ -817,7 +813,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGWINCH)
 	defer signal.Stop(signals)
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(tuiRefreshInterval)
 	defer ticker.Stop()
 
 	for {
@@ -1003,7 +999,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 				} else if snapshot.Page == tuiPageDashboard {
 					snapshot.SelectedDashboard = wrapTUIIndex(snapshot.SelectedDashboard, -1, tuiDashboardRowCount)
 				} else if snapshot.Page == tuiPageTools {
-					snapshot.SelectedTool = wrapTUIIndex(snapshot.SelectedTool, -1, tuiToolsRowCount)
+					snapshot.SelectedTool = wrapTUIIndex(snapshot.SelectedTool, -1, tuiSettingsRowCount)
 				}
 			case tuiKeyDown:
 				if snapshot.Page == tuiPageProfiles {
@@ -1021,7 +1017,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 				} else if snapshot.Page == tuiPageDashboard {
 					snapshot.SelectedDashboard = wrapTUIIndex(snapshot.SelectedDashboard, 1, tuiDashboardRowCount)
 				} else if snapshot.Page == tuiPageTools {
-					snapshot.SelectedTool = wrapTUIIndex(snapshot.SelectedTool, 1, tuiToolsRowCount)
+					snapshot.SelectedTool = wrapTUIIndex(snapshot.SelectedTool, 1, tuiSettingsRowCount)
 				}
 			case tuiKeyDelayTest:
 				if snapshot.Page == tuiPageProxies &&
@@ -1085,11 +1081,6 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 					switchTUIProfile(&snapshot, &paths, &setupParams, client, ownsCore, coreRunning)
 				} else if snapshot.Page == tuiPageTools {
 					switch snapshot.SelectedTool {
-					case tuiSettingsModeRow:
-						updateTUISettings(&snapshot, client, tuiKeyMode)
-					case tuiSettingsMixedPortRow:
-						screen.invalidate()
-						setTUIMixedPort(&snapshot, client, &oldState)
 					case tuiSettingsAllowLANRow:
 						updateTUISettings(&snapshot, client, tuiKeyAllowLAN)
 					case tuiSettingsIPv6Row:
@@ -1102,39 +1093,24 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 						updateTUISettings(&snapshot, client, tuiKeyLogLevel)
 					case tuiSettingsTunScopeRow:
 						snapshot.Status = "TUN scope changes require the managed Backend"
-					case tuiSettingsTunRow:
-						updateTUISettings(&snapshot, client, tuiKeyTun)
-					case tuiSettingsServiceRow:
-						toggleCore()
-					case tuiSettingsSystemProxyRow:
-						toggleSystemProxy()
-					case tuiToolsEditConfigRow:
-						screen.invalidate()
-						executeTUITool(0, &snapshot, paths, setupParams, client, ownsCore, &oldState)
-					case tuiToolsBackupRow:
-						executeTUITool(1, &snapshot, paths, setupParams, client, ownsCore, &oldState)
-					case tuiToolsRestoreRow:
-						executeTUITool(2, &snapshot, paths, setupParams, client, ownsCore, &oldState)
-					case tuiToolsGeoUpdateRow:
-						executeTUITool(3, &snapshot, paths, setupParams, client, ownsCore, &oldState)
-					case tuiToolsResetTrafficRow:
-						executeTUITool(4, &snapshot, paths, setupParams, client, ownsCore, &oldState)
-					case tuiToolsUpdateRow:
-						executeTUITool(5, &snapshot, paths, setupParams, client, ownsCore, &oldState)
 					}
 				}
 			case tuiKeyAllowLAN, tuiKeyIPv6, tuiKeyUnifiedDelay, tuiKeyTCPConcurrent,
-				tuiKeyTun, tuiKeyMode, tuiKeyLogLevel, tuiKeyPortUp, tuiKeyPortDown:
-				if snapshot.Page == tuiPageTools || snapshot.Page == tuiPageDashboard {
+				tuiKeyLogLevel:
+				if snapshot.Page == tuiPageTools {
+					updateTUISettings(&snapshot, client, key)
+				}
+			case tuiKeyTun, tuiKeyMode, tuiKeyPortUp, tuiKeyPortDown:
+				if snapshot.Page == tuiPageDashboard {
 					updateTUISettings(&snapshot, client, key)
 				}
 			case tuiKeySetPort:
-				if snapshot.Page == tuiPageTools || snapshot.Page == tuiPageDashboard {
+				if snapshot.Page == tuiPageDashboard {
 					screen.invalidate()
 					setTUIMixedPort(&snapshot, client, &oldState)
 				}
 			case tuiKeySystemProxy:
-				if snapshot.Page == tuiPageTools || snapshot.Page == tuiPageDashboard {
+				if snapshot.Page == tuiPageDashboard {
 					toggleSystemProxy()
 				}
 			}
@@ -1550,7 +1526,6 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 			snapshot.SelectedProvider = findTUIProvider(snapshot.Providers, selectedProviderName)
 		}
 	}
-	snapshot.Logs = cliLogSnapshot()
 	if snapshot.Status == "" || snapshot.Status == "Loading..." ||
 		snapshot.Status == "Connected" ||
 		strings.HasPrefix(snapshot.Status, "Controller unavailable:") ||
@@ -2754,7 +2729,7 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	if ownsCore && coreRunning && snapshot.Settings.Mode != tuiSilentMode &&
 		snapshot.Settings.MixedPort <= 0 &&
 		(snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Core listeners started") {
-		snapshot.Status = "No proxy listener active; select Proxy port in Dashboard or Settings"
+		snapshot.Status = "No proxy listener active; select Proxy port in Dashboard"
 	}
 	if width < 88 || height < 18 {
 		return renderTUICompact(
@@ -2898,11 +2873,11 @@ func renderTUICompact(
 	}
 	footer := "  1-9 page · ←/Esc nav · ↑↓/ws · Enter · q exit TUI · ^C full exit"
 	if snapshot.FocusSidebar {
-		footer = "  ↑↓/ws page · →/Enter open · 1-9 direct · q exit TUI"
+		footer = "  ↑↓/ws page · →/Enter open · 1-9 direct · q exit TUI · ^C full exit"
 	} else if snapshot.Page == tuiPageDashboard {
-		footer = "  ↑↓/ws select · Enter Core/flc · PgUp/PgDn · q exit TUI"
+		footer = "  ↑↓/ws select · Enter Core/flc · PgUp/PgDn · q exit TUI · ^C full exit"
 	} else if snapshot.Page == tuiPageSSH {
-		footer = "  Tab list/Dashboard · ↑↓/ws · Enter · u default · n add · q"
+		footer = "  Tab list/Dashboard · ↑↓/ws · Enter · u default · n add · q exit TUI · ^C full exit"
 	}
 	b.WriteString(tuiNotificationFooter(snapshot, footer, width))
 	return b.String()
@@ -3819,7 +3794,7 @@ func drawTUITools(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 	tuiTitle(
 		b,
 		"Settings",
-		"Core · network · lifecycle",
+		"Allow LAN, IPv6, delay, log, TUN scope · daily controls are on Dashboard",
 		width,
 	)
 	limit := maxTUIWidth(height-3, 1)
@@ -3925,7 +3900,7 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 		"History        x clears shared history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
 		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
-		"Settings       Enter applies row · a LAN · v IPv6 · p port · flc Enter opens Proxies",
+		"Settings       Enter applies row · a LAN · v IPv6 · i log · Dashboard has Core/mode/flc/port",
 		"Maintenance    Edit, backup, restore, Geo, traffic reset, and updates",
 		"Notifications  Ctrl+N opens history/details · Enter confirms · Esc closes",
 		"Exit           q exits this TUI only · Ctrl+C shuts down Backend, Core, and SSH",
@@ -4055,7 +4030,12 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 			"TUI frontends "+formatCLIFrontendSummary(snapshot.Frontends),
 			fmt.Sprintf("Config        %s", paths.configPath),
 		)
-		tuiTitle(b, "Overview", "memory refresh 1s · live status", width)
+		tuiTitle(
+			b,
+			"Overview",
+			"memory refresh "+tuiMemoryRefreshInterval.String()+" · live status",
+			width,
+		)
 		for _, row := range overview {
 			tuiRow(b, row, width, false, "")
 		}
@@ -4764,15 +4744,12 @@ func drawTUISettings(b *strings.Builder, snapshot tuiSnapshot, width, height int
 	}
 	tuiEndPanel(b, width)
 	if height >= len(rows)+7 {
-		tuiEmptyPanel(b, "Optional keys", "a LAN · v IPv6 · t TUN · m mode · p port · +/- adjust · S system proxy · c Core", width)
+		tuiEmptyPanel(b, "Optional keys", "a LAN · v IPv6 · i log level · Dashboard: c Core · m mode · t TUN · p port · S system proxy", width)
 	}
 }
 
 func tuiSettingsRows(snapshot tuiSnapshot) []string {
 	return []string{
-		fmt.Sprintf("Mode          %s", snapshot.Settings.Mode),
-		fmt.Sprintf("flc           %s", tuiFLCOutboundLabel(snapshot)),
-		fmt.Sprintf("Proxy port    %s", tuiProxyPortLabel(snapshot)),
 		fmt.Sprintf("Allow LAN     %s", tuiOnOff(snapshot.Settings.AllowLAN)),
 		fmt.Sprintf("IPv6          %s", tuiOnOff(snapshot.Settings.IPv6)),
 		fmt.Sprintf(
@@ -4785,9 +4762,6 @@ func tuiSettingsRows(snapshot tuiSnapshot) []string {
 		),
 		fmt.Sprintf("Log level     %s", snapshot.Settings.LogLevel),
 		fmt.Sprintf("TUN scope     %s", strings.ToUpper(tuiEffectiveTunScope(snapshot.Settings.TunScope))),
-		fmt.Sprintf("TUN           %s", tuiTUNLabel(snapshot)),
-		fmt.Sprintf("Core          %s", tuiServiceLabel(snapshot)),
-		fmt.Sprintf("System proxy  %s", tuiSystemProxyLabel(snapshot)),
 	}
 }
 

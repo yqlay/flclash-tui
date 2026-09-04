@@ -928,7 +928,7 @@ func TestBubbleTeaBlocksMutatingActionsWhileBusy(t *testing.T) {
 		nil,
 		true,
 	)
-	model.snapshot.Page = tuiPageTools
+	model.snapshot.Page = tuiPageDashboard
 	model.snapshot.FocusSidebar = false
 	model.snapshot.Settings.TunEnabled = false
 	model.busy = true
@@ -1743,33 +1743,35 @@ func TestTUISettingsExposeAllInteractiveRows(t *testing.T) {
 			AllowLAN:   true,
 			LogLevel:   "info",
 			TunEnabled: true,
+			TunScope:   tuiTunScopeUser,
 		},
 	}
 	var output strings.Builder
 	drawTUISettings(&output, snapshot, 80, 24)
 	plain := stripTUIANSI(output.String())
 	for _, row := range []string{
-		"Mode          rule",
-		"flc           pick a node in Proxies",
-		"Proxy port    17890",
 		"Allow LAN     ON",
 		"IPv6          OFF",
+		"Unified delay",
+		"TCP concurrent",
 		"Log level     info",
-		"TUN           USER ON",
-		"Core          STOPPED · Enter to start",
-		"System proxy  DISABLED · Enter to enable (starts Core)",
+		"TUN scope     USER",
 	} {
 		if !strings.Contains(plain, row) {
 			t.Fatalf("settings view does not contain %q:\n%s", row, plain)
 		}
 	}
-	serviceIndex := strings.Index(plain, "Core          STOPPED · Enter to start")
-	systemProxyIndex := strings.Index(
-		plain,
+	for _, daily := range []string{
+		"Mode          rule",
+		"flc           pick a node in Proxies",
+		"Proxy port    17890",
+		"Core          STOPPED · Enter to start",
 		"System proxy  DISABLED · Enter to enable (starts Core)",
-	)
-	if serviceIndex < 0 || systemProxyIndex < 0 || serviceIndex >= systemProxyIndex {
-		t.Fatalf("service row must appear before system proxy:\n%s", plain)
+		"TUN           USER ON",
+	} {
+		if strings.Contains(plain, daily) {
+			t.Fatalf("settings still repeats daily control %q:\n%s", daily, plain)
+		}
 	}
 }
 
@@ -1780,16 +1782,16 @@ func TestTUISettingsServiceRowUsesEnter(t *testing.T) {
 		nil,
 		true,
 	)
-	model.snapshot.Page = tuiPageTools
+	model.snapshot.Page = tuiPageDashboard
 	model.snapshot.FocusSidebar = false
-	model.snapshot.SelectedTool = tuiSettingsServiceRow
+	model.snapshot.SelectedDashboard = tuiDashboardServiceRow
 
 	command := model.selectCurrent()
 	if command == nil {
-		t.Fatal("selecting the service row did not return a start operation")
+		t.Fatal("selecting the Dashboard Core row did not return a start operation")
 	}
 	if !model.busy {
-		t.Fatal("selecting the service row did not mark the operation busy")
+		t.Fatal("selecting the Dashboard Core row did not mark the operation busy")
 	}
 }
 
@@ -1820,16 +1822,22 @@ func TestTUISettingsRunningServiceUnlocksSystemProxy(t *testing.T) {
 		},
 	}
 	var output strings.Builder
-	drawTUISettings(&output, snapshot, 80, 24)
+	drawTUIDashboard(
+		&output,
+		snapshot,
+		cliPaths{configPath: "/tmp/config.yaml"},
+		80,
+		24,
+	)
 	plain := stripTUIANSI(output.String())
 	if !strings.Contains(plain, "Core          RUNNING · Enter to stop") {
-		t.Fatalf("running settings view has no clear service state:\n%s", plain)
+		t.Fatalf("running Dashboard has no clear service state:\n%s", plain)
 	}
 	if !strings.Contains(plain, "System proxy  DISABLED · Enter to enable") {
-		t.Fatalf("running settings view has no clear system proxy state:\n%s", plain)
+		t.Fatalf("running Dashboard has no clear system proxy state:\n%s", plain)
 	}
 	if strings.Contains(plain, "(starts Core)") {
-		t.Fatalf("running settings view kept automatic-start hint:\n%s", plain)
+		t.Fatalf("running Dashboard kept automatic-start hint:\n%s", plain)
 	}
 }
 
@@ -1994,15 +2002,25 @@ func TestTUISeparatesSettingsAndMaintenance(t *testing.T) {
 	drawTUITools(&output, snapshot, 100, 30)
 	plain := stripTUIANSI(output.String())
 	for _, expected := range []string{
-		"Mode          rule",
-		"flc           pick a node in Proxies",
-		"Proxy port    7891",
+		"Allow LAN",
+		"IPv6",
 		"Unified delay",
 		"TCP concurrent",
-		"System proxy",
+		"Log level     info",
+		"TUN scope",
 	} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("Settings does not contain %q:\n%s", expected, plain)
+		}
+	}
+	for _, daily := range []string{
+		"Mode          rule",
+		"flc           pick a node in Proxies",
+		"Proxy port    7891",
+		"System proxy",
+	} {
+		if strings.Contains(plain, daily) {
+			t.Fatalf("Settings still repeats daily control %q:\n%s", daily, plain)
 		}
 	}
 	output.Reset()
@@ -2896,11 +2914,216 @@ func TestTUIOperationRefreshesNetworkAfterExitChange(t *testing.T) {
 }
 
 func TestTUIMemoryRefreshIntervalIsOneSecond(t *testing.T) {
-	if tuiMemoryRefreshInterval != time.Second {
-		t.Fatalf("memory refresh interval = %s, want 1s", tuiMemoryRefreshInterval)
+	if tuiMemoryRefreshInterval < 2*time.Second {
+		t.Fatalf("memory refresh interval = %s, want at least 2s", tuiMemoryRefreshInterval)
 	}
-	if tuiRefreshInterval != time.Second {
-		t.Fatalf("TUI tick interval = %s, want 1s", tuiRefreshInterval)
+	if tuiRefreshInterval < 2*time.Second {
+		t.Fatalf("TUI tick interval = %s, want at least 2s", tuiRefreshInterval)
+	}
+	if tuiProgramFPS > 15 || tuiProgramFPS <= 0 {
+		t.Fatalf("TUI FPS = %d, want 1..15", tuiProgramFPS)
+	}
+}
+
+func TestTUIIdleTickSkipsHistoryLogsAndPublicIPOffThosePages(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageDashboard
+	_, command := model.Update(tuiTickMsg{})
+	if command == nil {
+		t.Fatal("Dashboard tick did not reschedule idle work")
+	}
+	if model.networkCheckActive || model.lastIdleTick.CheckNetwork {
+		t.Fatal("tick started a public-IP network check")
+	}
+	if model.lastIdleTick.FetchHistory || model.lastIdleTick.FetchLogs ||
+		model.refreshIncludesHistory || model.refreshIncludesLogs {
+		t.Fatalf(
+			"Dashboard tick started History/Logs bulk fetch: %+v history=%t logs=%t",
+			model.lastIdleTick,
+			model.refreshIncludesHistory,
+			model.refreshIncludesLogs,
+		)
+	}
+	if !model.lastIdleTick.RefreshSnapshot || !model.lastIdleTick.SampleMemory ||
+		model.lastIdleTick.PollSSH {
+		t.Fatalf("Dashboard idle plan = %+v", model.lastIdleTick)
+	}
+
+	model.refreshInFlight = false
+	model.snapshot.Page = tuiPageTools
+	_, _ = model.Update(tuiTickMsg{})
+	if model.lastIdleTick.RefreshSnapshot || model.lastIdleTick.SampleMemory ||
+		model.lastIdleTick.PollSSH || model.lastIdleTick.FetchHistory ||
+		model.lastIdleTick.FetchLogs || model.refreshIncludesHistory ||
+		model.refreshIncludesLogs || model.networkCheckActive {
+		t.Fatalf("Settings tick still did idle bulk work: %+v", model.lastIdleTick)
+	}
+}
+
+func TestTUILiveMonitorsFollowDashboardPage(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.service = newTUIServiceClientAt(t.TempDir())
+	defer model.stopTrafficMonitor()
+	defer model.stopCoreMemoryMonitor()
+	model.snapshot.Page = tuiPageDashboard
+	model.startTrafficMonitor()
+	model.startCoreMemoryMonitor()
+	if model.stopTraffic == nil || model.stopCoreMemory == nil {
+		t.Fatal("Dashboard did not start Core traffic/memory streams")
+	}
+	if !tuiPageShowsLiveCoreStats(tuiPageDashboard) {
+		t.Fatal("Dashboard is not treated as a live traffic/memory page")
+	}
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'8'}})
+	if model.snapshot.Page != tuiPageTools {
+		t.Fatalf("Settings key opened %s", tuiPageName(model.snapshot.Page))
+	}
+	if model.stopTraffic != nil || model.stopCoreMemory != nil {
+		t.Fatal("Core traffic/memory streams stayed up on Settings")
+	}
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
+	if model.snapshot.Page != tuiPageProfiles {
+		t.Fatalf("Profiles key opened %s", tuiPageName(model.snapshot.Page))
+	}
+	if model.stopTraffic != nil || model.stopCoreMemory != nil {
+		t.Fatal("Core traffic/memory streams started on Profiles")
+	}
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'9'}})
+	if model.snapshot.Page != tuiPageMaintenance {
+		t.Fatalf("Maintenance key opened %s", tuiPageName(model.snapshot.Page))
+	}
+	if model.stopTraffic != nil || model.stopCoreMemory != nil {
+		t.Fatal("Core traffic/memory streams started on Maintenance")
+	}
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	if model.snapshot.Page != tuiPageDashboard {
+		t.Fatalf("Dashboard key opened %s", tuiPageName(model.snapshot.Page))
+	}
+	if model.stopTraffic == nil || model.stopCoreMemory == nil {
+		t.Fatal("entering Dashboard did not resume Core traffic/memory streams")
+	}
+
+	model.snapshot.FocusSidebar = false
+	model.snapshot.FLCOutbound = "PROXY"
+	model.snapshot.Groups = []tuiGroup{{
+		Name:  "PROXY",
+		Now:   "hk-1",
+		Nodes: []string{"DIRECT", "hk-1"},
+	}}
+	model.snapshot.SelectedDashboard = tuiDashboardFLCOutboundRow
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if model.snapshot.Page != tuiPageProxies {
+		t.Fatalf("flc Enter opened %s", tuiPageName(model.snapshot.Page))
+	}
+	if model.stopTraffic != nil || model.stopCoreMemory != nil {
+		t.Fatal("Core traffic/memory streams stayed up after flc Enter opened Proxies")
+	}
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	if model.snapshot.Page != tuiPageDashboard ||
+		model.stopTraffic == nil || model.stopCoreMemory == nil {
+		t.Fatalf(
+			"Dashboard resume after flc = page:%s traffic:%t memory:%t",
+			tuiPageName(model.snapshot.Page),
+			model.stopTraffic != nil,
+			model.stopCoreMemory != nil,
+		)
+	}
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	if model.snapshot.Page != tuiPageProxies {
+		t.Fatalf("P opened %s", tuiPageName(model.snapshot.Page))
+	}
+	if model.stopTraffic != nil || model.stopCoreMemory != nil {
+		t.Fatal("Core traffic/memory streams stayed up after P opened Proxies")
+	}
+}
+
+func TestTUIIdleTickFetchesHistoryOnlyOnHistoryPage(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageRequests
+	_, _ = model.Update(tuiTickMsg{})
+	if !model.lastIdleTick.FetchHistory || !model.refreshIncludesHistory {
+		t.Fatalf("History tick skipped History fetch: %+v", model.lastIdleTick)
+	}
+	if model.lastIdleTick.FetchLogs || model.refreshIncludesLogs ||
+		model.lastIdleTick.CheckNetwork || model.networkCheckActive {
+		t.Fatalf("History tick started extra probes: %+v", model.lastIdleTick)
+	}
+
+	model.refreshInFlight = false
+	model.snapshot.Page = tuiPageLogs
+	_, _ = model.Update(tuiTickMsg{})
+	if !model.lastIdleTick.FetchLogs || !model.refreshIncludesLogs {
+		t.Fatalf("Logs tick skipped Logs fetch: %+v", model.lastIdleTick)
+	}
+	if model.lastIdleTick.FetchHistory || model.refreshIncludesHistory {
+		t.Fatalf("Logs tick started History bulk fetch: %+v", model.lastIdleTick)
+	}
+}
+
+func TestTUIDashboardOwnsDailyControlsAndSettingsDoesNotRepeatThem(t *testing.T) {
+	snapshot := tuiSnapshot{
+		Page: tuiPageDashboard,
+		Settings: tuiSettings{
+			Mode:       "rule",
+			MixedPort:  17890,
+			TunEnabled: true,
+			TunScope:   tuiTunScopeUser,
+		},
+	}
+	var dashboard strings.Builder
+	drawTUIDashboard(
+		&dashboard,
+		snapshot,
+		cliPaths{configPath: "/tmp/config.yaml"},
+		100,
+		26,
+	)
+	dashboardPlain := stripTUIANSI(dashboard.String())
+	for _, row := range []string{
+		"Core          STOPPED · Enter to start",
+		"Mode          rule",
+		"flc           pick a node in Proxies",
+		"Proxy port    17890",
+		"System proxy",
+		"TUN           USER ON",
+	} {
+		if !strings.Contains(dashboardPlain, row) {
+			t.Fatalf("Dashboard does not contain %q:\n%s", row, dashboardPlain)
+		}
+	}
+
+	snapshot.Page = tuiPageTools
+	var settings strings.Builder
+	drawTUITools(&settings, snapshot, 100, 30)
+	settingsPlain := stripTUIANSI(settings.String())
+	for _, daily := range []string{
+		"Core          STOPPED · Enter to start",
+		"Mode          rule",
+		"flc           pick a node in Proxies",
+		"Proxy port    17890",
+		"System proxy",
+		"TUN           USER ON",
+	} {
+		if strings.Contains(settingsPlain, daily) {
+			t.Fatalf("Settings repeats daily control %q:\n%s", daily, settingsPlain)
+		}
+	}
+	for _, row := range []string{
+		"Allow LAN",
+		"IPv6",
+		"Unified delay",
+		"Log level",
+		"TUN scope",
+	} {
+		if !strings.Contains(settingsPlain, row) {
+			t.Fatalf("Settings does not contain %q:\n%s", row, settingsPlain)
+		}
 	}
 }
 
@@ -3334,7 +3557,7 @@ func TestTUIDashboardRendersEmbeddedAndExternalMemory(t *testing.T) {
 	)
 	embeddedPlain := stripTUIANSI(embedded.String())
 	for _, expected := range []string{
-		"memory refresh 1s",
+		"memory refresh 2s",
 		"System memory 4.0 GB / 8.0 GB  50.0%",
 		"CLI + Mihomo  120.0 MB RSS · shared process",
 		"Go heap       48.0 MB",
@@ -3503,7 +3726,6 @@ func TestTUIStagesPreStartSettings(t *testing.T) {
 	}
 
 	for _, key := range []tuiKey{
-		tuiKeyTun,
 		tuiKeyAllowLAN,
 		tuiKeyIPv6,
 		tuiKeyLogLevel,
@@ -3511,6 +3733,10 @@ func TestTUIStagesPreStartSettings(t *testing.T) {
 		if command := model.handleKey(key); command != nil {
 			t.Fatalf("staging key %v unexpectedly returned an operation", key)
 		}
+	}
+	model.snapshot.Page = tuiPageDashboard
+	if command := model.handleKey(tuiKeyTun); command != nil {
+		t.Fatalf("staging key %v unexpectedly returned an operation", tuiKeyTun)
 	}
 	if command := model.changeMode("global"); command != nil {
 		t.Fatal("staging a selected mode unexpectedly returned an operation")
@@ -5022,7 +5248,7 @@ func TestTUIStoppedSettingsStayStagedWithoutBackend(t *testing.T) {
 		nil,
 		true,
 	)
-	model.snapshot.Page = tuiPageTools
+	model.snapshot.Page = tuiPageDashboard
 	model.snapshot.FocusSidebar = false
 
 	if command := model.handleKey(tuiKeyMode); command != nil {
@@ -5122,7 +5348,7 @@ rules:
 	}
 
 	model := newTUIModel(client, paths, setupParams, true)
-	model.snapshot.Page = tuiPageTools
+	model.snapshot.Page = tuiPageDashboard
 	model.snapshot.FocusSidebar = false
 	initialIPv6 := model.snapshot.Settings.IPv6
 	_ = model.handleKey(tuiKeyTun)
@@ -5136,6 +5362,7 @@ rules:
 		t.Fatalf("staging TUN occupied mixed port %d", mixedPort)
 	}
 	_ = model.handleKey(tuiKeyTun)
+	model.snapshot.Page = tuiPageTools
 	_ = model.handleKey(tuiKeyAllowLAN)
 	_ = model.handleKey(tuiKeyIPv6)
 	_ = model.changeMode("global")
@@ -5184,6 +5411,7 @@ rules:
 		t.Fatalf("service did not stop before rollback test: %s", model.snapshot.Status)
 	}
 
+	model.snapshot.Page = tuiPageDashboard
 	if command := model.handleKey(tuiKeySystemProxy); command != nil {
 		t.Fatal("unmanaged TUI scheduled a system proxy mutation")
 	}
@@ -5879,6 +6107,8 @@ func TestEnsureTUIConfigCreatesMinimalConfig(t *testing.T) {
 		"ipv6: false",
 		"unified-delay: true",
 		"tcp-concurrent: true",
+		"geodata-loader: memconservative",
+		"geodata-mode: false",
 	} {
 		if !strings.Contains(string(data), expected) {
 			t.Fatalf("generated config does not contain %q:\n%s", expected, data)

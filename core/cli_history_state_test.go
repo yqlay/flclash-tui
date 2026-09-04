@@ -5,9 +5,91 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
+
+func TestTUIHistoryCollectorIntervalIsAtLeastTwoSeconds(t *testing.T) {
+	if tuiHistoryCollectorInterval < 2*time.Second {
+		t.Fatalf(
+			"history collector interval = %s, want at least 2s",
+			tuiHistoryCollectorInterval,
+		)
+	}
+	if historyPersistenceInterval() <= 0 {
+		t.Fatal("history persist interval is not a readable duration")
+	}
+}
+
+func TestTUIHistoryPersistSkipsUnchangedFile(t *testing.T) {
+	directory := t.TempDir()
+	now := time.Now().UTC().Truncate(time.Second)
+	entries := []tuiRequest{{
+		tuiConnection: tuiConnection{
+			ID:      "connection-1",
+			Host:    "example.test",
+			Network: "tcp",
+			Chain:   "PROXY",
+		},
+		FirstSeen: now.Add(-time.Minute),
+		LastSeen:  now,
+		Active:    true,
+	}}
+	if err := saveTUIHistory(directory, entries); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newTUIServiceRuntime(
+		cliPaths{homeDir: directory, configPath: filepath.Join(directory, "config.yaml")},
+		defaultCLITestURL,
+		filepath.Join(directory, "core.sock"),
+		nil,
+		nil,
+	)
+	if err := runtime.restoreHistory(); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(directory, tuiHistoryFilename)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeSys, ok := before.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("History stat is not a linux Stat_t")
+	}
+	if err := runtime.persistHistory(false); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterSys, ok := after.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("History stat after persist is not a linux Stat_t")
+	}
+	if afterSys.Ino != beforeSys.Ino || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatal("unchanged History rewrote the on-disk file")
+	}
+
+	runtime.recordHistoryUpdate(append([]tuiRequest(nil), entries...))
+	if err := runtime.persistHistory(false); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedSys, ok := changed.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("History stat after change is not a linux Stat_t")
+	}
+	if changedSys.Ino == beforeSys.Ino && changed.ModTime().Equal(before.ModTime()) {
+		t.Fatal("changed History was not written to disk")
+	}
+}
 
 func TestTUIHistoryPersistsRestoresAndClears(t *testing.T) {
 	directory := t.TempDir()

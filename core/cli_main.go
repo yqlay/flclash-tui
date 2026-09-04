@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-const cliVersion = "0.5.25"
+const cliVersion = "0.5.26"
 
 type cliPaths struct {
 	homeDir    string
@@ -35,6 +35,7 @@ type controllerOptions struct {
 }
 
 func main() {
+	applyCLIGoMemoryPolicy()
 	program := filepath.Base(os.Args[0])
 	err := dispatchCLI(program, os.Args[1:])
 

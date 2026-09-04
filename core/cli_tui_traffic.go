@@ -35,7 +35,7 @@ func appendTUITrafficHistory(
 }
 
 func (m *tuiModel) startTrafficMonitor() {
-	if m.trafficUpdates != nil {
+	if m.stopTraffic != nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -50,6 +50,7 @@ func (m *tuiModel) stopTrafficMonitor() {
 		m.stopTraffic()
 		m.stopTraffic = nil
 	}
+	m.trafficUpdates = nil
 }
 
 func (m *tuiModel) waitTrafficUpdate() tea.Cmd {

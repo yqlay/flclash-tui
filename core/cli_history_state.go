@@ -164,6 +164,8 @@ func (r *tuiServiceRuntime) recordHistoryUpdate(entries []tuiRequest) {
 	r.mu.Unlock()
 }
 
+const tuiHistoryCollectorInterval = 2 * time.Second
+
 func historyPersistenceInterval() time.Duration {
 	return 2 * time.Second
 }

@@ -1327,10 +1327,12 @@ func collectTUIServiceHistory(
 	runtime *tuiServiceRuntime,
 	shutdown <-chan struct{},
 ) {
-	historyTicker := time.NewTicker(500 * time.Millisecond)
+	historyTicker := time.NewTicker(tuiHistoryCollectorInterval)
 	persistTicker := time.NewTicker(historyPersistenceInterval())
+	scavengeTicker := time.NewTicker(tuiCoreMemoryScavengeInterval)
 	defer historyTicker.Stop()
 	defer persistTicker.Stop()
+	defer scavengeTicker.Stop()
 	for {
 		select {
 		case <-historyTicker.C:
@@ -1342,6 +1344,8 @@ func collectTUIServiceHistory(
 				runtime.mu.RUnlock()
 				appendCLIApplicationLog(homeDir, "ERROR", "history_save", err.Error())
 			}
+		case <-scavengeTicker.C:
+			handleForceGC()
 		case <-shutdown:
 			return
 		}

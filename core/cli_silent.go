@@ -267,6 +267,8 @@ func writeTUISilentRuntimeConfig(
 	setTUIYAMLScalar(root, "external-ui-url", "", "!!str")
 	setTUIYAMLScalar(root, "external-doh-server", "", "!!str")
 	setTUIYAMLScalar(root, "geo-auto-update", "false", "!!bool")
+	setTUIYAMLScalar(root, "geodata-loader", "memconservative", "!!str")
+	setTUIYAMLScalar(root, "geodata-mode", "false", "!!bool")
 
 	tun := ensureTUIYAMLMapping(root, "tun")
 	setTUIYAMLScalar(tun, "enable", "false", "!!bool")

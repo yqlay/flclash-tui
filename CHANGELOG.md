@@ -1,3 +1,10 @@
+## FlClash TUI v0.5.26
+
+- Cut idle cost without dropping daily flows: TUI ticks every 2s at 15 FPS, History/Logs bulk-fetch only on those pages, and Core `/traffic` and `/memory` streams run only on Dashboard (including leaving via flc Enter or `P`).
+- Slow Backend History collection to 2s, skip rewriting the History file when nothing changed, and keep save/restore/clear plus `0600` permissions.
+- Cap the managed Core Go heap at 512MiB unless `GOMEMLIMIT` is set, return unused memory after config load, and use the memconservative Geo loader at runtime without rewriting existing user YAML.
+- Keep Dashboard as the daily Core/mode/flc/port/TUN/system-proxy surface; Settings keeps Allow LAN, IPv6, delay, log, and TUN scope. `q` still exits the TUI only; Ctrl+C remains a full exit.
+
 ## FlClash TUI v0.5.25
 
 - Keep SSH independent of the proxy Backend: `flclash backend stop` ends Backend and Core only; use `flclash ssh disconnect` or `flclash exit` to tear down tunnels, and document that split in CLI help and the READMEs.

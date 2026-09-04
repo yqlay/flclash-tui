@@ -25,7 +25,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const tuiRefreshInterval = time.Second
+const (
+	tuiRefreshInterval = 2 * time.Second
+	tuiProgramFPS      = 15
+)
 
 const (
 	tuiSubscriptionUserAgent = "mihomo"
@@ -33,6 +36,35 @@ const (
 )
 
 type tuiTickMsg time.Time
+
+// tuiIdleTickPlan is the work a periodic tick may start. Public-IP / delay /
+// speed probes are never part of a tick; they stay user- or event-triggered.
+type tuiIdleTickPlan struct {
+	RefreshSnapshot bool
+	FetchHistory    bool
+	FetchLogs       bool
+	SampleMemory    bool
+	PollSSH         bool
+	CheckNetwork    bool
+}
+
+func tuiIdleTickPlanFor(page tuiPage) tuiIdleTickPlan {
+	switch page {
+	case tuiPageDashboard:
+		return tuiIdleTickPlan{RefreshSnapshot: true, SampleMemory: true}
+	case tuiPageProxies, tuiPageConnections:
+		return tuiIdleTickPlan{RefreshSnapshot: true}
+	case tuiPageRequests:
+		return tuiIdleTickPlan{RefreshSnapshot: true, FetchHistory: true}
+	case tuiPageLogs:
+		return tuiIdleTickPlan{RefreshSnapshot: true, FetchLogs: true}
+	case tuiPageSSH:
+		return tuiIdleTickPlan{PollSSH: true}
+	default:
+		return tuiIdleTickPlan{}
+	}
+}
+
 type tuiInterruptSignalMsg struct{}
 type tuiTerminalExitSignalMsg struct{}
 
@@ -224,6 +256,9 @@ type tuiModel struct {
 	height                   int
 	refreshSequence          uint64
 	refreshInFlight          bool
+	refreshIncludesHistory   bool
+	refreshIncludesLogs      bool
+	lastIdleTick             tuiIdleTickPlan
 	busy                     bool
 	inputMode                tuiInputMode
 	inputValue               []rune
@@ -405,8 +440,6 @@ func runTUI(
 			message: startupNotice,
 		})
 	}
-	model.startCoreMemoryMonitor()
-	model.startTrafficMonitor()
 	defer model.stopCoreMemoryMonitor()
 	defer model.stopTrafficMonitor()
 	terminalEOF := make(chan struct{}, 1)
@@ -472,21 +505,50 @@ func (m *tuiModel) reconcileStoppedCoreState() {
 func tuiProgramOptions() []tea.ProgramOption {
 	return []tea.ProgramOption{
 		tea.WithAltScreen(),
-		tea.WithFPS(30),
+		tea.WithFPS(tuiProgramFPS),
 		tea.WithoutSignalHandler(),
 	}
 }
 
+func tuiPageShowsLiveCoreStats(page tuiPage) bool {
+	return page == tuiPageDashboard
+}
+
+func (m *tuiModel) syncLiveMonitors() []tea.Cmd {
+	if !tuiPageShowsLiveCoreStats(m.snapshot.Page) {
+		m.stopTrafficMonitor()
+		m.stopCoreMemoryMonitor()
+		return nil
+	}
+	startedTraffic := m.stopTraffic == nil
+	startedMemory := m.stopCoreMemory == nil
+	m.startTrafficMonitor()
+	m.startCoreMemoryMonitor()
+	var cmds []tea.Cmd
+	if startedTraffic && m.stopTraffic != nil {
+		cmds = append(cmds, m.waitTrafficUpdate())
+	}
+	if startedMemory && m.stopCoreMemory != nil {
+		cmds = append(cmds, m.waitCoreMemoryUpdate())
+	}
+	return cmds
+}
+
+func (m *tuiModel) changeVisiblePage(page tuiPage) []tea.Cmd {
+	m.snapshot.Page = page
+	return m.syncLiveMonitors()
+}
+
 func (m *tuiModel) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		tuiTickCommand(),
 		m.startRefresh(),
 		m.startNetworkCheck(),
 		m.startMemoryRefresh(),
-		m.waitCoreMemoryUpdate(),
-		m.waitTrafficUpdate(),
 		m.waitServiceUpdate(),
-	)
+	}
+	cmds = append(cmds, m.syncLiveMonitors()...)
+	return tea.Batch(cmds...)
 }
 
 func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -496,12 +558,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = message.Height
 		return m, nil
 	case tuiTickMsg:
-		return m, tea.Batch(
-			tuiTickCommand(),
-			m.startRefresh(),
-			m.startMemoryRefresh(),
-			m.pollSelectedSSHRelay(),
-		)
+		return m, m.idleTickCommand()
 	case tuiInterruptSignalMsg:
 		return m, m.handleKey(tuiKeyInterrupt)
 	case tuiTerminalExitSignalMsg:
@@ -569,7 +626,6 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tuiCoreMemoryMsg:
 		if message.update.Closed {
-			m.coreMemoryUpdates = nil
 			return m, nil
 		}
 		m.snapshot.Memory.ExternalCore = !m.ownsCore
@@ -584,7 +640,6 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.waitCoreMemoryUpdate()
 	case tuiTrafficMsg:
 		if message.update.Closed {
-			m.trafficUpdates = nil
 			return m, nil
 		}
 		m.snapshot.Traffic = message.update.Traffic
@@ -969,11 +1024,17 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 	}
 	previousPage := m.snapshot.Page
 	if handleTUIFocusNavigation(&m.snapshot, key) {
+		var cmds []tea.Cmd
 		if previousPage != tuiPageSSH && m.snapshot.Page == tuiPageSSH {
 			m.resetSelectedSSHMetrics()
-			return m.refreshSelectedSSHDashboard()
+			cmds = append(cmds, m.refreshSelectedSSHDashboard())
 		}
-		return nil
+		if previousPage != m.snapshot.Page {
+			m.refreshInFlight = false
+			cmds = append(cmds, m.syncLiveMonitors()...)
+			cmds = append(cmds, m.startRefresh())
+		}
+		return tea.Batch(cmds...)
 	}
 	if m.busy && !tuiKeyAllowedWhileBusy(key) {
 		m.snapshot.Status = "Operation in progress; navigation remains available"
@@ -1207,6 +1268,26 @@ func tuiTickCommand() tea.Cmd {
 	})
 }
 
+func (m *tuiModel) idleTickCommand() tea.Cmd {
+	plan := tuiIdleTickPlanFor(m.snapshot.Page)
+	m.lastIdleTick = plan
+	if !plan.RefreshSnapshot && !plan.FetchHistory && !plan.FetchLogs {
+		m.refreshIncludesHistory = false
+		m.refreshIncludesLogs = false
+	}
+	cmds := []tea.Cmd{tuiTickCommand()}
+	if plan.RefreshSnapshot || plan.FetchHistory || plan.FetchLogs {
+		cmds = append(cmds, m.startRefresh())
+	}
+	if plan.SampleMemory {
+		cmds = append(cmds, m.startMemoryRefresh())
+	}
+	if plan.PollSSH {
+		cmds = append(cmds, m.pollSelectedSSHRelay())
+	}
+	return tea.Batch(cmds...)
+}
+
 func (m *tuiModel) waitServiceUpdate() tea.Cmd {
 	if m.service == nil {
 		return nil
@@ -1226,12 +1307,17 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 	m.refreshInFlight = true
 	m.refreshSequence++
 	sequence := m.refreshSequence
+	scope := tuiIdleTickPlanFor(m.snapshot.Page)
+	m.refreshIncludesHistory = scope.FetchHistory
+	m.refreshIncludesLogs = scope.FetchLogs
 	snapshot := m.snapshot
 	clearTUITransientRefreshStatus(&snapshot)
 	previousLogs := append([]string(nil), m.snapshot.Logs...)
 	client := m.client
 	paths := m.paths
 	service := m.service
+	fetchHistory := scope.FetchHistory
+	fetchLogs := scope.FetchLogs
 	return func() tea.Msg {
 		refreshTUISnapshot(&snapshot, client)
 		refreshTUIProfiles(&snapshot, paths)
@@ -1239,22 +1325,28 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 		snapshot.Frontends, _ = listCLIFrontends()
 		refreshIssues := make([]string, 0, 2)
 		var serviceStatus *tuiServiceStatus
-		if service != nil {
+		if service != nil && fetchHistory {
 			if status, err := service.history(); err == nil {
 				serviceStatus = &status
 				snapshot.Requests = append([]tuiRequest(nil), status.History...)
 			} else {
 				refreshIssues = append(refreshIssues, "History: "+err.Error())
 			}
-			if status, err := service.logs(1000); err == nil {
-				localLogs := cliLogSnapshot()
-				snapshot.Logs = append(append([]string(nil), status.Logs...), localLogs...)
-				if len(snapshot.Logs) > 1500 {
-					snapshot.Logs = snapshot.Logs[len(snapshot.Logs)-1500:]
+		}
+		if fetchLogs {
+			if service != nil {
+				if status, err := service.logs(1000); err == nil {
+					localLogs := cliLogSnapshot()
+					snapshot.Logs = append(append([]string(nil), status.Logs...), localLogs...)
+					if len(snapshot.Logs) > 1500 {
+						snapshot.Logs = snapshot.Logs[len(snapshot.Logs)-1500:]
+					}
+				} else {
+					snapshot.Logs = previousLogs
+					refreshIssues = append(refreshIssues, "Logs: "+err.Error())
 				}
 			} else {
-				snapshot.Logs = previousLogs
-				refreshIssues = append(refreshIssues, "Logs: "+err.Error())
+				snapshot.Logs = cliLogSnapshot()
 			}
 		}
 		if len(refreshIssues) > 0 && (snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Loading...") {
@@ -1947,12 +2039,13 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			return m.updateSelectedProfileSubscription()
 		}
 	case tuiKeyProviders:
-		m.snapshot.Page = tuiPageProxies
+		cmds := m.changeVisiblePage(tuiPageProxies)
 		m.snapshot.SelectedMenu = int(tuiPageProxies)
 		m.snapshot.FocusSidebar = false
 		m.snapshot.ProxyView = tuiProxyViewProviders
 		m.snapshot.ProxyNodeFocus = false
 		m.snapshot.Status = "Providers view · Enter updates the selected provider"
+		return tea.Batch(cmds...)
 	case tuiKeyBackup:
 		if m.snapshot.Page == tuiPageMaintenance {
 			return m.runTool(1)
@@ -2054,7 +2147,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeySelect:
 		return m.selectCurrent()
 	case tuiKeyPortUp, tuiKeyPortDown:
-		if m.snapshot.Page == tuiPageDashboard || m.snapshot.Page == tuiPageTools {
+		if m.snapshot.Page == tuiPageDashboard {
 			if m.service == nil && m.ownsCore && !m.coreRunning {
 				m.stageTUIAdjustedPort(key)
 				return nil
@@ -2064,13 +2157,14 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			})
 		}
 	case tuiKeyMode:
-		if m.snapshot.Page == tuiPageDashboard || m.snapshot.Page == tuiPageTools {
+		if m.snapshot.Page == tuiPageDashboard {
 			m.beginModeSelection()
 		}
 	case tuiKeyAllowLAN, tuiKeyIPv6, tuiKeyUnifiedDelay, tuiKeyTCPConcurrent,
 		tuiKeyTun, tuiKeyLogLevel:
-		if m.snapshot.Page == tuiPageTools ||
-			(m.snapshot.Page == tuiPageDashboard && key == tuiKeyTun) {
+		settingsKey := m.snapshot.Page == tuiPageTools && key != tuiKeyTun
+		dashboardTun := m.snapshot.Page == tuiPageDashboard && key == tuiKeyTun
+		if settingsKey || dashboardTun {
 			if m.service == nil && m.ownsCore && !m.coreRunning {
 				m.stageTUISetting(key)
 				return nil
@@ -2086,11 +2180,11 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			})
 		}
 	case tuiKeySetPort:
-		if m.snapshot.Page == tuiPageDashboard || m.snapshot.Page == tuiPageTools {
+		if m.snapshot.Page == tuiPageDashboard {
 			m.beginInput(tuiInputMixedPort)
 		}
 	case tuiKeySystemProxy:
-		if m.snapshot.Page == tuiPageDashboard || m.snapshot.Page == tuiPageTools {
+		if m.snapshot.Page == tuiPageDashboard {
 			if m.service == nil {
 				m.snapshot.Status = "System proxy changes require the managed backend"
 				return nil
@@ -3114,7 +3208,7 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 }
 
 func (m *tuiModel) openProxiesForFLCOutbound() tea.Cmd {
-	m.snapshot.Page = tuiPageProxies
+	cmds := m.changeVisiblePage(tuiPageProxies)
 	m.snapshot.SelectedMenu = int(tuiPageProxies)
 	m.snapshot.FocusSidebar = false
 	m.snapshot.ProxyView = tuiProxyViewGroups
@@ -3128,11 +3222,11 @@ func (m *tuiModel) openProxiesForFLCOutbound() tea.Cmd {
 		m.snapshot.ProxyNodeFocus = true
 		m.snapshot.SelectedNode = findTUIString(group.Nodes, group.Now)
 		m.snapshot.Status = "flc uses " + group.Name + " · select a node"
-		return nil
+		return tea.Batch(cmds...)
 	}
 	m.snapshot.ProxyNodeFocus = false
 	m.snapshot.Status = "Select a proxy node; flc follows that group"
-	return nil
+	return tea.Batch(cmds...)
 }
 
 func selectTUIServiceProxy(
@@ -3218,12 +3312,6 @@ func switchTUIServiceProfile(
 
 func (m *tuiModel) selectTUISetting(index int) tea.Cmd {
 	switch index {
-	case tuiSettingsModeRow:
-		return m.handleKey(tuiKeyMode)
-	case tuiSettingsFLCOutboundRow:
-		return m.openProxiesForFLCOutbound()
-	case tuiSettingsMixedPortRow:
-		m.beginInput(tuiInputMixedPort)
 	case tuiSettingsAllowLANRow:
 		return m.handleKey(tuiKeyAllowLAN)
 	case tuiSettingsIPv6Row:
@@ -3236,12 +3324,6 @@ func (m *tuiModel) selectTUISetting(index int) tea.Cmd {
 		return m.handleKey(tuiKeyLogLevel)
 	case tuiSettingsTunScopeRow:
 		return m.handleKey(tuiKeyTunScope)
-	case tuiSettingsTunRow:
-		return m.handleKey(tuiKeyTun)
-	case tuiSettingsServiceRow:
-		return m.handleKey(tuiKeyCoreToggle)
-	case tuiSettingsSystemProxyRow:
-		return m.handleKey(tuiKeySystemProxy)
 	}
 	return nil
 }
