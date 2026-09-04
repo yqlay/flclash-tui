@@ -1,3 +1,7 @@
+## FlClash TUI v0.5.27
+
+- Keep Dashboard/Proxies/Connections refreshes on Backend `status` so silent mode, SYSTEM TUN lock, and the `flc` READY/WAITING suffix are not replaced by the Core's silent runtime `mode: rule` overlay.
+
 ## FlClash TUI v0.5.26
 
 - Cut idle cost without dropping daily flows: TUI ticks every 2s at 15 FPS, History/Logs bulk-fetch only on those pages, and Core `/traffic` and `/memory` streams run only on Dashboard (including leaving via flc Enter or `P`).

@@ -3777,6 +3777,146 @@ func TestTUIStagesPreStartSettings(t *testing.T) {
 	}
 }
 
+func TestTUIDashboardRefreshKeepsSilentTUNAndFLCOverlay(t *testing.T) {
+	directory := t.TempDir()
+	socketPath := filepath.Join(directory, tuiServiceSocketFilename)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	actions := make(chan string, 8)
+	go func() {
+		for {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			var request tuiServiceRequest
+			if decodeErr := json.NewDecoder(connection).Decode(&request); decodeErr != nil {
+				_ = connection.Close()
+				continue
+			}
+			select {
+			case actions <- request.Action:
+			default:
+			}
+			_ = json.NewEncoder(connection).Encode(tuiServiceStatus{
+				ProtocolVersion:     tuiServiceProtocolVersion,
+				RequestID:           request.RequestID,
+				Revision:            3,
+				OK:                  true,
+				Running:             true,
+				Mode:                tuiSilentMode,
+				ProxyPort:           17890,
+				ConfiguredProxyPort: 17890,
+				ActiveProxyPort:     17890,
+				TunState:            "off",
+				TunScope:            tuiTunScopeSystem,
+				FLCEnabled:          true,
+				FLCOutbound:         "PROXY",
+			})
+			_ = connection.Close()
+		}
+	}()
+
+	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/proxies":
+			_, _ = io.WriteString(w, `{"proxies":{"PROXY":{"type":"Selector","now":"hk-1","all":["DIRECT","hk-1"]}}}`)
+		case "/connections":
+			_, _ = io.WriteString(w, `{"connections":[]}`)
+		case "/configs":
+			_, _ = io.WriteString(w, `{
+				"mode":"rule",
+				"mixed-port":17890,
+				"allow-lan":false,
+				"ipv6":false,
+				"unified-delay":true,
+				"tcp-concurrent":true,
+				"log-level":"info",
+				"tun":{"enable":true}
+			}`)
+		case "/providers/proxies":
+			_, _ = io.WriteString(w, `{"providers":{}}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer controller.Close()
+
+	model := newTUIModel(
+		controllerClient{
+			options: controllerOptions{address: controller.URL},
+			client:  controller.Client(),
+		},
+		cliPaths{},
+		nil,
+		true,
+	)
+	model.service = newTUIServiceClientAt(directory)
+	model.coreRunning = true
+	model.snapshot.Page = tuiPageDashboard
+	model.snapshot.Settings = tuiSettings{
+		Mode:       tuiSilentMode,
+		MixedPort:  17890,
+		TunEnabled: false,
+		TunScope:   tuiTunScopeSystem,
+	}
+	model.snapshot.FLCEnabled = true
+	model.snapshot.FLCOutbound = "PROXY"
+	model.snapshot.Groups = []tuiGroup{{
+		Name:  "PROXY",
+		Now:   "hk-1",
+		Nodes: []string{"DIRECT", "hk-1"},
+	}}
+
+	refresh := model.startRefresh()
+	if refresh == nil {
+		t.Fatal("Dashboard refresh did not start")
+	}
+	if model.refreshIncludesHistory || model.refreshIncludesLogs {
+		t.Fatalf(
+			"Dashboard refresh scheduled History/Logs bulk fetch: history=%t logs=%t",
+			model.refreshIncludesHistory,
+			model.refreshIncludesLogs,
+		)
+	}
+	_, _ = model.Update(refresh())
+
+	if model.snapshot.Settings.Mode != tuiSilentMode {
+		t.Fatalf("Dashboard refresh dropped silent mode: %+v", model.snapshot.Settings)
+	}
+	if model.snapshot.Settings.TunEnabled ||
+		model.snapshot.Settings.TunScope != tuiTunScopeSystem {
+		t.Fatalf("Dashboard refresh dropped SYSTEM TUN overlay: %+v", model.snapshot.Settings)
+	}
+	if label := tuiTUNLabel(model.snapshot); label != "OFF · locked by silent mode" {
+		t.Fatalf("TUN label = %q", label)
+	}
+	if label := tuiFLCOutboundLabel(model.snapshot); !strings.Contains(label, "READY") &&
+		!strings.Contains(label, "WAITING FOR CORE") {
+		t.Fatalf("flc lost silent suffix: %q", label)
+	}
+	if !strings.Contains(tuiFLCOutboundLabel(model.snapshot), "PROXY") {
+		t.Fatalf("flc outbound was lost: %q", tuiFLCOutboundLabel(model.snapshot))
+	}
+
+	select {
+	case action := <-actions:
+		if action != "status" {
+			t.Fatalf("Dashboard refresh called %q, want status", action)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Dashboard refresh did not call Backend status")
+	}
+	select {
+	case action := <-actions:
+		t.Fatalf("Dashboard refresh made extra Backend call %q", action)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestTUIStoppedRefreshKeepsBackendModeAndTunState(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.stagedSettings = &tuiSettings{

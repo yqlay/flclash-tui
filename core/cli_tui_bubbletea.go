@@ -1325,12 +1325,18 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 		snapshot.Frontends, _ = listCLIFrontends()
 		refreshIssues := make([]string, 0, 2)
 		var serviceStatus *tuiServiceStatus
-		if service != nil && fetchHistory {
-			if status, err := service.history(); err == nil {
+		if service != nil {
+			if status, err := service.status(); err == nil {
 				serviceStatus = &status
-				snapshot.Requests = append([]tuiRequest(nil), status.History...)
 			} else {
-				refreshIssues = append(refreshIssues, "History: "+err.Error())
+				refreshIssues = append(refreshIssues, "Status: "+err.Error())
+			}
+			if fetchHistory {
+				if status, err := service.history(); err == nil {
+					snapshot.Requests = append([]tuiRequest(nil), status.History...)
+				} else {
+					refreshIssues = append(refreshIssues, "History: "+err.Error())
+				}
 			}
 		}
 		if fetchLogs {
