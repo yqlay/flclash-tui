@@ -10,21 +10,15 @@ A Mihomo terminal manager for Linux, SSH, and headless hosts. Run `flclash` for 
 
 ## Can't run Codex / Claude on headless Linux? One `flc` is enough
 
-On many networks, installing Codex or even running `codex` directly just fails:
+On many networks, installing Codex or even running `codex` directly just fails.
+
+That looks like this:
 
 <p align="center">
-  <img src="readme-assets/codex-cannot-connect.png" alt="Codex failing to connect without a proxy" width="920">
+  <img src="readme-assets/photo-1.png" alt="Codex failing to connect without a proxy" width="920">
 </p>
 
 Hand-writing proxy env vars is messy. FlClash TUI's path for headless Linux is direct: import a subscription, pick a node, then start the command with `flc`.
-
-<p align="center">
-  <img src="readme-assets/tui-dashboard.png" alt="FlClash TUI Dashboard in silent mode with flc ready" width="920">
-</p>
-
-<p align="center">
-  <img src="readme-assets/tui-proxies.png" alt="FlClash TUI Proxies page selecting the flc exit node" width="920">
-</p>
 
 ## Who it is for
 
@@ -34,8 +28,6 @@ Hand-writing proxy env vars is messy. FlClash TUI's path for headless Linux is d
 - Failing closed when the listener, Core, or node is down, instead of silently going direct.
 
 ## Step 1: Install before you have a proxy
-
-If GitHub is reachable:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh | bash
@@ -51,22 +43,52 @@ If GitHub is unstable, download the matching `.deb` or `.tar.gz` from [Releases]
 
 ## Step 2: Import a subscription and pick a node
 
-Run `flclash` to open the TUI. In **Profiles**, import a subscription URL or local file, select it, and press Enter to activate. Then in **Proxies** pick a group and node. Dashboard should stay on `silent` (it will not hijack other programs). Focus **Core** and press Enter to start it. Other modes also need **System proxy**.
+Run `flclash` to open the TUI. In **Profiles**, import a subscription URL or local file, select it, and press Enter to activate. Then in **Proxies** pick a group and node (press `d` to test delay). Dashboard should stay on `silent` so other programs are left alone. Focus **Core** and press Enter to start it. Other modes also need **System proxy**.
 
-## Step 3: Choose the node `flc` should use
+<p align="center">
+  <img src="readme-assets/photo-3.png" alt="Start Core in silent mode" width="920">
+</p>
 
-Headless hosts default to `silent`: system proxy and TUN stay off, and only commands you wrap with `flc` go through the proxy. The group selected in Proxies is the `flc` exit.
+<p align="center">
+  <img src="readme-assets/photo-2.png" alt="Dashboard in silent mode with Core running" width="920">
+</p>
+
+Headless hosts default to `silent`: system proxy and TUN stay off, and only commands you prefix with `flc` use the proxy.
+
+```bash
+flc example_command
+```
+
+If the command needs sudo:
+
+```bash
+flc sudo -E example_command
+```
+
+`-E` keeps the proxy environment variables under sudo.
 
 Silent mode uses an authenticated private loopback listener. You do not need to expose a port on the LAN or the public internet. If the listener, Core, or node is down, `flc` errors and refuses to run instead of sending the command out direct.
 
-## Step 4: Run Codex or Claude
+## Step 3: Run Codex or Claude
 
 ```bash
 flc codex
 flc claude
 ```
 
-These two commands set uppercase and lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` for the Codex / Claude child process only. The same wrapper works for ordinary tools:
+After `flc codex` connects:
+
+<p align="center">
+  <img src="readme-assets/photo-4.png" alt="flc codex connected successfully" width="920">
+</p>
+
+The Dashboard traffic graph updates, and **Connections** shows the proxied sessions:
+
+<p align="center">
+  <img src="readme-assets/photo-5.png" alt="Connections page showing proxied sessions" width="920">
+</p>
+
+`flc COMMAND` sets uppercase and lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` for that command only (and for children of `flc bash`). The same wrapper works for ordinary tools:
 
 ```bash
 flc git clone https://github.com/owner/repository.git
@@ -94,7 +116,9 @@ Leave the shell and the environment variables disappear. Other shells, system se
 flclash exit    # stop this user's frontends, Backend, Core, and SSH
 ```
 
-No proxied shell environment is left behind. Next time, run `flc codex` or `flc claude` again.
+Or open the TUI with `flclash` and press `Ctrl+C`.
+
+No proxied shell environment is left behind. Next time, start `flclash` again, then run `flc codex` or `flc claude`.
 
 Press `q` in the TUI, or close that terminal, to leave only the current frontend. Backend stays up, so `flc` still works.
 
@@ -105,10 +129,6 @@ To send ordinary apps such as a browser through the proxy, switch Dashboard mode
 ## SSH proxy
 
 Run FlClash only on the machine whose traffic needs proxying, and use another already-online host as the SSH peer. `flc ssh COMMAND` then leaves through that host's network. The local machine does not open a public proxy port; the peer only needs SSH.
-
-<p align="center">
-  <img src="readme-assets/tui-ssh.png" alt="FlClash TUI SSH page with a connected, observable tunnel" width="920">
-</p>
 
 ```bash
 flclash ssh import                 # import Host entries from ~/.ssh/config
