@@ -8,11 +8,11 @@
 
 A Mihomo terminal manager for Linux, SSH, and headless hosts. Run `flclash` for the full-screen TUI. The default mode is **silent**: only `flc COMMAND` uses the proxy.
 
-On headless Linux, Codex / Claude often cannot connect until they go through a proxy:
+When Codex / Claude cannot connect on headless Linux, import a subscription, pick a node in Proxies, then run `flc codex`:
 
-![Codex failing to connect without a proxy](readme-assets/codex-unproxied.png)
-
-Import a subscription, pick a node in Proxies, then start those commands with `flc`.
+<p align="center">
+  <img src="readme-assets/codex-cannot-connect.png" alt="Codex failing to connect without a proxy" width="920">
+</p>
 
 ## Who it is for
 
