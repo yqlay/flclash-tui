@@ -8,6 +8,12 @@
 
 Linux / SSH / 无头机上的 Mihomo 终端管理器。运行 `flclash` 打开全屏 TUI；默认 **silent**，只有 `flc COMMAND` 走代理。
 
+无头 Linux 上 Codex / Claude 经常直接连不上：
+
+![Codex 在没有代理时无法连接](docs/readme/codex-unproxied.png)
+
+导入订阅、在 Proxies 选节点，然后用 `flc` 启动这些命令即可。
+
 ## 适合谁
 
 - 远程 Linux、云主机、实验室机器或 WSL，已经有订阅或本地配置；
