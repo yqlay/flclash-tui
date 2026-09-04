@@ -10,7 +10,7 @@ A Mihomo terminal manager for Linux, SSH, and headless hosts. Run `flclash` for 
 
 On headless Linux, Codex / Claude often cannot connect until they go through a proxy:
 
-![Codex failing to connect without a proxy](docs/readme/codex-unproxied.png)
+![Codex failing to connect without a proxy](readme-assets/codex-unproxied.png)
 
 Import a subscription, pick a node in Proxies, then start those commands with `flc`.
 
