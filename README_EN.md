@@ -8,13 +8,15 @@
 
 A Mihomo terminal manager for Linux, SSH, and headless hosts. Run `flclash` for the full-screen TUI. The default mode is **silent**: only `flc COMMAND` uses the proxy.
 
-When Codex / Claude cannot connect on headless Linux, import a subscription, pick a node in Proxies, then run `flc codex`:
+## Can't run Codex / Claude on headless Linux? One `flc` is enough
+
+On many networks, installing Codex or even running `codex` directly just fails:
 
 <p align="center">
   <img src="readme-assets/codex-cannot-connect.png" alt="Codex failing to connect without a proxy" width="920">
 </p>
 
-Run `flclash` for the TUI. Default mode is **silent**: after Core starts, only `flc` uses the proxy, and the selected Proxies group is the exit.
+Hand-writing proxy env vars is messy. FlClash TUI's path for headless Linux is direct: import a subscription, pick a node, then start the command with `flc`.
 
 <p align="center">
   <img src="readme-assets/tui-dashboard.png" alt="FlClash TUI Dashboard in silent mode with flc ready" width="920">
@@ -26,14 +28,14 @@ Run `flclash` for the TUI. Default mode is **silent**: after Core starts, only `
 
 ## Who it is for
 
-- Remote Linux, cloud VMs, lab machines, or WSL, with a subscription or local profile already in hand;
+- Remote Linux, cloud VMs, lab machines, or WSL, with a subscription already in hand;
 - Proxying only chosen commands such as Codex, Claude, git, or npm;
-- Leaving other services, containers, and existing SSH sessions on the direct path;
+- Leaving other services, containers, and SSH sessions on the machine alone;
 - Failing closed when the listener, Core, or node is down, instead of silently going direct.
 
-## Install
+## Step 1: Install before you have a proxy
 
-The installer detects AMD64/ARM64 and selects a Debian or portable package:
+If GitHub is reachable:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh | bash
@@ -45,32 +47,54 @@ Force a portable installation:
 curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh | bash -s -- --method portable
 ```
 
-If GitHub is unreachable, download the matching `.deb` or `.tar.gz` from [Releases](https://github.com/yqlay/flclash-tui/releases) and copy it onto the machine. Do not pin a version string; always use the latest Release.
+If GitHub is unstable, download the matching `.deb` or `.tar.gz` from [Releases](https://github.com/yqlay/flclash-tui/releases), copy it over, then `sudo dpkg -i`. Do not pin a version string; always use the latest Release.
 
-## Fastest path
+## Step 2: Import a subscription and pick a node
 
-1. Run `flclash` to open the TUI.
-2. In **Profiles**, import a subscription URL or local file, then press Enter to activate it.
-3. In **Proxies**, pick a group and node. That group is the `flc` exit.
-4. Keep **silent** on the Dashboard, focus **Core**, and press Enter to start it. Do not enable System proxy.
-5. In another terminal, run the commands that need the proxy:
+Run `flclash` to open the TUI. In **Profiles**, import a subscription URL or local file, select it, and press Enter to activate. Then in **Proxies** pick a group and node. Dashboard should stay on `silent` (it will not hijack other programs). Focus **Core** and press Enter to start it. Other modes also need **System proxy**.
+
+## Step 3: Choose the node `flc` should use
+
+Headless hosts default to `silent`: system proxy and TUN stay off, and only commands you wrap with `flc` go through the proxy. The group selected in Proxies is the `flc` exit.
+
+Silent mode uses an authenticated private loopback listener. You do not need to expose a port on the LAN or the public internet. If the listener, Core, or node is down, `flc` errors and refuses to run instead of sending the command out direct.
+
+## Step 4: Run Codex or Claude
 
 ```bash
 flc codex
 flc claude
+```
+
+These two commands set uppercase and lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` for the Codex / Claude child process only. The same wrapper works for ordinary tools:
+
+```bash
 flc git clone https://github.com/owner/repository.git
 flc npm install
 flc curl https://example.com
-flc bash    # child commands inherit the proxy; leaving the shell drops it
+flc sh -c 'git fetch --all && npm ci'
 ```
 
-`flc` injects uppercase and lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` into that command only (and into children of `flc bash`). Silent mode uses an authenticated private loopback listener and does not expose a port on the LAN or the public internet. If the listener, Core, or node is unavailable, `flc` errors and refuses to run instead of going direct.
+To run several commands in a row without repeating `flc`, open a proxied shell:
 
-6. When finished:
+```bash
+flc bash
+
+# child commands inside this shell inherit the proxy
+codex
+claude
+git push
+```
+
+Leave the shell and the environment variables disappear. Other shells, system services, Docker containers, and existing connections for this user are untouched.
+
+## When you are done
 
 ```bash
 flclash exit    # stop this user's frontends, Backend, Core, and SSH
 ```
+
+No proxied shell environment is left behind. Next time, run `flc codex` or `flc claude` again.
 
 Press `q` in the TUI, or close that terminal, to leave only the current frontend. Backend stays up, so `flc` still works.
 

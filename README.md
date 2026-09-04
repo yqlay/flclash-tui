@@ -8,13 +8,15 @@
 
 Linux / SSH / 无头机上的 Mihomo 终端管理器。运行 `flclash` 打开全屏 TUI；默认 **silent**，只有 `flc COMMAND` 走代理。
 
-无头 Linux 用不了 Codex / Claude 时，导入订阅、在 Proxies 选节点，然后 `flc codex`：
+## 无头 Linux 用不了 Codex / Claude？一条 `flc` 就够了
+
+在国内的网络环境里，我们基本上是无法直接安装 Codex，也很难直接使用 `codex` 的：
 
 <p align="center">
   <img src="readme-assets/codex-cannot-connect.png" alt="Codex 在没有代理时无法连接" width="920">
 </p>
 
-运行 `flclash` 打开 TUI。默认 **silent**：Core 启动后，只有 `flc` 走代理；Proxies 里选中的组就是出口。
+手动敲代理命令扯东扯西很麻烦。FlClash TUI 给无头 Linux 的方案很直接：正常导入订阅、选择节点，然后用 `flc` 启动。
 
 <p align="center">
   <img src="readme-assets/tui-dashboard.png" alt="FlClash TUI Dashboard，silent 模式下 flc 已就绪" width="920">
@@ -24,16 +26,16 @@ Linux / SSH / 无头机上的 Mihomo 终端管理器。运行 `flclash` 打开�
   <img src="readme-assets/tui-proxies.png" alt="FlClash TUI Proxies，选择 flc 出口节点" width="920">
 </p>
 
-## 适合谁
+## 适合什么场景
 
-- 远程 Linux、云主机、实验室机器或 WSL，已经有订阅或本地配置；
-- 只要 Codex、Claude、Git、npm 等**指定命令**走代理；
-- 不想让其他服务、容器、已有 SSH 会话被全局代理带走；
-- 代理入口、Core 或节点不可用时要明确失败，而不是静默直连。
+- 远程 Linux、云服务器、实验室主机或 WSL 上已经有订阅；
+- 只希望 Codex、Claude、Git、npm 等指定命令走代理；
+- 不希望机器上的其他服务、容器、SSH 会话被全局代理影响；
+- 希望代理入口未就绪时明确失败，而不是静默直连。
 
-## 安装
+## 第一步：先解决“安装前还没有代理”的问题
 
-安装脚本会识别 AMD64/ARM64，并选择 Debian 包或便携包：
+如果可直连 GitHub：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh | bash
@@ -45,32 +47,54 @@ curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh |
 curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh | bash -s -- --method portable
 ```
 
-GitHub 拉不下来时，从 [Releases](https://github.com/yqlay/flclash-tui/releases) 下载对应架构的 `.deb` 或 `.tar.gz`，再 scp 到机器上安装。不要写死版本号，始终用最新 Release。
+如果 GitHub 连接不稳定，从 [Releases](https://github.com/yqlay/flclash-tui/releases) 下载对应架构的 `.deb` 或 `.tar.gz`，scp 过去，再 `sudo dpkg -i` 安装。不要写死版本号，始终用最新 Release。
 
-## 最快路径
+## 第二步：导入订阅并选择节点
 
-1. 运行 `flclash` 打开 TUI。
-2. 在 **Profiles** 导入订阅 URL 或本地文件，选中后按 Enter 激活。
-3. 在 **Proxies** 选择组和节点。选中的组就是 `flc` 出口。
-4. Dashboard 保持 **silent**，把焦点放到 **Core**，按 Enter 启动（不要开 System proxy）。
-5. 另开一个终端跑需要代理的命令：
+命令行敲 `flclash` 回车打开 TUI，在 **Profiles** 导入订阅 URL 或本地文件，选中该 profile 按 Enter 激活，随后在 **Proxies** 选择代理组和节点。Dashboard 推荐 `silent` 模式（不会干扰其他程序），然后把焦点放到 **Core**，按 Enter 启动（其他模式还需要启动 **System proxy**）。
+
+## 第三步：选择给 `flc` 使用的节点
+
+无头机器默认使用 `silent` 模式：系统代理和 TUN 都保持关闭，只有显式使用 `flc` 的命令会进入代理。Proxies 里选中的组就是 `flc` 出口。
+
+silent 模式下 FlClash 使用认证后的私有 loopback listener；不需要把端口暴露给公网或局域网。若入口、Core 或节点不可用，`flc` 会报错并拒绝执行，不会把命令偷偷交给直连网络。
+
+## 第四步：直接运行 Codex 或 Claude
 
 ```bash
 flc codex
 flc claude
+```
+
+这两条命令会仅为 Codex / Claude 子进程设置大写和小写的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。同样适用于常见开发工具：
+
+```bash
 flc git clone https://github.com/owner/repository.git
 flc npm install
 flc curl https://example.com
-flc bash    # 这个 shell 里的子命令继承代理；退出后环境立刻消失
+flc sh -c 'git fetch --all && npm ci'
 ```
 
-`flc` 只给这条命令（以及 `flc bash` 里的子进程）设置大小写的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。silent 使用本机认证后的私有 loopback，不把端口暴露给局域网或公网。入口、Core 或节点不可用时，`flc` 会报错并拒绝执行，不会偷偷直连。
-
-6. 用完后：
+如果要连续运行多个命令，不必重复输入 `flc`，可以开一个代理 shell：
 
 ```bash
-flclash exit    # 停当前用户的前端、Backend、Core 和 SSH
+flc bash
+
+# 这个 shell 内的子命令继承代理环境
+codex
+claude
+git push
 ```
+
+退出 shell 后环境变量立刻消失；当前用户的其他 shell、系统服务、Docker 容器和已有连接不会受影响。
+
+## 用完后关闭
+
+```bash
+flclash exit    # 停止当前用户的前端、Backend、Core 和 SSH
+```
+
+不会残留 shell 代理环境。下次启动后，重新用 `flc codex` 或 `flc claude` 即可。
 
 TUI 里按 `q` 或关掉那个终端，只退出当前界面，Backend 还在，`flc` 仍可用。
 
