@@ -14,6 +14,16 @@ Linux / SSH / 无头机上的 Mihomo 终端管理器。运行 `flclash` 打开�
   <img src="readme-assets/codex-cannot-connect.png" alt="Codex 在没有代理时无法连接" width="920">
 </p>
 
+运行 `flclash` 打开 TUI。默认 **silent**：Core 启动后，只有 `flc` 走代理；Proxies 里选中的组就是出口。
+
+<p align="center">
+  <img src="readme-assets/tui-dashboard.png" alt="FlClash TUI Dashboard，silent 模式下 flc 已就绪" width="920">
+</p>
+
+<p align="center">
+  <img src="readme-assets/tui-proxies.png" alt="FlClash TUI Proxies，选择 flc 出口节点" width="920">
+</p>
+
 ## 适合谁
 
 - 远程 Linux、云主机、实验室机器或 WSL，已经有订阅或本地配置；
@@ -71,6 +81,10 @@ TUI 里按 `q` 或关掉那个终端，只退出当前界面，Backend 还在，
 ## SSH 代理
 
 只在**需要被代理的那台机器**上运行 FlClash，把另一台已能上网的机器当作 SSH host。之后 `flc ssh COMMAND` 会把这条命令从 host 的网络出口送出去。B 不开放代理端口，A 只需现有 SSH。
+
+<p align="center">
+  <img src="readme-assets/tui-ssh.png" alt="FlClash TUI SSH 页，隧道已连接并可观测出口" width="920">
+</p>
 
 ```bash
 flclash ssh import                 # 从 ~/.ssh/config 导入 Host

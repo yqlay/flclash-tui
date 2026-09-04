@@ -14,6 +14,16 @@ When Codex / Claude cannot connect on headless Linux, import a subscription, pic
   <img src="readme-assets/codex-cannot-connect.png" alt="Codex failing to connect without a proxy" width="920">
 </p>
 
+Run `flclash` for the TUI. Default mode is **silent**: after Core starts, only `flc` uses the proxy, and the selected Proxies group is the exit.
+
+<p align="center">
+  <img src="readme-assets/tui-dashboard.png" alt="FlClash TUI Dashboard in silent mode with flc ready" width="920">
+</p>
+
+<p align="center">
+  <img src="readme-assets/tui-proxies.png" alt="FlClash TUI Proxies page selecting the flc exit node" width="920">
+</p>
+
 ## Who it is for
 
 - Remote Linux, cloud VMs, lab machines, or WSL, with a subscription or local profile already in hand;
@@ -71,6 +81,10 @@ To send ordinary apps such as a browser through the proxy, switch Dashboard mode
 ## SSH proxy
 
 Run FlClash only on the machine whose traffic needs proxying, and use another already-online host as the SSH peer. `flc ssh COMMAND` then leaves through that host's network. The local machine does not open a public proxy port; the peer only needs SSH.
+
+<p align="center">
+  <img src="readme-assets/tui-ssh.png" alt="FlClash TUI SSH page with a connected, observable tunnel" width="920">
+</p>
 
 ```bash
 flclash ssh import                 # import Host entries from ~/.ssh/config
