@@ -3944,8 +3944,18 @@ func (m *tuiModel) beginSSHCapture() tea.Cmd {
 	selected := 0
 	current := m.selectedSSHName()
 	for _, profile := range m.snapshot.SSHProfiles {
-		if !profile.Attachable || profile.NeedsUsername ||
-			(profile.Connected && profile.Ready) {
+		if profile.NeedsUsername || (profile.Connected && profile.Ready) {
+			continue
+		}
+		candidate := normalizeCLISSHProfile(cliSSHProfile{
+			Name:     profile.Name,
+			Username: profile.Username,
+			Host:     profile.Host,
+			Port:     profile.Port,
+			Jump:     profile.Jump,
+		})
+		path, ok := findCLILiveSSHMaster(candidate)
+		if !ok {
 			continue
 		}
 		if current != "" && strings.EqualFold(profile.Name, current) {
@@ -3955,6 +3965,7 @@ func (m *tuiModel) beginSSHCapture() tea.Cmd {
 		if profile.Jump != "" {
 			label += " · via " + profile.Jump
 		}
+		label += " · " + path
 		names = append(names, profile.Name)
 		options = append(options, label)
 	}

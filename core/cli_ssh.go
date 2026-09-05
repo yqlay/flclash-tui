@@ -693,8 +693,6 @@ func cliSSHListCommand(args []string) error {
 		}
 		if view.NeedsUsername {
 			status, endpoint = "NEEDS USER", " · edit before connecting"
-		} else if view.Attachable && !(view.Connected && view.Ready) {
-			status, endpoint = "ATTACHABLE", " · a attach existing ControlMaster"
 		} else if view.Connected && view.Ready {
 			configured := "auto"
 			if view.LocalPort > 0 {
@@ -1973,8 +1971,6 @@ func loadCLISSHProfileViews() ([]cliSSHProfileView, error) {
 			view.Ready = cliSSHTunnelReady(active)
 			view.SocksPort = active.Port
 			view.StartedAt = active.StartedAt
-		} else if _, ok := findCLILiveSSHMaster(profile); ok {
-			view.Attachable = true
 		}
 		if strings.EqualFold(lastError.Name, profile.Name) {
 			view.LastError = lastError.Error

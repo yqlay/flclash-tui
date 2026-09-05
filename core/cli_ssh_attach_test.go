@@ -291,6 +291,29 @@ func startTestSSHRelay(t *testing.T, state *cliSSHTunnelState) error {
 
 func TestTUISSHAttachKeyOpensCapturePicker(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	binDirectory := t.TempDir()
+	sshPath := filepath.Join(binDirectory, "ssh")
+	controlPath := filepath.Join(t.TempDir(), "cm.sock")
+	if err := os.WriteFile(controlPath, []byte("master"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"control=''\noperation=''\nprevious=''\n" +
+		"for argument in \"$@\"; do\n" +
+		"  if [ \"$previous\" = '-S' ]; then control=\"$argument\"; fi\n" +
+		"  if [ \"$previous\" = '-O' ]; then operation=\"$argument\"; fi\n" +
+		"  previous=\"$argument\"\n" +
+		"done\n" +
+		"case \" $* \" in\n" +
+		"  *' -G '*) printf 'controlmaster auto\\ncontrolpath %s\\n' '" + controlPath + "' ;;\n" +
+		"  *)\n" +
+		"    if [ \"$operation\" = check ]; then test -e \"$control\"; exit $?; fi\n" +
+		"    exit 1 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.snapshot.Page = tuiPageSSH
 	model.snapshot.FocusSidebar = false
@@ -302,7 +325,6 @@ func TestTUISSHAttachKeyOpensCapturePicker(t *testing.T) {
 		Host:        "gateway.example.com",
 		Destination: "deploy@gateway.example.com",
 		Port:        22,
-		Attachable:  true,
 	}}
 	if command := model.handleKey(tuiKeyAllowLAN); command != nil {
 		t.Fatal("capture picker should wait for confirmation")
@@ -318,26 +340,53 @@ func TestTUISSHAttachKeyOpensCapturePicker(t *testing.T) {
 	}
 }
 
+func TestLoadCLISSHProfileViewsDoesNotProbeControlMaster(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	binDirectory := t.TempDir()
+	sshPath := filepath.Join(binDirectory, "ssh")
+	script := "#!/bin/sh\necho probed >> \"" + filepath.Join(binDirectory, "probed") + "\"\nexit 99\n"
+	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:     "home",
+		Username: "deploy",
+		Host:     "gateway.example.com",
+		Port:     22,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	views, err := loadCLISSHProfileViews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].Attachable {
+		t.Fatalf("list probed ControlMaster: %+v", views)
+	}
+	if _, err := os.Stat(filepath.Join(binDirectory, "probed")); !os.IsNotExist(err) {
+		t.Fatal("ssh list/refresh probed ControlMaster without a user request")
+	}
+}
+
 func TestTUISSHRendersCaptureRow(t *testing.T) {
 	var output strings.Builder
 	snapshot := tuiSnapshot{
 		Page:        tuiPageSSH,
 		SelectedSSH: tuiSSHCaptureRow,
 		SSHProfiles: []tuiSSHProfile{{
-			Name:       "home",
-			Username:   "deploy",
-			Host:       "gateway.example.com",
-			Port:       22,
-			Attachable: true,
+			Name:     "home",
+			Username: "deploy",
+			Host:     "gateway.example.com",
+			Port:     22,
 		}},
 	}
 	drawTUISSH(&output, snapshot, 120, 36)
 	plain := stripTUIANSI(output.String())
 	for _, expected := range []string{
 		"Capture existing SSH",
-		"1 live ControlMaster",
-		"ATTACHABLE",
-		"will not start a second login",
+		"Enter probes live ControlMaster",
+		"Probe runs only when you ask",
 	} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("SSH page missing %q:\n%s", expected, plain)
