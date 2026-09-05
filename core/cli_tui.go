@@ -2329,15 +2329,15 @@ func addTUIProfile(homeDir string, oldState **term.State) error {
 		if value == "" {
 			return errTUIActionCancelled
 		}
-		data, err := fetchTUISubscription(value)
+		payload, err := fetchTUISubscriptionDetails(value)
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(homeDir, 0o700); err != nil {
+		path, err := tuiSubscriptionImportPath(homeDir, payload)
+		if err != nil {
 			return err
 		}
-		path := filepath.Join(homeDir, fmt.Sprintf("profile-%d.yaml", time.Now().UnixNano()))
-		if err := writeTUIProfileAtomically(path, data, 0o600); err != nil {
+		if err := writeTUIProfileAtomically(path, payload.Data, 0o600); err != nil {
 			return err
 		}
 		return nil

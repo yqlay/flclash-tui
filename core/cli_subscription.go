@@ -10,9 +10,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
+	"net/url"
+	"os"
+	"path"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/metacubex/mihomo/adapter"
@@ -23,9 +29,109 @@ import (
 const tuiSubscriptionMaxDecodeDepth = 2
 
 type tuiSubscriptionPayload struct {
-	Data   []byte
-	Format string
-	Nodes  int
+	Data     []byte
+	Format   string
+	Nodes    int
+	FileName string
+}
+
+const tuiProfileIDEpochMS = 1704067200000 // 2024-01-01 UTC, same as original FlClash.
+
+var tuiProfileIDState struct {
+	mu       sync.Mutex
+	lastMS   int64
+	sequence int
+}
+
+func nextTUIProfileID() int64 {
+	const workerID = 1
+	tuiProfileIDState.mu.Lock()
+	defer tuiProfileIDState.mu.Unlock()
+	ms := time.Now().UnixMilli()
+	if ms < tuiProfileIDState.lastMS {
+		ms = tuiProfileIDState.lastMS
+	}
+	if ms == tuiProfileIDState.lastMS {
+		tuiProfileIDState.sequence = (tuiProfileIDState.sequence + 1) & 0xfff
+		if tuiProfileIDState.sequence == 0 {
+			ms++
+		}
+	} else {
+		tuiProfileIDState.sequence = 0
+	}
+	tuiProfileIDState.lastMS = ms
+	return ((ms - tuiProfileIDEpochMS) << 22) |
+		(int64(workerID) << 12) |
+		int64(tuiProfileIDState.sequence)
+}
+
+func tuiFileNameFromContentDisposition(disposition string) string {
+	disposition = strings.TrimSpace(disposition)
+	if disposition == "" {
+		return ""
+	}
+	_, params, err := mime.ParseMediaType(disposition)
+	if err != nil {
+		return ""
+	}
+	if encoded := strings.TrimSpace(params["filename*"]); encoded != "" {
+		if name := decodeTUIDispositionFileName(encoded); name != "" {
+			return name
+		}
+	}
+	return strings.TrimSpace(params["filename"])
+}
+
+func decodeTUIDispositionFileName(value string) string {
+	parts := strings.SplitN(value, "'", 3)
+	if len(parts) != 3 {
+		return ""
+	}
+	decoded, err := url.QueryUnescape(parts[2])
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(decoded)
+}
+
+func tuiSanitizeImportedFileName(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.Trim(raw, `"'`)
+	raw = strings.ReplaceAll(raw, `\`, "/")
+	raw = path.Base(raw)
+	if raw == "" || raw == "." || raw == ".." {
+		return ""
+	}
+	var builder strings.Builder
+	for _, r := range raw {
+		if r < 32 || r == 127 || strings.ContainsRune(`<>:"|?*`, r) {
+			continue
+		}
+		builder.WriteRune(r)
+	}
+	cleaned := strings.TrimSpace(builder.String())
+	if cleaned == "" || cleaned == "." || cleaned == ".." {
+		return ""
+	}
+	return tuiImportedProfileName(cleaned)
+}
+
+func tuiNewSubscriptionFileName(disposition string) string {
+	if name := tuiSanitizeImportedFileName(tuiFileNameFromContentDisposition(disposition)); name != "" {
+		return name
+	}
+	return fmt.Sprintf("%d.yaml", nextTUIProfileID())
+}
+
+func tuiSubscriptionImportPath(homeDir string, payload tuiSubscriptionPayload) (string, error) {
+	name := strings.TrimSpace(payload.FileName)
+	if name == "" {
+		name = tuiNewSubscriptionFileName("")
+	}
+	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+		return "", err
+	}
+	return nextTUIImportedProfilePath(homeDir, name)
 }
 
 func (p tuiSubscriptionPayload) summary() string {

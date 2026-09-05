@@ -441,7 +441,7 @@ func profileCommand(args []string) error {
 		if len(positional) != 1 {
 			return errors.New("usage: flclash profile import URL")
 		}
-		data, err := fetchTUISubscription(positional[0])
+		payload, err := fetchTUISubscriptionDetails(positional[0])
 		if err != nil {
 			return err
 		}
@@ -449,13 +449,13 @@ func profileCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		path := filepath.Join(
-			status.HomeDir,
-			fmt.Sprintf("profile-%d.yaml", time.Now().UnixNano()),
-		)
+		path, err := tuiSubscriptionImportPath(status.HomeDir, payload)
+		if err != nil {
+			return err
+		}
 		status, err = client.putProfile(
 			path,
-			data,
+			payload.Data,
 			"",
 			true,
 			&positional[0],

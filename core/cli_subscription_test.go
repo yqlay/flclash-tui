@@ -4,8 +4,12 @@ package main
 
 import (
 	"encoding/base64"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -282,6 +286,78 @@ func TestReadTUILocalProfileAcceptsNonYAMLExtension(t *testing.T) {
 	}
 	if name != "nodes.yaml" || payload.Nodes != 1 {
 		t.Fatalf("local import = %q %+v", name, payload)
+	}
+}
+
+func TestTUISubscriptionFileNameFollowsOriginalFlClash(t *testing.T) {
+	if name := tuiNewSubscriptionFileName(`attachment; filename="Singapore.yaml"`); name != "Singapore.yaml" {
+		t.Fatalf("quoted filename = %q", name)
+	}
+	if name := tuiNewSubscriptionFileName(`attachment; filename*=UTF-8''%E6%96%B0%E5%8A%A0%E5%9D%A1.yaml`); name != "新加坡.yaml" {
+		t.Fatalf("RFC 5987 filename = %q", name)
+	}
+	if name := tuiNewSubscriptionFileName(`attachment; filename="../etc/passwd"`); name != "passwd.yaml" {
+		t.Fatalf("path traversal filename = %q", name)
+	}
+	if name := tuiNewSubscriptionFileName(`attachment; filename="nodes.txt"`); name != "nodes.yaml" {
+		t.Fatalf("non-yaml filename = %q", name)
+	}
+	fallback := tuiNewSubscriptionFileName("")
+	if matched, _ := regexp.MatchString(`^[1-9][0-9]+\.yaml$`, fallback); !matched {
+		t.Fatalf("missing disposition should use original-style id.yaml, got %q", fallback)
+	}
+	second := tuiNewSubscriptionFileName("   ")
+	if second == fallback {
+		t.Fatalf("snowflake fallback reused %q", second)
+	}
+}
+
+func TestFetchTUISubscriptionUsesContentDispositionFileName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Disposition", `attachment; filename="office.yaml"`)
+		_, _ = fmt.Fprint(w, defaultTUIConfig)
+	}))
+	defer server.Close()
+
+	payload, err := fetchTUISubscriptionDetails(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.FileName != "office.yaml" {
+		t.Fatalf("downloaded file name = %q", payload.FileName)
+	}
+	homeDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(homeDir, "office.yaml"), []byte(defaultTUIConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := tuiSubscriptionImportPath(homeDir, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(path) != "office-2.yaml" {
+		t.Fatalf("collision path = %s", path)
+	}
+}
+
+func TestFetchTUISubscriptionFallsBackToNumericFileName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, defaultTUIConfig)
+	}))
+	defer server.Close()
+
+	payload, err := fetchTUISubscriptionDetails(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matched, _ := regexp.MatchString(`^[1-9][0-9]+\.yaml$`, payload.FileName); !matched {
+		t.Fatalf("fallback file name = %q", payload.FileName)
+	}
+	path, err := tuiSubscriptionImportPath(t.TempDir(), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(path) != payload.FileName {
+		t.Fatalf("import path = %s, want %s", path, payload.FileName)
 	}
 }
 

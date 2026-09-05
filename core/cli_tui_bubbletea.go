@@ -5331,10 +5331,11 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			if !prepareTUIBackendRevision(state, m.service) {
 				return
 			}
-			path := filepath.Join(
-				state.paths.homeDir,
-				fmt.Sprintf("profile-%d.yaml", time.Now().UnixNano()),
-			)
+			path, err := tuiSubscriptionImportPath(state.paths.homeDir, payload)
+			if err != nil {
+				state.snapshot.Status = "Add profile failed: " + err.Error()
+				return
+			}
 			status, err := m.service.putProfile(
 				path,
 				payload.Data,
@@ -5521,15 +5522,15 @@ func applyTUIMixedPort(snapshot *tuiSnapshot, client controllerClient, selectedP
 }
 
 func downloadTUIProfile(homeDir, value string) (string, error) {
-	data, err := fetchTUISubscription(value)
+	payload, err := fetchTUISubscriptionDetails(value)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+	path, err := tuiSubscriptionImportPath(homeDir, payload)
+	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(homeDir, fmt.Sprintf("profile-%d.yaml", time.Now().UnixNano()))
-	if err := writeTUIProfileAtomically(path, data, 0o600); err != nil {
+	if err := writeTUIProfileAtomically(path, payload.Data, 0o600); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -5668,6 +5669,9 @@ func fetchTUISubscriptionDetails(
 			err,
 		)
 	}
+	payload.FileName = tuiNewSubscriptionFileName(
+		response.Header.Get("Content-Disposition"),
+	)
 	return payload, nil
 }
 
