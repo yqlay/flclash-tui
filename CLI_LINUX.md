@@ -217,7 +217,14 @@ Both persistent and temporary (`flc ssh -u NAME`) commands support `-d`.
 profile, as a persistent tunnel when none is connected. If the persistent
 tunnel is present but its SOCKS5 listener is down, FlClash rebuilds it before
 running the command. `flclash ssh connect` without a name uses the same
-resolution. `-u NAME` creates a separate temporary tunnel for that command and
+resolution. If that host already has a live OpenSSH ControlMaster (for example
+`ControlMaster auto` in `~/.ssh/config`), connect reuses it: FlClash only adds a
+dynamic SOCKS forward and the local traffic relay. `flclash ssh attach [NAME]`
+does the same capture and never starts a second login; `--list` shows matching
+masters. Detach (`ssh disconnect`, `backend stop`, or `flclash exit`) cancels
+the SOCKS forward and leaves the user's SSH session running. A plain interactive
+`ssh user@host` without ControlMaster cannot be captured. `-u NAME` creates a
+separate temporary tunnel for that command and
 closes it afterwards; an existing persistent tunnel remains open. Commands must
 support proxy environment variables and SOCKS5. Tunnel setup is fail-closed, so
 a failed SSH connection never runs the command directly. `flclash ssh import`

@@ -827,6 +827,7 @@ func TestCLISSHControlArgumentsCannotPromptOrReauthenticate(t *testing.T) {
 	}
 	for name, arguments := range map[string][]string{
 		"forward": cliSSHDynamicForwardArguments(state),
+		"cancel":  cliSSHCancelDynamicForwardArguments(state),
 		"check":   cliSSHControlOperationArguments(state, "check"),
 		"exit":    cliSSHControlOperationArguments(state, "exit"),
 		"probe":   cliSSHControlClientArguments(state),

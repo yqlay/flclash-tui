@@ -130,12 +130,13 @@ TUI 里按 `q` 或关掉那个终端，只退出当前界面，Backend 还在，
 
 ## SSH 代理
 
-只在**需要被代理的那台机器**上运行 FlClash，把另一台已能上网的机器当作 SSH host。之后 `flc ssh COMMAND` 会把这条命令从 host 的网络出口送出去。B 不开放代理端口，A 只需现有 SSH。
+只在**需要被代理的那台机器**上运行 FlClash，把另一台已能上网的机器当作 SSH host。之后 `flc ssh COMMAND` 会把这条命令从 host 的网络出口送出去。B 不开放代理端口，A 只需现有 SSH。若该 host 已有 OpenSSH ControlMaster，`connect` / `attach` 会复用它做流量反代，而不是再登一次；普通交互式 `ssh` 没有 ControlMaster 时无法捕捉。
 
 ```bash
 flclash ssh import                 # 从 ~/.ssh/config 导入 Host
 flclash ssh add home host --user user --password --local-port 1080
 flclash ssh default home
+flclash ssh attach                 # 只捕捉已有 ControlMaster，不新建登录
 flc ssh curl https://example.com   # 自动连接默认配置；断线会重建隧道
 
 # 默认交给 host 的网络策略；-d 只在 host 的 FlClash TUN 关闭时允许直连

@@ -128,12 +128,13 @@ To send ordinary apps such as a browser through the proxy, switch Dashboard mode
 
 ## SSH proxy
 
-Run FlClash only on the machine whose traffic needs proxying, and use another already-online host as the SSH peer. `flc ssh COMMAND` then leaves through that host's network. The local machine does not open a public proxy port; the peer only needs SSH.
+Run FlClash only on the machine whose traffic needs proxying, and use another already-online host as the SSH peer. `flc ssh COMMAND` then leaves through that host's network. The local machine does not open a public proxy port; the peer only needs SSH. If that host already has an OpenSSH ControlMaster, `connect` / `attach` reuse it for the SOCKS reverse proxy instead of opening a second login. A plain interactive `ssh` without ControlMaster cannot be captured.
 
 ```bash
 flclash ssh import                 # import Host entries from ~/.ssh/config
 flclash ssh add home host --user user --password --local-port 1080
 flclash ssh default home
+flclash ssh attach                 # capture a live ControlMaster; never start a new login
 flc ssh curl https://example.com   # opens the default profile; rebuilds a broken tunnel
 
 # Follow host policy by default; -d allows direct only when the host FlClash TUN is off

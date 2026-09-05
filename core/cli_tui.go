@@ -230,6 +230,7 @@ type tuiSSHProfile struct {
 	LastError     string
 	Options       []string
 	Connected     bool
+	Attached      bool
 	Ready         bool
 	SocksPort     int
 	StartedAt     time.Time
@@ -1697,6 +1698,7 @@ func refreshTUISSH(snapshot *tuiSnapshot) {
 			Default:       view.Default,
 			LastError:     view.LastError,
 			Connected:     view.Connected,
+			Attached:      view.Attached,
 			Ready:         view.Ready,
 			SocksPort:     view.SocksPort,
 			StartedAt:     view.StartedAt,
@@ -3896,7 +3898,7 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 		"Dashboard      flc Enter opens Proxies · d latency · v speed · n refresh",
 		"Proxies        Enter nodes · d node RTT (5 samples) · v node speed · Esc groups",
 		"Profiles       Enter activate · U refresh · u/F2 rename · e edit · n import · x delete",
-		"SSH            Tab list/Dashboard · n add · e edit · u default · d RTT · v speed",
+		"SSH            Tab list/Dashboard · n add · e edit · u default · Enter reuses ControlMaster if live",
 		"History        x clears shared history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
 		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
@@ -4928,7 +4930,7 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 	tuiTitle(
 		b,
 		fmt.Sprintf("SSH profiles · %d configured", len(snapshot.SSHProfiles)),
-		"↑↓ select · Enter connect/Dashboard · Tab focus · n add · e edit · u default · x delete",
+		"↑↓ select · Enter connect/attach · Tab focus · n add · e edit · u default · x delete",
 		width,
 	)
 	if len(snapshot.SSHProfiles) == 0 {
@@ -4953,6 +4955,9 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 			color = tuiYellow
 		} else if profile.Connected && profile.Ready {
 			status = "CONNECTED"
+			if profile.Attached {
+				status = "ATTACHED"
+			}
 			configured := "auto"
 			if profile.LocalPort > 0 {
 				configured = strconv.Itoa(profile.LocalPort)
@@ -5032,6 +5037,9 @@ func drawTUISSHDashboard(
 		statusColor = tuiYellow
 	} else if profile.Connected && profile.Ready {
 		status = fmt.Sprintf("CONNECTED · SOCKS5 127.0.0.1:%d · Enter to disconnect", profile.SocksPort)
+		if profile.Attached {
+			status = fmt.Sprintf("ATTACHED · SOCKS5 127.0.0.1:%d · Enter detaches FlClash only", profile.SocksPort)
+		}
 		statusColor = tuiGreen
 	} else if profile.Connected {
 		status = "BROKEN · Enter to reconnect"

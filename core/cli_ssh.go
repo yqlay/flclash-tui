@@ -95,6 +95,7 @@ type cliSSHProfileView struct {
 	NeedsUsername bool      `json:"needs_username"`
 	Default       bool      `json:"default,omitempty"`
 	Connected     bool      `json:"connected"`
+	Attached      bool      `json:"attached,omitempty"`
 	Ready         bool      `json:"ready"`
 	SocksPort     int       `json:"socks_port,omitempty"`
 	StartedAt     time.Time `json:"started_at,omitempty"`
@@ -287,6 +288,8 @@ func sshManagementCommand(args []string) error {
 		return cliSSHDefaultCommand(args[1:])
 	case "import":
 		return cliSSHImportCommand(args[1:])
+	case "attach":
+		return cliSSHAttachCommand(args[1:])
 	case "probe":
 		return cliSSHProbeCommand(args[1:])
 	default:
@@ -305,11 +308,13 @@ func printSSHManagementUsage(w io.Writer) {
 	fmt.Fprintln(w, "  flclash ssh delete|show NAME")
 	fmt.Fprintln(w, "  flclash ssh list|status [--json]")
 	fmt.Fprintln(w, "  flclash ssh connect [NAME]")
+	fmt.Fprintln(w, "  flclash ssh attach [NAME] | --list")
 	fmt.Fprintln(w, "  flclash ssh disconnect [NAME|all]")
 	fmt.Fprintln(w, "  flclash ssh test [NAME]")
 	fmt.Fprintln(w, "  flclash ssh probe --json  # read-only endpoint check for flc ssh -d")
 	fmt.Fprintln(w, "`ssh add` with no arguments and `ssh edit NAME` open an interactive prompt.")
 	fmt.Fprintln(w, "`ssh connect` and `flc ssh COMMAND` use the default profile, or the only profile, when NAME is omitted.")
+	fmt.Fprintln(w, "`ssh connect` reuses a live OpenSSH ControlMaster for that host when one exists; `ssh attach` only captures, never starts a new login.")
 	fmt.Fprintln(w, "A broken persistent tunnel is rebuilt automatically before `flc ssh COMMAND` runs.")
 }
 
@@ -692,7 +697,11 @@ func cliSSHListCommand(args []string) error {
 			if view.LocalPort > 0 {
 				configured = strconv.Itoa(view.LocalPort)
 			}
-			status, endpoint = "CONNECTED", fmt.Sprintf(
+			status = "CONNECTED"
+			if view.Attached {
+				status = "ATTACHED"
+			}
+			endpoint = fmt.Sprintf(
 				" · SOCKS5 127.0.0.1:%d · configured %s",
 				view.SocksPort,
 				configured,
@@ -790,6 +799,10 @@ func cliSSHConnectCommand(args []string) error {
 	}
 	if alreadyConnected {
 		fmt.Printf("SSH %s already connected · SOCKS5 127.0.0.1:%d\n", state.Name, state.Port)
+		return nil
+	}
+	if state.Kind == cliSSHAttachedKind {
+		fmt.Printf("SSH %s attached · SOCKS5 127.0.0.1:%d\n", state.Name, state.Port)
 		return nil
 	}
 	fmt.Printf("SSH %s connected · SOCKS5 127.0.0.1:%d\n", state.Name, state.Port)
@@ -1953,6 +1966,7 @@ func loadCLISSHProfileViews() ([]cliSSHProfileView, error) {
 		}
 		if connected && strings.EqualFold(active.Name, profile.Name) {
 			view.Connected = true
+			view.Attached = active.Kind == cliSSHAttachedKind
 			view.Ready = cliSSHTunnelReady(active)
 			view.SocksPort = active.Port
 			view.StartedAt = active.StartedAt
@@ -2402,30 +2416,26 @@ func cliSSHOptionConfigured(options []string, wantedKey string) bool {
 }
 
 func startCLIPersistentSSHTunnel(profile cliSSHProfile) (cliSSHTunnelState, error) {
+	if controlPath, ok := findCLILiveSSHMaster(profile); ok {
+		state, err := attachCLISSHTunnel(profile, controlPath)
+		if err != nil {
+			return cliSSHTunnelState{}, fmt.Errorf(
+				"reuse existing SSH connection %q: %w",
+				profile.Name,
+				err,
+			)
+		}
+		return state, nil
+	}
 	state, err := startCLISSHTunnel(profile, "persistent")
 	if err != nil {
 		return cliSSHTunnelState{}, err
 	}
-	runtimeDirectory, err := ensureCLISSHRuntimeDirectory()
-	if err != nil {
-		return cliSSHTunnelState{}, errors.Join(err, stopCLIStateTunnel(state))
-	}
-	persistentPath := filepath.Join(runtimeDirectory, cliSSHPersistentStateFile)
-	if state.StatePath == persistentPath {
-		return state, nil
-	}
-	if err := os.Rename(state.StatePath, persistentPath); err != nil {
-		return cliSSHTunnelState{}, errors.Join(err, stopCLIStateTunnel(state))
-	}
-	state.StatePath = persistentPath
-	if err := saveCLISSHTunnelState(state); err != nil {
-		return cliSSHTunnelState{}, errors.Join(err, stopCLIStateTunnel(state))
-	}
-	return state, nil
+	return persistCLISSHTunnelState(state)
 }
 
 func configuredCLISSHLocalPort(profile cliSSHProfile, kind string) int {
-	if kind != "persistent" {
+	if kind != "persistent" && kind != cliSSHAttachedKind {
 		return 0
 	}
 	return profile.LocalPort
@@ -2698,7 +2708,8 @@ func cliSSHTunnelAlive(sshPath string, state cliSSHTunnelState) bool {
 }
 
 func cliSSHTunnelReady(state cliSSHTunnelState) bool {
-	if state.RelayControl != "" || state.RelayPID > 0 || state.UpstreamPort > 0 && state.Kind == "persistent" {
+	if state.RelayControl != "" || state.RelayPID > 0 ||
+		(state.UpstreamPort > 0 && (state.Kind == "persistent" || state.Kind == cliSSHAttachedKind)) {
 		return cliSSHSOCKSReady(cliSSHUpstreamPort(state)) && cliSSHRelayReady(state)
 	}
 	return cliSSHSOCKSReady(state.Port)
@@ -2870,12 +2881,17 @@ func activeCLIPersistentSSHTunnel() (cliSSHTunnelState, bool, error) {
 		return state, true, nil
 	}
 	_ = stopCLISSHRelay(state)
-	_ = os.Remove(state.ControlPath)
+	if cliSSHTunnelOwnsMaster(state) {
+		_ = os.Remove(state.ControlPath)
+	}
 	_ = os.Remove(path)
 	return cliSSHTunnelState{}, false, nil
 }
 
 func stopCLIStateTunnel(state cliSSHTunnelState) error {
+	if !cliSSHTunnelOwnsMaster(state) {
+		return stopCLIAttachedTunnel(state)
+	}
 	var cleanupErrors []error
 	if err := stopCLISSHRelay(state); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("stop SSH traffic meter: %w", err))
