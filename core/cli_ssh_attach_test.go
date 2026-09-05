@@ -289,7 +289,7 @@ func startTestSSHRelay(t *testing.T, state *cliSSHTunnelState) error {
 	return nil
 }
 
-func TestTUISSHAttachKeyCapturesExistingMaster(t *testing.T) {
+func TestTUISSHAttachKeyOpensCapturePicker(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.snapshot.Page = tuiPageSSH
@@ -297,24 +297,32 @@ func TestTUISSHAttachKeyCapturesExistingMaster(t *testing.T) {
 	model.snapshot.SSHDashboardFocus = false
 	model.snapshot.SelectedSSH = 0
 	model.snapshot.SSHProfiles = []tuiSSHProfile{{
-		Name:     "home",
-		Username: "deploy",
-		Host:     "gateway.example.com",
-		Port:     22,
+		Name:        "home",
+		Username:    "deploy",
+		Host:        "gateway.example.com",
+		Destination: "deploy@gateway.example.com",
+		Port:        22,
+		Attachable:  true,
 	}}
-	command := model.handleKey(tuiKeyAllowLAN)
-	if command == nil {
-		t.Fatal("SSH page a/attach did not start an operation")
+	if command := model.handleKey(tuiKeyAllowLAN); command != nil {
+		t.Fatal("capture picker should wait for confirmation")
 	}
-	if !strings.Contains(model.snapshot.Status, "attach") {
-		t.Fatalf("SSH attach status = %q", model.snapshot.Status)
+	if !model.sshCaptureOpen || len(model.sshCaptureNames) != 1 ||
+		model.sshCaptureNames[0] != "home" {
+		t.Fatalf("capture picker = open %t names %v", model.sshCaptureOpen, model.sshCaptureNames)
+	}
+	view := model.View()
+	if !strings.Contains(stripTUIANSI(view), "Capture existing SSH") ||
+		!strings.Contains(stripTUIANSI(view), "deploy@gateway.example.com") {
+		t.Fatalf("capture overlay missing:\n%s", view)
 	}
 }
 
-func TestTUISSHRendersAttachControls(t *testing.T) {
+func TestTUISSHRendersCaptureRow(t *testing.T) {
 	var output strings.Builder
 	snapshot := tuiSnapshot{
-		Page: tuiPageSSH,
+		Page:        tuiPageSSH,
+		SelectedSSH: tuiSSHCaptureRow,
 		SSHProfiles: []tuiSSHProfile{{
 			Name:       "home",
 			Username:   "deploy",
@@ -326,8 +334,10 @@ func TestTUISSHRendersAttachControls(t *testing.T) {
 	drawTUISSH(&output, snapshot, 120, 36)
 	plain := stripTUIANSI(output.String())
 	for _, expected := range []string{
-		"a attach ControlMaster",
+		"Capture existing SSH",
+		"1 live ControlMaster",
 		"ATTACHABLE",
+		"will not start a second login",
 	} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("SSH page missing %q:\n%s", expected, plain)

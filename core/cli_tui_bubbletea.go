@@ -315,6 +315,10 @@ type tuiModel struct {
 	sshCredentialProfile     string
 	sshCredentialIdentity    string
 	sshCredentialInput       []rune
+	sshCaptureOpen           bool
+	sshCaptureNames          []string
+	sshCaptureOptions        []string
+	sshCaptureSelected       int
 	sshLastStats             cliSSHRelayStats
 	sshLastStatsAt           time.Time
 	sshLastStatsName         string
@@ -972,6 +976,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sshFormOpen {
 			return m, m.handleSSHForm(message)
 		}
+		if m.sshCaptureOpen {
+			return m, m.handleSSHCapture(message)
+		}
 		if m.modeSelectionOpen {
 			return m, m.handleModeSelection(message)
 		}
@@ -1090,6 +1097,12 @@ func (m *tuiModel) View() string {
 	snapshot.NotificationScroll = m.notificationScroll
 	if m.notificationDetailOpen {
 		snapshot.Status = "Notifications · ↑↓ select · PgUp/PgDn scroll · Enter confirm · Esc close"
+	} else if m.sshCaptureOpen {
+		snapshot.SelectionTitle = "Capture existing SSH"
+		snapshot.SelectionOptions = append([]string(nil), m.sshCaptureOptions...)
+		snapshot.SelectedOption = m.sshCaptureSelected
+		snapshot.SelectionHint = "Reuses a live OpenSSH ControlMaster for SOCKS reverse proxy. Does not start a second login. Ordinary interactive ssh cannot be captured."
+		snapshot.Status = "Capture existing SSH · ↑↓/ws choose · Enter attach · Esc cancel"
 	} else if m.modeSelectionOpen {
 		snapshot.SelectionTitle = "Select outbound mode"
 		snapshot.SelectionOptions = append(
@@ -1488,6 +1501,7 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 		selectedProfilePath = current.Profiles[current.SelectedRow].Path
 	}
 	selectedSSHName := ""
+	captureSelected := current.SelectedSSH == tuiSSHCaptureRow
 	if current.SelectedSSH >= 0 && current.SelectedSSH < len(current.SSHProfiles) {
 		selectedSSHName = current.SSHProfiles[current.SelectedSSH].Name
 	}
@@ -1614,9 +1628,16 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	if !importSelected && len(updated.Profiles) == 0 {
 		updated.SelectedRow = tuiProfileImportSubscriptionRow
 	}
-	updated.SelectedSSH = findTUISSHProfile(updated.SSHProfiles, selectedSSHName)
-	if selectedSSHName == "" {
-		updated.SelectedSSH = clampTUISelection(current.SelectedSSH, len(updated.SSHProfiles))
+	if captureSelected || len(updated.SSHProfiles) == 0 {
+		updated.SelectedSSH = tuiSSHCaptureRow
+	} else {
+		updated.SelectedSSH = findTUISSHProfile(updated.SSHProfiles, selectedSSHName)
+		if selectedSSHName == "" {
+			updated.SelectedSSH = clampTUISelection(
+				current.SelectedSSH,
+				len(updated.SSHProfiles),
+			)
+		}
 	}
 	return updated
 }
@@ -2323,6 +2344,10 @@ func (m *tuiModel) moveSelection(delta int) tea.Cmd {
 	switch m.snapshot.Page {
 	case tuiPageSSH:
 		if m.snapshot.SSHDashboardFocus {
+			if m.snapshot.SelectedSSH == tuiSSHCaptureRow {
+				m.snapshot.SSHDashboardFocus = false
+				break
+			}
 			m.snapshot.SelectedSSHDetail = wrapTUIIndex(
 				m.snapshot.SelectedSSHDetail,
 				delta,
@@ -2330,11 +2355,14 @@ func (m *tuiModel) moveSelection(delta int) tea.Cmd {
 			)
 		} else {
 			previousName := m.selectedSSHName()
-			m.snapshot.SelectedSSH = wrapTUIIndex(
-				m.snapshot.SelectedSSH,
-				delta,
-				len(m.snapshot.SSHProfiles),
-			)
+			listLen := len(m.snapshot.SSHProfiles) + 1
+			position := wrapTUIIndex(m.snapshot.SelectedSSH+1, delta, listLen)
+			m.snapshot.SelectedSSH = position - 1
+			if m.snapshot.SelectedSSH == tuiSSHCaptureRow {
+				m.resetSelectedSSHMetrics()
+				m.snapshot.Status = "Enter captures a live ControlMaster without a new SSH login"
+				return nil
+			}
 			if m.selectedSSHName() != previousName {
 				m.resetSelectedSSHMetrics()
 				return m.refreshSelectedSSHDashboard()
@@ -3137,9 +3165,12 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			syncStoppedTUISettings(state)
 		})
 	case tuiPageSSH:
+		if m.snapshot.SelectedSSH == tuiSSHCaptureRow {
+			return m.beginSSHCapture()
+		}
 		if m.snapshot.SelectedSSH < 0 ||
 			m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
-			m.snapshot.Status = "Press n to add an SSH profile"
+			m.snapshot.Status = "Press n to add an SSH profile, or a to capture live SSH"
 			return nil
 		}
 		profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
@@ -3903,26 +3934,91 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 	}
 }
 
-func (m *tuiModel) attachSelectedSSH() tea.Cmd {
+func (m *tuiModel) beginSSHCapture() tea.Cmd {
 	if m.snapshot.FocusSidebar {
-		m.snapshot.Status = "Focus SSH profiles before attaching"
+		m.snapshot.Status = "Focus SSH profiles before capturing a live session"
 		return nil
 	}
-	if m.snapshot.SelectedSSH < 0 ||
-		m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
-		m.snapshot.Status = "Select an SSH profile first"
+	names := make([]string, 0, len(m.snapshot.SSHProfiles))
+	options := make([]string, 0, len(m.snapshot.SSHProfiles))
+	selected := 0
+	current := m.selectedSSHName()
+	for _, profile := range m.snapshot.SSHProfiles {
+		if !profile.Attachable || profile.NeedsUsername ||
+			(profile.Connected && profile.Ready) {
+			continue
+		}
+		if current != "" && strings.EqualFold(profile.Name, current) {
+			selected = len(names)
+		}
+		label := fmt.Sprintf("%-16s %s", profile.Name, profile.Destination)
+		if profile.Jump != "" {
+			label += " · via " + profile.Jump
+		}
+		names = append(names, profile.Name)
+		options = append(options, label)
+	}
+	m.sshCaptureOpen = true
+	m.sshCaptureNames = names
+	m.sshCaptureSelected = selected
+	if len(options) == 0 {
+		m.sshCaptureOptions = []string{
+			"No live ControlMaster matches a FlClash SSH profile",
+		}
+		m.snapshot.Status = "No capturable SSH session · ordinary ssh cannot be reused"
 		return nil
 	}
-	profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
-	if profile.NeedsUsername {
-		m.snapshot.Status = "Enter Username before attaching this SSH profile"
+	m.sshCaptureOptions = options
+	m.snapshot.Status = "Select a live ControlMaster to reuse for SOCKS reverse proxy"
+	return nil
+}
+
+func (m *tuiModel) handleSSHCapture(message tea.KeyMsg) tea.Cmd {
+	key, ok := tuiKeyFromTea(message)
+	if !ok {
 		return nil
 	}
-	if profile.Connected && profile.Ready {
-		m.snapshot.Status = "SSH " + profile.Name + " is already connected"
-		return nil
+	switch key {
+	case tuiKeyUp:
+		m.sshCaptureSelected = wrapTUIIndex(
+			m.sshCaptureSelected,
+			-1,
+			len(m.sshCaptureOptions),
+		)
+	case tuiKeyDown:
+		m.sshCaptureSelected = wrapTUIIndex(
+			m.sshCaptureSelected,
+			1,
+			len(m.sshCaptureOptions),
+		)
+	case tuiKeySelect:
+		if m.sshCaptureSelected < 0 ||
+			m.sshCaptureSelected >= len(m.sshCaptureNames) {
+			m.sshCaptureOpen = false
+			m.snapshot.Status = "No live ControlMaster to capture"
+			return nil
+		}
+		name := m.sshCaptureNames[m.sshCaptureSelected]
+		m.sshCaptureOpen = false
+		for index, profile := range m.snapshot.SSHProfiles {
+			if strings.EqualFold(profile.Name, name) {
+				m.snapshot.SelectedSSH = index
+				break
+			}
+		}
+		return m.runSelectedSSHAction("attach")
+	case tuiKeyBack:
+		m.sshCaptureOpen = false
+		m.snapshot.Status = "SSH capture cancelled"
+	case tuiKeyQuit, tuiKeyInterrupt:
+		m.sshCaptureOpen = false
+		return m.handleKey(key)
 	}
-	return m.runSelectedSSHAction("attach")
+	return nil
+}
+
+func (m *tuiModel) attachSelectedSSH() tea.Cmd {
+	return m.beginSSHCapture()
 }
 
 func (m *tuiModel) selectedSSHName() string {

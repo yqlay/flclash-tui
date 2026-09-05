@@ -299,6 +299,7 @@ const (
 	tuiProfileImportSubscriptionRow = -2
 	tuiProfileImportFileRow         = -1
 	tuiProfileImportRowCount        = 2
+	tuiSSHCaptureRow                = -1
 )
 
 type tuiSnapshot struct {
@@ -1672,6 +1673,7 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 
 func refreshTUISSH(snapshot *tuiSnapshot) {
 	selectedName := ""
+	captureSelected := snapshot.SelectedSSH == tuiSSHCaptureRow
 	if snapshot.SelectedSSH >= 0 && snapshot.SelectedSSH < len(snapshot.SSHProfiles) {
 		selectedName = snapshot.SSHProfiles[snapshot.SelectedSSH].Name
 	}
@@ -1706,6 +1708,10 @@ func refreshTUISSH(snapshot *tuiSnapshot) {
 			StartedAt:     view.StartedAt,
 			Options:       append([]string(nil), view.Options...),
 		})
+	}
+	if captureSelected || len(snapshot.SSHProfiles) == 0 {
+		snapshot.SelectedSSH = tuiSSHCaptureRow
+		return
 	}
 	snapshot.SelectedSSH = 0
 	for index, profile := range snapshot.SSHProfiles {
@@ -2881,7 +2887,7 @@ func renderTUICompact(
 	} else if snapshot.Page == tuiPageDashboard {
 		footer = "  ↑↓/ws select · Enter Core/flc · PgUp/PgDn · q exit TUI · ^C full exit"
 	} else if snapshot.Page == tuiPageSSH {
-		footer = "  Tab list/Dashboard · Enter connect · a attach · n add · q exit TUI · ^C full exit"
+		footer = "  Tab list/Dashboard · Enter connect · a capture · n add · q exit TUI · ^C full exit"
 	}
 	b.WriteString(tuiNotificationFooter(snapshot, footer, width))
 	return b.String()
@@ -3900,7 +3906,7 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 		"Dashboard      flc Enter opens Proxies · d latency · v speed · n refresh",
 		"Proxies        Enter nodes · d node RTT (5 samples) · v node speed · Esc groups",
 		"Profiles       Enter activate · U refresh · u/F2 rename · e edit · n import · x delete",
-		"SSH            Tab list/Dashboard · n add · a attach ControlMaster · e edit · u default · Enter connect",
+		"SSH            Tab list/Dashboard · n add · a capture live SSH · e edit · u default · Enter connect",
 		"History        x clears shared history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
 		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
@@ -4922,31 +4928,67 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 	tuiEndPanel(b, width)
 }
 
+func tuiSSHAttachableCount(profiles []tuiSSHProfile) int {
+	count := 0
+	for _, profile := range profiles {
+		if profile.Attachable && !profile.NeedsUsername &&
+			!(profile.Connected && profile.Ready) {
+			count++
+		}
+	}
+	return count
+}
+
 func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 	profileLimit := 5
 	if height < 18 {
-		profileLimit = 1
+		profileLimit = 2
 	} else if height < 33 {
-		profileLimit = 3
+		profileLimit = 4
 	}
+	live := tuiSSHAttachableCount(snapshot.SSHProfiles)
 	tuiTitle(
 		b,
 		fmt.Sprintf("SSH profiles · %d configured", len(snapshot.SSHProfiles)),
-		"↑↓ select · Enter connect · a attach ControlMaster · Tab · n add · e edit · u default",
+		"↑↓ select · Enter connect · a capture live SSH · n add · e edit · u default",
 		width,
 	)
-	if len(snapshot.SSHProfiles) == 0 {
-		tuiRow(b, "No SSH profiles · press n to add or import from ~/.ssh/config", width, false, tuiDim)
-		tuiEndPanel(b, width)
-		tuiEmptyPanel(b, "SSH Dashboard", "Add an SSH profile to start a tunnel", width)
-		return
+	listLen := len(snapshot.SSHProfiles) + 1
+	visual := snapshot.SelectedSSH + 1
+	if visual < 0 {
+		visual = 0
 	}
 	start, end := tuiVisibleRange(
-		len(snapshot.SSHProfiles),
-		snapshot.SelectedSSH,
-		minTUI(profileLimit, len(snapshot.SSHProfiles)),
+		listLen,
+		visual,
+		minTUI(profileLimit, listLen),
 	)
-	for index := start; index < end; index++ {
+	listFocused := !snapshot.FocusSidebar && !snapshot.SSHDashboardFocus
+	for visualIndex := start; visualIndex < end; visualIndex++ {
+		if visualIndex == 0 {
+			capture := "Capture existing SSH"
+			detail := "no live ControlMaster"
+			color := tuiDim
+			if live == 1 {
+				detail = "1 live ControlMaster"
+				color = tuiCyan
+			} else if live > 1 {
+				detail = fmt.Sprintf("%d live ControlMasters", live)
+				color = tuiCyan
+			}
+			tuiRow(
+				b,
+				fmt.Sprintf("%-22s %s", capture, detail),
+				width,
+				snapshot.SelectedSSH == tuiSSHCaptureRow && listFocused,
+				color,
+			)
+			continue
+		}
+		index := visualIndex - 1
+		if index < 0 || index >= len(snapshot.SSHProfiles) {
+			continue
+		}
 		profile := snapshot.SSHProfiles[index]
 		status := "DISCONNECTED"
 		endpoint := ""
@@ -4957,7 +4999,7 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 			color = tuiYellow
 		} else if profile.Attachable && !(profile.Connected && profile.Ready) {
 			status = "ATTACHABLE"
-			endpoint = " · a attach existing ControlMaster"
+			endpoint = " · live ControlMaster"
 			color = tuiCyan
 		} else if profile.Connected && profile.Ready {
 			status = "CONNECTED"
@@ -5014,9 +5056,7 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 			b,
 			row,
 			width,
-			index == snapshot.SelectedSSH &&
-				!snapshot.FocusSidebar &&
-				!snapshot.SSHDashboardFocus,
+			index == snapshot.SelectedSSH && listFocused,
 			color,
 		)
 	}
@@ -5031,18 +5071,41 @@ func drawTUISSHDashboard(
 	height,
 	profileRows int,
 ) {
+	if snapshot.SelectedSSH == tuiSSHCaptureRow {
+		live := tuiSSHAttachableCount(snapshot.SSHProfiles)
+		tuiTitle(
+			b,
+			"Capture existing SSH",
+			"Enter opens picker · a shortcut · Esc back",
+			width,
+		)
+		summary := "No live OpenSSH ControlMaster matches a FlClash SSH profile."
+		color := tuiDim
+		if live > 0 {
+			summary = fmt.Sprintf(
+				"%d live ControlMaster(s) can be reused for the SOCKS reverse proxy.",
+				live,
+			)
+			color = tuiCyan
+		}
+		tuiRow(b, summary, width, false, color)
+		tuiRow(b, "FlClash only adds a dynamic forward and local relay. It will not start a second login.", width, false, tuiDim)
+		tuiRow(b, "Ordinary interactive ssh without ControlMaster cannot be captured.", width, false, tuiDim)
+		tuiEndPanel(b, width)
+		return
+	}
 	if snapshot.SelectedSSH < 0 || snapshot.SelectedSSH >= len(snapshot.SSHProfiles) {
-		tuiEmptyPanel(b, "SSH Dashboard", "Selected SSH profile is unavailable", width)
+		tuiEmptyPanel(b, "SSH Dashboard", "Add an SSH profile or capture a live ControlMaster", width)
 		return
 	}
 	profile := snapshot.SSHProfiles[snapshot.SelectedSSH]
-	status := "DISCONNECTED · Enter to connect · a attach existing ControlMaster"
+	status := "DISCONNECTED · Enter to connect · a opens capture picker"
 	statusColor := tuiDim
 	if profile.NeedsUsername {
 		status = "USERNAME REQUIRED · edit profile before connecting"
 		statusColor = tuiYellow
 	} else if profile.Attachable && !(profile.Connected && profile.Ready) {
-		status = "ATTACHABLE · a reuses the live ControlMaster · Enter also connects"
+		status = "ATTACHABLE · a capture picker · Enter connects/reuses"
 		statusColor = tuiCyan
 	} else if profile.Connected && profile.Ready {
 		status = fmt.Sprintf("CONNECTED · SOCKS5 127.0.0.1:%d · Enter to disconnect", profile.SocksPort)
