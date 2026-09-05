@@ -231,6 +231,7 @@ type tuiSSHProfile struct {
 	Options       []string
 	Connected     bool
 	Attached      bool
+	Attachable    bool
 	Ready         bool
 	SocksPort     int
 	StartedAt     time.Time
@@ -1699,6 +1700,7 @@ func refreshTUISSH(snapshot *tuiSnapshot) {
 			LastError:     view.LastError,
 			Connected:     view.Connected,
 			Attached:      view.Attached,
+			Attachable:    view.Attachable,
 			Ready:         view.Ready,
 			SocksPort:     view.SocksPort,
 			StartedAt:     view.StartedAt,
@@ -2879,7 +2881,7 @@ func renderTUICompact(
 	} else if snapshot.Page == tuiPageDashboard {
 		footer = "  ↑↓/ws select · Enter Core/flc · PgUp/PgDn · q exit TUI · ^C full exit"
 	} else if snapshot.Page == tuiPageSSH {
-		footer = "  Tab list/Dashboard · ↑↓/ws · Enter · u default · n add · q exit TUI · ^C full exit"
+		footer = "  Tab list/Dashboard · Enter connect · a attach · n add · q exit TUI · ^C full exit"
 	}
 	b.WriteString(tuiNotificationFooter(snapshot, footer, width))
 	return b.String()
@@ -3898,7 +3900,7 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 		"Dashboard      flc Enter opens Proxies · d latency · v speed · n refresh",
 		"Proxies        Enter nodes · d node RTT (5 samples) · v node speed · Esc groups",
 		"Profiles       Enter activate · U refresh · u/F2 rename · e edit · n import · x delete",
-		"SSH            Tab list/Dashboard · n add · e edit · u default · Enter reuses ControlMaster if live",
+		"SSH            Tab list/Dashboard · n add · a attach ControlMaster · e edit · u default · Enter connect",
 		"History        x clears shared history · Connections: x close all · d close selected",
 		"Logs           e exports captured logs · x clears captured logs",
 		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
@@ -4930,7 +4932,7 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 	tuiTitle(
 		b,
 		fmt.Sprintf("SSH profiles · %d configured", len(snapshot.SSHProfiles)),
-		"↑↓ select · Enter connect/attach · Tab focus · n add · e edit · u default · x delete",
+		"↑↓ select · Enter connect · a attach ControlMaster · Tab · n add · e edit · u default",
 		width,
 	)
 	if len(snapshot.SSHProfiles) == 0 {
@@ -4953,6 +4955,10 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 			status = "NEEDS USER"
 			endpoint = " · edit profile before connecting"
 			color = tuiYellow
+		} else if profile.Attachable && !(profile.Connected && profile.Ready) {
+			status = "ATTACHABLE"
+			endpoint = " · a attach existing ControlMaster"
+			color = tuiCyan
 		} else if profile.Connected && profile.Ready {
 			status = "CONNECTED"
 			if profile.Attached {
@@ -5030,11 +5036,14 @@ func drawTUISSHDashboard(
 		return
 	}
 	profile := snapshot.SSHProfiles[snapshot.SelectedSSH]
-	status := "DISCONNECTED · Enter to connect"
+	status := "DISCONNECTED · Enter to connect · a attach existing ControlMaster"
 	statusColor := tuiDim
 	if profile.NeedsUsername {
 		status = "USERNAME REQUIRED · edit profile before connecting"
 		statusColor = tuiYellow
+	} else if profile.Attachable && !(profile.Connected && profile.Ready) {
+		status = "ATTACHABLE · a reuses the live ControlMaster · Enter also connects"
+		statusColor = tuiCyan
 	} else if profile.Connected && profile.Ready {
 		status = fmt.Sprintf("CONNECTED · SOCKS5 127.0.0.1:%d · Enter to disconnect", profile.SocksPort)
 		if profile.Attached {

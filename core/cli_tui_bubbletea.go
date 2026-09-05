@@ -2168,6 +2168,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		}
 	case tuiKeyAllowLAN, tuiKeyIPv6, tuiKeyUnifiedDelay, tuiKeyTCPConcurrent,
 		tuiKeyTun, tuiKeyLogLevel:
+		if key == tuiKeyAllowLAN && m.snapshot.Page == tuiPageSSH {
+			return m.attachSelectedSSH()
+		}
 		settingsKey := m.snapshot.Page == tuiPageTools && key != tuiKeyTun
 		dashboardTun := m.snapshot.Page == tuiPageDashboard && key == tuiKeyTun
 		if settingsKey || dashboardTun {
@@ -3847,6 +3850,23 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 				prefix := "connected"
 				if alreadyConnected {
 					prefix = "already connected"
+				} else if state.Kind == cliSSHAttachedKind {
+					prefix = "attached"
+				}
+				message.status = fmt.Sprintf(
+					"SSH %s %s · SOCKS5 127.0.0.1:%d",
+					state.Name,
+					prefix,
+					state.Port,
+				)
+			}
+		case "attach":
+			state, alreadyConnected, err := attachCLISSHProfile(name)
+			message.err = err
+			if err == nil {
+				prefix := "attached"
+				if alreadyConnected {
+					prefix = "already connected"
 				}
 				message.status = fmt.Sprintf(
 					"SSH %s %s · SOCKS5 127.0.0.1:%d",
@@ -3881,6 +3901,28 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 		}
 		return message
 	}
+}
+
+func (m *tuiModel) attachSelectedSSH() tea.Cmd {
+	if m.snapshot.FocusSidebar {
+		m.snapshot.Status = "Focus SSH profiles before attaching"
+		return nil
+	}
+	if m.snapshot.SelectedSSH < 0 ||
+		m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
+		m.snapshot.Status = "Select an SSH profile first"
+		return nil
+	}
+	profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
+	if profile.NeedsUsername {
+		m.snapshot.Status = "Enter Username before attaching this SSH profile"
+		return nil
+	}
+	if profile.Connected && profile.Ready {
+		m.snapshot.Status = "SSH " + profile.Name + " is already connected"
+		return nil
+	}
+	return m.runSelectedSSHAction("attach")
 }
 
 func (m *tuiModel) selectedSSHName() string {

@@ -288,3 +288,49 @@ func startTestSSHRelay(t *testing.T, state *cliSSHTunnelState) error {
 	})
 	return nil
 }
+
+func TestTUISSHAttachKeyCapturesExistingMaster(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.FocusSidebar = false
+	model.snapshot.SSHDashboardFocus = false
+	model.snapshot.SelectedSSH = 0
+	model.snapshot.SSHProfiles = []tuiSSHProfile{{
+		Name:     "home",
+		Username: "deploy",
+		Host:     "gateway.example.com",
+		Port:     22,
+	}}
+	command := model.handleKey(tuiKeyAllowLAN)
+	if command == nil {
+		t.Fatal("SSH page a/attach did not start an operation")
+	}
+	if !strings.Contains(model.snapshot.Status, "attach") {
+		t.Fatalf("SSH attach status = %q", model.snapshot.Status)
+	}
+}
+
+func TestTUISSHRendersAttachControls(t *testing.T) {
+	var output strings.Builder
+	snapshot := tuiSnapshot{
+		Page: tuiPageSSH,
+		SSHProfiles: []tuiSSHProfile{{
+			Name:       "home",
+			Username:   "deploy",
+			Host:       "gateway.example.com",
+			Port:       22,
+			Attachable: true,
+		}},
+	}
+	drawTUISSH(&output, snapshot, 120, 36)
+	plain := stripTUIANSI(output.String())
+	for _, expected := range []string{
+		"a attach ControlMaster",
+		"ATTACHABLE",
+	} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("SSH page missing %q:\n%s", expected, plain)
+		}
+	}
+}
