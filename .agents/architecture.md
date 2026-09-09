@@ -154,3 +154,47 @@ cargo build --release --features windows-service
 ```
 
 It uses token-based auth with the Flutter app.
+
+## Linux CLI / TUI
+
+The Linux terminal client is built from `core/` with `CGO_ENABLED=0 go build -tags cli`. It shares `package main` with the Mihomo hub (`hub.go`, `action.go`, `common.go`) because Backend and TUI call unexported hub functions such as `handleSetupConfig`, `handleValidateConfig`, `handleInitClash`, and `handleStartListener` in-process. Do not move Backend or TUI into another package unless those hub APIs are first exported or extracted; `package main` cannot be imported.
+
+New CLI code goes in a `core/cli_*.go` file named for the domain, not into a kitchen-sink file. Current file map:
+
+Entry and commands:
+
+- `cli_main.go`: `main`, usage, `run`/`check`, path resolution
+- `cli_dispatch.go`: `flclash` / `flc` command switch
+- `cli_management.go`: Dashboard-equivalent subcommands
+- `cli_command.go`: `flc` process wrapper
+- `cli_controller.go`: Mihomo HTTP `controllerClient`
+- `cli_proxy.go` / `cli_profile.go`: `proxy` and `profile` commands
+
+Backend:
+
+- `cli_service.go`: protocol types and Unix-socket client
+- `cli_service_lifecycle.go`: start/find/upgrade Backend process
+- `cli_service_server.go`: Backend server loop
+- `cli_service_runtime.go` and `cli_service_*.go`: revisioned transactions, silent/FLC, reload, settings
+- `cli_silent.go`, `cli_history_state.go`, `cli_tun_*.go`, `cli_singleton.go`
+
+SSH (independent of Mihomo; do not import Backend from SSH):
+
+- `cli_ssh.go`: profile types and management commands
+- `cli_ssh_profile.go`: config CRUD and validation
+- `cli_ssh_tunnel.go`: OpenSSH control/forward/askpass
+- `cli_ssh_attach.go`, `cli_ssh_import.go`, `cli_ssh_relay.go`
+
+TUI:
+
+- `cli_tui.go`: snapshot types, `flclash` TUI entry, core init
+- `cli_tui_bubbletea.go`: model, `Init`, `update`
+- `cli_tui_view.go`, `cli_tui_keys.go`, `cli_tui_refresh.go`, `cli_tui_settings.go`, `cli_tui_actions.go`, `cli_tui_input.go`
+- `cli_tui_ssh_page.go`: SSH page/forms
+- `cli_tui_render.go`, `cli_tui_pages.go`, `cli_tui_dashboard.go`, `cli_tui_lists.go`, `cli_tui_profiles_page.go`: drawing
+- `cli_tui_snapshot.go`, `cli_tui_sysproxy.go`, `cli_tui_legacy.go`
+- TUI tests: `cli_tui_test.go`, `cli_tui_nav_test.go`, `cli_tui_refresh_test.go`, `cli_tui_settings_test.go`, `cli_tui_helpers_test.go`
+
+Target longer-term packages under `core/internal/` (ssh, subscription, update, paths, protocol) are for code that does not call hub. Extract a package only when its tests do not need `tuiModel` or hub functions, and keep the dependency direction `cmd/tui -> backend -> silent/tun/history/subscription`; SSH stays a sibling of Backend.
+
+Keep `//go:build linux && !cgo && cli` on every CLI file so it is not compiled into the desktop Core.
