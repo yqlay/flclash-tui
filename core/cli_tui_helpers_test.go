@@ -285,7 +285,7 @@ func populatedTUISnapshot(page tuiPage) tuiSnapshot {
 			Download: int64(index * 2048),
 		})
 		snapshot.Requests = append(snapshot.Requests, tuiRequest{
-			tuiConnection: tuiConnection{
+			TuiConnection: tuiConnection{
 				ID:       fmt.Sprintf("request-%02d", index),
 				Host:     fmt.Sprintf("request-%02d.example.com", index),
 				Process:  "example-process",

@@ -327,7 +327,7 @@ func drawTUIRequestDetail(b *strings.Builder, snapshot tuiSnapshot, width int) {
 	request := snapshot.Requests[snapshot.SelectedRequest]
 	tuiTitle(b, "History detail", "Esc returns to list", width)
 	tuiRow(b, "State         "+map[bool]string{true: "ACTIVE", false: "COMPLETED"}[request.Active], width, false, tuiGreen)
-	drawTUIConnectionFields(b, request.tuiConnection, width)
+	drawTUIConnectionFields(b, request.TuiConnection, width)
 	tuiRow(b, "First seen    "+request.FirstSeen.Format(time.RFC3339), width, false, "")
 	tuiRow(b, "Last seen     "+request.LastSeen.Format(time.RFC3339), width, false, "")
 	tuiEndPanel(b, width)

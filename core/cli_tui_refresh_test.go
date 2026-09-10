@@ -61,7 +61,7 @@ func TestTUIRequestHistoryTracksLifecycleAndLimit(t *testing.T) {
 	oversized := make([]tuiRequest, tuiRequestHistoryLimit+20)
 	for index := range oversized {
 		oversized[index] = tuiRequest{
-			tuiConnection: tuiConnection{ID: fmt.Sprintf("id-%d", index)},
+			TuiConnection: tuiConnection{ID: fmt.Sprintf("id-%d", index)},
 			LastSeen:      start.Add(time.Duration(index) * time.Second),
 		}
 	}
@@ -77,7 +77,7 @@ func TestTUIStoppedCoreClearsActiveConnectionsAndClosesHistory(t *testing.T) {
 	model.snapshot.SelectedConnection = 0
 	model.snapshot.ConnectionsDetailOpen = true
 	model.snapshot.Requests = []tuiRequest{{
-		tuiConnection: tuiConnection{ID: "request-1"},
+		TuiConnection: tuiConnection{ID: "request-1"},
 		Active:        true,
 	}}
 	model.coreRunning = false
@@ -116,7 +116,7 @@ func TestTUIRefreshDoesNotSelectAnotherConnectionAfterSelectedOneCloses(t *testi
 func TestTUIRefreshClosesStaleHistoryAndLogDetailsAndSelectsNewLogs(t *testing.T) {
 	current := tuiSnapshot{
 		Page:                  tuiPageLogs,
-		Requests:              []tuiRequest{{tuiConnection: tuiConnection{ID: "closed-request"}}},
+		Requests:              []tuiRequest{{TuiConnection: tuiConnection{ID: "closed-request"}}},
 		SelectedRequest:       0,
 		HistoryDetailOpen:     true,
 		Logs:                  []string{"old log"},
@@ -127,7 +127,7 @@ func TestTUIRefreshClosesStaleHistoryAndLogDetailsAndSelectsNewLogs(t *testing.T
 		ConnectionsDetailOpen: true,
 	}
 	refreshed := current
-	refreshed.Requests = []tuiRequest{{tuiConnection: tuiConnection{ID: "new-request"}}}
+	refreshed.Requests = []tuiRequest{{TuiConnection: tuiConnection{ID: "new-request"}}}
 	refreshed.Connections = []tuiConnection{{ID: "new-connection"}}
 	refreshed.Logs = []string{"newest log"}
 
@@ -289,8 +289,8 @@ func TestTUIFilteredSelectionClearsAndNavigationRecoversAtEdges(t *testing.T) {
 	snapshot := tuiSnapshot{
 		Connections: []tuiConnection{{ID: "first"}, {ID: "second"}},
 		Requests: []tuiRequest{
-			{tuiConnection: tuiConnection{ID: "first"}},
-			{tuiConnection: tuiConnection{ID: "second"}},
+			{TuiConnection: tuiConnection{ID: "first"}},
+			{TuiConnection: tuiConnection{ID: "second"}},
 		},
 		Logs: []string{"first", "second"},
 	}
@@ -325,7 +325,7 @@ func TestTUISearchAndFilterCloseStaleDetails(t *testing.T) {
 	model := &tuiModel{
 		snapshot: tuiSnapshot{
 			Page:                  tuiPageRequests,
-			Requests:              []tuiRequest{{tuiConnection: tuiConnection{ID: "active"}, Active: true}},
+			Requests:              []tuiRequest{{TuiConnection: tuiConnection{ID: "active"}, Active: true}},
 			SelectedRequest:       0,
 			HistoryDetailOpen:     true,
 			Connections:           []tuiConnection{{ID: "connection"}},
@@ -542,7 +542,7 @@ func TestTUIRequestsCanBeClearedWithoutClosingConnections(t *testing.T) {
 	model.snapshot.Page = tuiPageRequests
 	model.snapshot.FocusSidebar = false
 	model.snapshot.Requests = []tuiRequest{{
-		tuiConnection: tuiConnection{ID: "request-1"},
+		TuiConnection: tuiConnection{ID: "request-1"},
 	}}
 	model.snapshot.SelectedRequest = 0
 	model.snapshot.HistoryDetailOpen = true

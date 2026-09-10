@@ -28,7 +28,7 @@ func TestHistoryCollectorDoesNotDirtyUnchangedSnapshots(t *testing.T) {
 	if runtime.historyVersion != 0 {
 		t.Fatal("empty poll dirtied empty history")
 	}
-	entries := []tuiRequest{{tuiConnection: tuiConnection{ID: "closed"}, Active: false}}
+	entries := []tuiRequest{{TuiConnection: tuiConnection{ID: "closed"}, Active: false}}
 	runtime.recordHistoryUpdate(entries)
 	version := runtime.historyVersion
 	for range 3 {
@@ -49,7 +49,7 @@ func TestTUIHistoryPersistSkipsUnchangedFile(t *testing.T) {
 	directory := t.TempDir()
 	now := time.Now().UTC().Truncate(time.Second)
 	entries := []tuiRequest{{
-		tuiConnection: tuiConnection{
+		TuiConnection: tuiConnection{
 			ID:      "connection-1",
 			Host:    "example.test",
 			Network: "tcp",
@@ -118,7 +118,7 @@ func TestTUIHistoryPersistsRestoresAndClears(t *testing.T) {
 	directory := t.TempDir()
 	now := time.Now().UTC().Truncate(time.Second)
 	entries := []tuiRequest{{
-		tuiConnection: tuiConnection{
+		TuiConnection: tuiConnection{
 			ID:      "connection-1",
 			Host:    "example.test",
 			Network: "tcp",
@@ -167,9 +167,9 @@ func TestTUIHistoryPersistsRestoresAndClears(t *testing.T) {
 
 func TestFilterCLIHistoryCombinesStateSearchAndLimit(t *testing.T) {
 	history := []tuiRequest{
-		{tuiConnection: tuiConnection{ID: "1", Host: "api.example", Process: "curl", Network: "tcp", Chain: "PROXY"}, Active: true},
-		{tuiConnection: tuiConnection{ID: "2", Host: "other.example", Process: "browser", Network: "tcp", Chain: "DIRECT"}},
-		{tuiConnection: tuiConnection{ID: "3", Host: "cdn.example", Process: "curl", Network: "udp", Chain: "PROXY"}},
+		{TuiConnection: tuiConnection{ID: "1", Host: "api.example", Process: "curl", Network: "tcp", Chain: "PROXY"}, Active: true},
+		{TuiConnection: tuiConnection{ID: "2", Host: "other.example", Process: "browser", Network: "tcp", Chain: "DIRECT"}},
+		{TuiConnection: tuiConnection{ID: "3", Host: "cdn.example", Process: "curl", Network: "udp", Chain: "PROXY"}},
 	}
 	filtered := filterCLIHistory(history, "done", "curl", 1)
 	if len(filtered) != 1 || filtered[0].ID != "3" {
@@ -195,7 +195,7 @@ func TestTUIHistoryRefreshAndClearAreSerialized(t *testing.T) {
 	runtime := newTestTUIServiceRuntime(t)
 	runtime.mu.Lock()
 	runtime.history = []tuiRequest{{
-		tuiConnection: tuiConnection{
+		TuiConnection: tuiConnection{
 			ID:   "old",
 			Host: "old.example",
 		},
@@ -253,7 +253,7 @@ func TestTUIHistoryMarksEntriesCompleteWhenCoreStops(t *testing.T) {
 	runtime := newTestTUIServiceRuntime(t)
 	runtime.mu.Lock()
 	runtime.history = []tuiRequest{{
-		tuiConnection: tuiConnection{ID: "connection-1"},
+		TuiConnection: tuiConnection{ID: "connection-1"},
 		Active:        true,
 	}}
 	runtime.mu.Unlock()

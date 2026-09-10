@@ -267,13 +267,13 @@ func updateTUIRequestHistory(
 		}
 		index, exists := indexByID[connection.ID]
 		if exists {
-			updated[index].tuiConnection = connection
+			updated[index].TuiConnection = connection
 			updated[index].LastSeen = now
 			updated[index].Active = true
 			continue
 		}
 		updated = append(updated, tuiRequest{
-			tuiConnection: connection,
+			TuiConnection: connection,
 			FirstSeen:     now,
 			LastSeen:      now,
 			Active:        true,

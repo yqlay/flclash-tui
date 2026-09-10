@@ -54,41 +54,6 @@ const (
 	tuiSSHDashboardRowCount
 )
 
-type tuiConnection struct {
-	ID          string `json:"id"`
-	Host        string `json:"host"`
-	Process     string `json:"process,omitempty"`
-	ProcessPath string `json:"process_path,omitempty"`
-	UID         uint32 `json:"uid,omitempty"`
-	SourceIP    string `json:"source_ip,omitempty"`
-	InboundName string `json:"inbound_name,omitempty"`
-	InboundUser string `json:"inbound_user,omitempty"`
-	Network     string `json:"network,omitempty"`
-	Chain       string `json:"chain,omitempty"`
-	Upload      int64  `json:"upload"`
-	Download    int64  `json:"download"`
-}
-
-type tuiRequest struct {
-	tuiConnection
-	FirstSeen time.Time
-	LastSeen  time.Time
-	Active    bool
-}
-
-type tuiSettings struct {
-	Mode          string
-	MixedPort     int
-	AllowLAN      bool
-	IPv6          bool
-	UnifiedDelay  bool
-	TCPConcurrent bool
-	LogLevel      string
-	TunEnabled    bool
-	TunScope      string
-	SystemProxy   bool
-}
-
 type tuiNetworkInfo struct {
 	PublicIP   string
 	Country    string
@@ -110,15 +75,6 @@ type tuiMemoryInfo struct {
 	CoreError    string
 	UpdatedAt    time.Time
 	CoreUpdated  time.Time
-}
-
-type tuiSpeedResult struct {
-	Bytes          int64   `json:"bytes"`
-	DurationMillis int64   `json:"duration_millis"`
-	BytesPerSecond float64 `json:"bytes_per_second"`
-	Complete       bool    `json:"complete"`
-	Testing        bool    `json:"-"`
-	Error          string  `json:"-"`
 }
 
 type tuiDelayResult struct {
