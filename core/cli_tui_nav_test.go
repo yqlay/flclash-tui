@@ -36,7 +36,7 @@ func TestBubbleTeaRefreshDoesNotBlockNavigation(t *testing.T) {
 			options: controllerOptions{address: server.URL},
 			client:  server.Client(),
 		},
-		cliPaths{homeDir: t.TempDir()},
+		cliPaths{HomeDir: t.TempDir()},
 		nil,
 		false,
 	)
@@ -74,7 +74,7 @@ func TestBubbleTeaRefreshDoesNotBlockNavigation(t *testing.T) {
 func TestBubbleTeaViewLeavesTerminalControlToRenderer(t *testing.T) {
 	model := newTUIModel(
 		controllerClient{options: controllerOptions{address: "127.0.0.1:9090"}},
-		cliPaths{configPath: "/tmp/flclash/config.yaml"},
+		cliPaths{ConfigPath: "/tmp/flclash/config.yaml"},
 		nil,
 		false,
 	)
@@ -221,7 +221,7 @@ func TestTUIProfilesHideManagedRuntimeFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	paths := cliPaths{homeDir: directory, configPath: configPath}
+	paths := cliPaths{HomeDir: directory, ConfigPath: configPath}
 	snapshot := tuiSnapshot{SelectedRow: tuiProfileImportSubscriptionRow}
 	refreshTUIProfiles(&snapshot, paths)
 	if len(snapshot.Profiles) != 2 {
@@ -341,8 +341,8 @@ func TestBackendRenamesProfileRequestedByFrontend(t *testing.T) {
 	}
 	runtime := newTUIServiceRuntime(
 		cliPaths{
-			homeDir:    directory,
-			configPath: filepath.Join(directory, "config.yaml"),
+			HomeDir:    directory,
+			ConfigPath: filepath.Join(directory, "config.yaml"),
 		},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
@@ -725,7 +725,7 @@ func TestTUIStartupInterruptIsConsumedWithoutBackendResidue(t *testing.T) {
 	interrupted, err := shutdownTUIServiceOnInterrupt(
 		interrupt,
 		nil,
-		cliPaths{homeDir: t.TempDir()},
+		cliPaths{HomeDir: t.TempDir()},
 	)
 	if err != nil || !interrupted {
 		t.Fatalf("startup interrupt result = %t, %v", interrupted, err)
@@ -733,7 +733,7 @@ func TestTUIStartupInterruptIsConsumedWithoutBackendResidue(t *testing.T) {
 	interrupted, err = shutdownTUIServiceOnInterrupt(
 		interrupt,
 		nil,
-		cliPaths{homeDir: t.TempDir()},
+		cliPaths{HomeDir: t.TempDir()},
 	)
 	if err != nil || interrupted {
 		t.Fatalf("drained startup interrupt result = %t, %v", interrupted, err)
@@ -787,7 +787,7 @@ func TestTUIModeSelectionShowsAllModesBeforeChanging(t *testing.T) {
 	}
 	model := newTUIModel(
 		controllerClient{},
-		cliPaths{configPath: filepath.Join(t.TempDir(), "missing.yaml")},
+		cliPaths{ConfigPath: filepath.Join(t.TempDir(), "missing.yaml")},
 		nil,
 		true,
 	)
@@ -842,7 +842,7 @@ func TestTUIModeSelectionShowsAllModesBeforeChanging(t *testing.T) {
 func TestTUIModeSelectionStagesExactChoice(t *testing.T) {
 	model := newTUIModel(
 		controllerClient{},
-		cliPaths{configPath: filepath.Join(t.TempDir(), "missing.yaml")},
+		cliPaths{ConfigPath: filepath.Join(t.TempDir(), "missing.yaml")},
 		nil,
 		true,
 	)
@@ -1032,7 +1032,7 @@ func TestTUISettingsRunningServiceUnlocksSystemProxy(t *testing.T) {
 	drawTUIDashboard(
 		&output,
 		snapshot,
-		cliPaths{configPath: "/tmp/config.yaml"},
+		cliPaths{ConfigPath: "/tmp/config.yaml"},
 		80,
 		24,
 	)

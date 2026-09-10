@@ -3,39 +3,28 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
-	"syscall"
-	"time"
+
+	clipaths "core/internal/paths"
 )
 
 const (
-	cliRuntimeLockFilename     = ".flclash-runtime.lock"
-	cliFrontendDirectoryName   = ".flclash-frontends"
-	cliFrontendSessionFileMode = 0o600
+	cliRuntimeLockFilename   = clipaths.RuntimeLockFilename
+	cliFrontendDirectoryName = clipaths.FrontendDirectoryName
 )
 
 var cliRuntimeDirectoryOverride string
 
-type cliProcessOwner struct {
-	Kind       string    `json:"kind"`
-	PID        int       `json:"pid"`
-	TTY        string    `json:"tty,omitempty"`
-	HomeDir    string    `json:"home_dir,omitempty"`
-	ConfigPath string    `json:"config_path,omitempty"`
-	StartedAt  time.Time `json:"started_at"`
-}
+type cliPaths = clipaths.Paths
+
+type cliProcessOwner = clipaths.ProcessOwner
 
 type cliFileLock struct {
 	file  *os.File
 	path  string
 	owner cliProcessOwner
+	inner *clipaths.FileLock
 }
 
 type cliLockBusyError struct {
@@ -44,387 +33,167 @@ type cliLockBusyError struct {
 }
 
 func (e *cliLockBusyError) Error() string {
-	description := "another FlClash backend is already running for this user"
-	if e.owner.PID > 0 {
-		description += " (PID " + strconv.Itoa(e.owner.PID)
-		if e.owner.Kind != "" {
-			description += ", " + e.owner.Kind
-		}
-		description += ")"
-	}
-	if e.owner.ConfigPath != "" {
-		description += "; active config: " + e.owner.ConfigPath
-	}
-	return description
+	return (&clipaths.LockBusyError{Path: e.path, Owner: e.owner}).Error()
 }
 
 type cliFrontendSession struct {
 	lock *cliFileLock
 }
 
+func wrapCLIFileLock(inner *clipaths.FileLock) *cliFileLock {
+	if inner == nil {
+		return nil
+	}
+	return &cliFileLock{
+		file:  inner.File,
+		path:  inner.Path,
+		owner: inner.Owner,
+		inner: inner,
+	}
+}
+
+func syncCLIRuntimeOverride() {
+	clipaths.DirectoryOverride = cliRuntimeDirectoryOverride
+}
+
+func resolvePaths(configArg, directoryArg string) (cliPaths, error) {
+	return clipaths.Resolve(configArg, directoryArg)
+}
+
 func cliRuntimeDirectory() (string, error) {
-	if cliRuntimeDirectoryOverride != "" {
-		return filepath.Abs(cliRuntimeDirectoryOverride)
-	}
-	uid := os.Getuid()
-	runUserDirectory := filepath.Join(
-		"/run/user",
-		strconv.Itoa(uid),
-	)
-	if info, err := os.Stat(runUserDirectory); err == nil &&
-		info.IsDir() &&
-		cliPathOwnedByCurrentUser(info) {
-		return filepath.Join(runUserDirectory, "flclash"), nil
-	}
-	return filepath.Join(
-		os.TempDir(),
-		"flclash-runtime-"+strconv.Itoa(uid),
-	), nil
+	syncCLIRuntimeOverride()
+	return clipaths.RuntimeDirectory()
 }
 
 func cliPathOwnedByCurrentUser(info os.FileInfo) bool {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && int(stat.Uid) == os.Getuid()
+	return clipaths.OwnedByCurrentUser(info)
 }
 
 func ensureCLIRuntimeDirectory() (string, error) {
-	directory, err := cliRuntimeDirectory()
-	if err != nil {
-		return "", err
-	}
-	info, err := os.Lstat(directory)
-	if os.IsNotExist(err) {
-		if err := os.Mkdir(directory, 0o700); err != nil {
-			return "", err
-		}
-		return directory, nil
-	}
-	if err != nil {
-		return "", err
-	}
-	if info.Mode()&os.ModeSymlink != 0 ||
-		!info.IsDir() ||
-		!cliPathOwnedByCurrentUser(info) {
-		return "", fmt.Errorf(
-			"unsafe FlClash runtime directory %q",
-			directory,
-		)
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		if err := os.Chmod(directory, 0o700); err != nil {
-			return "", err
-		}
-	}
-	return directory, nil
+	syncCLIRuntimeOverride()
+	return clipaths.EnsureRuntimeDirectory()
 }
 
 func cliRuntimeLockPath() (string, error) {
-	directory, err := cliRuntimeDirectory()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(directory, cliRuntimeLockFilename), nil
+	syncCLIRuntimeOverride()
+	return clipaths.RuntimeLockPath()
 }
 
 func cliServiceSocketPath() (string, error) {
-	directory, err := cliRuntimeDirectory()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(directory, tuiServiceSocketFilename), nil
+	syncCLIRuntimeOverride()
+	return clipaths.SocketPath(tuiServiceSocketFilename)
 }
 
 func acquireCLIBackendLock(owner cliProcessOwner) (*cliFileLock, error) {
-	directory, err := ensureCLIRuntimeDirectory()
+	syncCLIRuntimeOverride()
+	lock, err := clipaths.AcquireBackendLock(owner)
 	if err != nil {
-		return nil, err
+		return nil, wrapCLILockError(err)
 	}
-	path := filepath.Join(directory, cliRuntimeLockFilename)
-	return acquireCLIFileLock(path, owner)
+	return wrapCLIFileLock(lock), nil
 }
 
-func acquireCLIFileLock(
-	path string,
-	owner cliProcessOwner,
-) (*cliFileLock, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+func acquireCLIFileLock(path string, owner cliProcessOwner) (*cliFileLock, error) {
+	syncCLIRuntimeOverride()
+	lock, err := clipaths.AcquireFileLock(path, owner)
 	if err != nil {
-		return nil, err
+		return nil, wrapCLILockError(err)
 	}
-	if err := syscall.Flock(
-		int(file.Fd()),
-		syscall.LOCK_EX|syscall.LOCK_NB,
-	); err != nil {
-		_ = file.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) ||
-			errors.Is(err, syscall.EAGAIN) {
-			return nil, &cliLockBusyError{
-				path:  path,
-				owner: readCLIProcessOwner(path),
-			}
-		}
-		return nil, err
-	}
-	lock := &cliFileLock{file: file, path: path}
-	if err := lock.setOwner(owner); err != nil {
-		lock.release()
-		return nil, err
-	}
-	return lock, nil
+	return wrapCLIFileLock(lock), nil
 }
 
-func adoptCLIBackendLock(
-	file *os.File,
-	owner cliProcessOwner,
-) (*cliFileLock, error) {
-	path, err := cliRuntimeLockPath()
+func adoptCLIBackendLock(file *os.File, owner cliProcessOwner) (*cliFileLock, error) {
+	syncCLIRuntimeOverride()
+	lock, err := clipaths.AdoptBackendLock(file, owner)
 	if err != nil {
-		return nil, err
+		return nil, wrapCLILockError(err)
 	}
-	if file == nil {
-		return nil, errors.New("inherited backend lock is unavailable")
+	return wrapCLIFileLock(lock), nil
+}
+
+func wrapCLILockError(err error) error {
+	if err == nil {
+		return nil
 	}
-	lock := &cliFileLock{file: file, path: path}
-	if err := lock.setOwner(owner); err != nil {
-		_ = file.Close()
-		return nil, err
+	var busy *clipaths.LockBusyError
+	if errors.As(err, &busy) {
+		return &cliLockBusyError{path: busy.Path, owner: busy.Owner}
 	}
-	return lock, nil
+	return err
 }
 
 func (l *cliFileLock) setOwner(owner cliProcessOwner) error {
-	if owner.PID <= 0 {
-		owner.PID = os.Getpid()
+	if l == nil || l.inner == nil {
+		return nil
 	}
-	if owner.StartedAt.IsZero() {
-		owner.StartedAt = time.Now()
-	}
-	if _, err := l.file.Seek(0, 0); err != nil {
+	if err := l.inner.SetOwner(owner); err != nil {
 		return err
 	}
-	if err := l.file.Truncate(0); err != nil {
-		return err
-	}
-	if err := json.NewEncoder(l.file).Encode(owner); err != nil {
-		return err
-	}
-	if err := l.file.Sync(); err != nil {
-		return err
-	}
-	l.owner = owner
+	l.file = l.inner.File
+	l.path = l.inner.Path
+	l.owner = l.inner.Owner
 	return nil
 }
 
 func (l *cliFileLock) release() {
-	if l == nil || l.file == nil {
+	if l == nil || l.inner == nil {
 		return
 	}
-	_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
-	_ = l.file.Close()
-	l.file = nil
+	l.inner.Release()
+	l.file = l.inner.File
 }
 
 func (l *cliFileLock) closeTransferredCopy() {
-	if l == nil || l.file == nil {
+	if l == nil || l.inner == nil {
 		return
 	}
-	_ = l.file.Close()
-	l.file = nil
+	l.inner.CloseTransferredCopy()
+	l.file = l.inner.File
 }
 
 func readCLIProcessOwner(path string) cliProcessOwner {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return cliProcessOwner{}
-	}
-	var owner cliProcessOwner
-	if json.Unmarshal(data, &owner) != nil {
-		return cliProcessOwner{}
-	}
-	return owner
+	return clipaths.ReadProcessOwner(path)
 }
 
-func registerCLIFrontend(
-	homeDir,
-	configPath string,
-) (*cliFrontendSession, []cliProcessOwner, error) {
-	existing, err := listCLIFrontends()
+func registerCLIFrontend(homeDir, configPath string) (*cliFrontendSession, []cliProcessOwner, error) {
+	syncCLIRuntimeOverride()
+	session, existing, err := clipaths.RegisterFrontend(homeDir, configPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, wrapCLILockError(err)
 	}
-	runtimeDirectory, err := ensureCLIRuntimeDirectory()
-	if err != nil {
-		return nil, nil, err
-	}
-	sessionDirectory := filepath.Join(
-		runtimeDirectory,
-		cliFrontendDirectoryName,
-	)
-	if err := os.MkdirAll(sessionDirectory, 0o700); err != nil {
-		return nil, nil, err
-	}
-	owner := cliProcessOwner{
-		Kind:       "tui",
-		PID:        os.Getpid(),
-		TTY:        cliTTYName(),
-		HomeDir:    homeDir,
-		ConfigPath: configPath,
-		StartedAt:  time.Now(),
-	}
-	path := filepath.Join(
-		sessionDirectory,
-		fmt.Sprintf("%d-%d.lock", owner.PID, owner.StartedAt.UnixNano()),
-	)
-	lock, err := acquireCLIFileLock(path, owner)
-	if err != nil {
-		return nil, nil, err
-	}
-	return &cliFrontendSession{lock: lock}, existing, nil
+	return &cliFrontendSession{lock: wrapCLIFileLock(session.Lock)}, existing, nil
 }
 
 func (s *cliFrontendSession) close() {
 	if s == nil || s.lock == nil {
 		return
 	}
-	path := s.lock.path
-	s.lock.release()
-	_ = os.Remove(path)
+	if s.lock.inner != nil {
+		session := clipaths.FrontendSession{Lock: s.lock.inner}
+		session.Close()
+		s.lock.file = s.lock.inner.File
+	}
 	s.lock = nil
 }
 
 func listCLIFrontends() ([]cliProcessOwner, error) {
-	runtimeDirectory, err := cliRuntimeDirectory()
-	if err != nil {
-		return nil, err
-	}
-	sessionDirectory := filepath.Join(
-		runtimeDirectory,
-		cliFrontendDirectoryName,
-	)
-	entries, err := os.ReadDir(sessionDirectory)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	owners := make([]cliProcessOwner, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".lock") {
-			continue
-		}
-		path := filepath.Join(sessionDirectory, entry.Name())
-		file, openErr := os.OpenFile(path, os.O_RDWR, cliFrontendSessionFileMode)
-		if openErr != nil {
-			continue
-		}
-		lockErr := syscall.Flock(
-			int(file.Fd()),
-			syscall.LOCK_EX|syscall.LOCK_NB,
-		)
-		if lockErr == nil {
-			_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-			_ = file.Close()
-			_ = os.Remove(path)
-			continue
-		}
-		_ = file.Close()
-		if !errors.Is(lockErr, syscall.EWOULDBLOCK) &&
-			!errors.Is(lockErr, syscall.EAGAIN) {
-			continue
-		}
-		owner := readCLIProcessOwner(path)
-		if owner.PID > 0 {
-			owners = append(owners, owner)
-		}
-	}
-	sort.Slice(owners, func(left, right int) bool {
-		if owners[left].StartedAt.Equal(owners[right].StartedAt) {
-			return owners[left].PID < owners[right].PID
-		}
-		return owners[left].StartedAt.Before(owners[right].StartedAt)
-	})
-	return owners, nil
+	syncCLIRuntimeOverride()
+	return clipaths.ListFrontends()
 }
 
-// activeCLIBackendOwner returns only an owner that still holds the backend
-// lock. An unlocked stale metadata file is cleaned up and reported inactive.
 func activeCLIBackendOwner() (cliProcessOwner, bool, error) {
-	path, err := cliRuntimeLockPath()
-	if err != nil {
-		return cliProcessOwner{}, false, err
-	}
-	file, err := os.OpenFile(path, os.O_RDWR, cliFrontendSessionFileMode)
-	if os.IsNotExist(err) {
-		return cliProcessOwner{}, false, nil
-	}
-	if err != nil {
-		return cliProcessOwner{}, false, err
-	}
-	defer file.Close()
-	lockErr := syscall.Flock(
-		int(file.Fd()),
-		syscall.LOCK_EX|syscall.LOCK_NB,
-	)
-	if lockErr == nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-		_ = os.Remove(path)
-		return cliProcessOwner{}, false, nil
-	}
-	if !errors.Is(lockErr, syscall.EWOULDBLOCK) &&
-		!errors.Is(lockErr, syscall.EAGAIN) {
-		return cliProcessOwner{}, false, lockErr
-	}
-	owner := readCLIProcessOwner(path)
-	if owner.PID <= 0 {
-		return cliProcessOwner{}, false, errors.New(
-			"active Backend lock has no valid owner PID",
-		)
-	}
-	return owner, true, nil
+	syncCLIRuntimeOverride()
+	return clipaths.ActiveBackendOwner()
 }
 
 func cliTTYName() string {
-	path, err := os.Readlink("/proc/self/fd/0")
-	if err != nil || !strings.HasPrefix(path, "/dev/") {
-		return ""
-	}
-	return path
+	return clipaths.TTYName()
 }
 
 func formatCLIFrontendNotice(existing []cliProcessOwner) string {
-	if len(existing) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(existing))
-	for _, owner := range existing {
-		value := "PID " + strconv.Itoa(owner.PID)
-		if owner.TTY != "" {
-			value += " " + owner.TTY
-		}
-		parts = append(parts, value)
-	}
-	return fmt.Sprintf(
-		"Attached to shared backend · %d other TUI frontend(s): %s",
-		len(existing),
-		strings.Join(parts, ", "),
-	)
+	return clipaths.FormatFrontendNotice(existing)
 }
 
 func formatCLIFrontendSummary(frontends []cliProcessOwner) string {
-	if len(frontends) == 0 {
-		return "1 active"
-	}
-	pids := make([]string, 0, len(frontends))
-	for _, frontend := range frontends {
-		pids = append(pids, strconv.Itoa(frontend.PID))
-	}
-	return fmt.Sprintf(
-		"%d active · PID %s",
-		len(frontends),
-		strings.Join(pids, ", "),
-	)
+	return clipaths.FormatFrontendSummary(frontends)
 }

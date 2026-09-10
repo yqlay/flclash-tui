@@ -19,7 +19,7 @@ func ensureTUIService(
 	explicitConfig bool,
 	explicitDirectory bool,
 ) (*tuiServiceClient, tuiServiceStatus, error) {
-	client := newTUIServiceClient(paths.homeDir)
+	client := newTUIServiceClient(paths.HomeDir)
 	if status, err := client.compatibleStatus(); err == nil {
 		if status.Version == cliVersion &&
 			status.ProtocolVersion == tuiServiceProtocolVersion {
@@ -38,13 +38,13 @@ func ensureTUIService(
 		}
 		wasRunning := status.Running
 		if status.HomeDir != "" {
-			paths.homeDir = status.HomeDir
+			paths.HomeDir = status.HomeDir
 		}
 		if _, pathErr := tuiProfileStateKey(
-			paths.homeDir,
+			paths.HomeDir,
 			status.ConfigPath,
 		); pathErr == nil {
-			paths.configPath = status.ConfigPath
+			paths.ConfigPath = status.ConfigPath
 		}
 		if err := client.shutdownPIDAndWait(
 			status.PID,
@@ -98,10 +98,10 @@ func ensureTUIService(
 		}
 		wasRunning := legacyStatus.Running
 		if legacyStatus.ConfigPath != "" {
-			paths.configPath = legacyStatus.ConfigPath
+			paths.ConfigPath = legacyStatus.ConfigPath
 		}
 		if legacyStatus.HomeDir != "" {
-			paths.homeDir = legacyStatus.HomeDir
+			paths.HomeDir = legacyStatus.HomeDir
 		}
 		if err := legacyClient.shutdownPIDAndWait(
 			legacyStatus.PID,
@@ -178,7 +178,7 @@ func findLegacyTUIService(
 	paths cliPaths,
 ) (*tuiServiceClient, tuiServiceStatus, bool) {
 	runtimeSocket, _ := cliServiceSocketPath()
-	directories := []string{paths.homeDir}
+	directories := []string{paths.HomeDir}
 	if configRoot, err := os.UserConfigDir(); err == nil {
 		directories = append(
 			directories,
@@ -216,9 +216,9 @@ func validateTUIServiceTarget(
 		return nil
 	}
 	sameHome := status.HomeDir == "" ||
-		filepath.Clean(status.HomeDir) == filepath.Clean(paths.homeDir)
+		filepath.Clean(status.HomeDir) == filepath.Clean(paths.HomeDir)
 	sameConfig := status.ConfigPath == "" ||
-		filepath.Clean(status.ConfigPath) == filepath.Clean(paths.configPath)
+		filepath.Clean(status.ConfigPath) == filepath.Clean(paths.ConfigPath)
 	if sameHome && (!explicitConfig || sameConfig) {
 		return nil
 	}
@@ -226,7 +226,7 @@ func validateTUIServiceTarget(
 		"the per-user FlClash backend is already using %q; "+
 			"stop it before opening explicit config %q",
 		status.ConfigPath,
-		paths.configPath,
+		paths.ConfigPath,
 	)
 }
 
@@ -308,10 +308,10 @@ func spawnTUIService(paths cliPaths, testURL string, allowCreate bool) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(paths.homeDir, 0o700); err != nil {
+	if err := os.MkdirAll(paths.HomeDir, 0o700); err != nil {
 		return err
 	}
-	logPath := filepath.Join(paths.homeDir, tuiServiceLogFilename)
+	logPath := filepath.Join(paths.HomeDir, tuiServiceLogFilename)
 	rotateTUIServiceLog(logPath)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -319,8 +319,8 @@ func spawnTUIService(paths cliPaths, testURL string, allowCreate bool) error {
 	}
 	backendLock, err := acquireCLIBackendLock(cliProcessOwner{
 		Kind:       "service-starting",
-		HomeDir:    paths.homeDir,
-		ConfigPath: paths.configPath,
+		HomeDir:    paths.HomeDir,
+		ConfigPath: paths.ConfigPath,
 	})
 	if err != nil {
 		_ = logFile.Close()
@@ -330,9 +330,9 @@ func spawnTUIService(paths cliPaths, testURL string, allowCreate bool) error {
 		executable,
 		"_service",
 		"--directory",
-		paths.homeDir,
+		paths.HomeDir,
 		"--config",
-		paths.configPath,
+		paths.ConfigPath,
 		"--test-url",
 		testURL,
 		"--create-config="+strconv.FormatBool(allowCreate),

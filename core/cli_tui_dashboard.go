@@ -119,7 +119,7 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 				len(snapshot.Requests),
 			),
 			"TUI frontends "+formatCLIFrontendSummary(snapshot.Frontends),
-			fmt.Sprintf("Config        %s", paths.configPath),
+			fmt.Sprintf("Config        %s", paths.ConfigPath),
 		)
 		tuiTitle(
 			b,
@@ -310,7 +310,7 @@ func tuiCompactDashboardRows(
 				formatCLIFrontendSummary(snapshot.Frontends),
 		},
 		tuiDashboardCompactRow{
-			value: "Config        " + paths.configPath,
+			value: "Config        " + paths.ConfigPath,
 		},
 	)
 	return rows

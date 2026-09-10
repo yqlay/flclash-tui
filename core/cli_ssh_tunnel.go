@@ -40,7 +40,7 @@ func runCLISSHCommand(
 			level = "ERROR"
 		}
 		if paths, pathErr := resolvePaths("", ""); pathErr == nil {
-			appendCLIApplicationLog(paths.homeDir, level, event, output)
+			appendCLIApplicationLog(paths.HomeDir, level, event, output)
 		} else {
 			appendTUILogEvent(level, event+" · "+output)
 		}

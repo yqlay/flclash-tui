@@ -537,13 +537,13 @@ func tuiCommand(args []string) error {
 			}
 			return err
 		}
-		if _, pathErr := tuiProfileStateKey(paths.homeDir, status.ConfigPath); pathErr != nil {
+		if _, pathErr := tuiProfileStateKey(paths.HomeDir, status.ConfigPath); pathErr != nil {
 			return fmt.Errorf("background service returned an invalid profile path: %w", pathErr)
 		}
 		if status.HomeDir != "" {
-			paths.homeDir = status.HomeDir
+			paths.HomeDir = status.HomeDir
 		}
-		paths.configPath = status.ConfigPath
+		paths.ConfigPath = status.ConfigPath
 		controllerAddress = ""
 		controllerUnix = status.CoreSocket
 		coreRunning = status.Running
@@ -578,8 +578,8 @@ func tuiCommand(args []string) error {
 		return shutdownErr
 	}
 	frontendSession, existingFrontends, err := registerCLIFrontend(
-		paths.homeDir,
-		paths.configPath,
+		paths.HomeDir,
+		paths.ConfigPath,
 	)
 	if err != nil {
 		return fmt.Errorf("register TUI frontend: %w", err)
@@ -615,17 +615,17 @@ func shutdownTUIServiceOnInterrupt(
 }
 
 func ensureTUIConfig(paths cliPaths, allowCreate bool) error {
-	_, err := os.Stat(paths.configPath)
+	_, err := os.Stat(paths.ConfigPath)
 	if err == nil {
 		return nil
 	}
 	if !os.IsNotExist(err) || !allowCreate {
-		return fmt.Errorf("config file %q: %w", paths.configPath, err)
+		return fmt.Errorf("config file %q: %w", paths.ConfigPath, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(paths.configPath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(paths.ConfigPath), 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
-	if err := os.WriteFile(paths.configPath, []byte(defaultTUIConfig), 0o600); err != nil {
+	if err := os.WriteFile(paths.ConfigPath, []byte(defaultTUIConfig), 0o600); err != nil {
 		return fmt.Errorf("create default config: %w", err)
 	}
 	return nil
@@ -643,14 +643,14 @@ func initializeCore(
 	secret string,
 	startListeners bool,
 ) ([]byte, error) {
-	configData, err := os.ReadFile(paths.configPath)
+	configData, err := os.ReadFile(paths.ConfigPath)
 	if err != nil {
-		return nil, fmt.Errorf("config file %q: %w", paths.configPath, err)
+		return nil, fmt.Errorf("config file %q: %w", paths.ConfigPath, err)
 	}
-	if err := os.MkdirAll(paths.homeDir, 0o700); err != nil {
+	if err := os.MkdirAll(paths.HomeDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
-	if err := ensureTUIBundledGeoData(paths.homeDir); err != nil {
+	if err := ensureTUIBundledGeoData(paths.HomeDir); err != nil {
 		return nil, fmt.Errorf("prepare offline Geo data: %w", err)
 	}
 	rawConfig, err := config.UnmarshalRawConfig(configData)
@@ -663,8 +663,8 @@ func initializeCore(
 	}
 
 	initParams, err := json.Marshal(InitParams{
-		HomeDir:    paths.homeDir,
-		ConfigPath: paths.configPath,
+		HomeDir:    paths.HomeDir,
+		ConfigPath: paths.ConfigPath,
 		Version:    1,
 	})
 	if err != nil {
@@ -679,7 +679,7 @@ func initializeCore(
 
 	setup := SetupParams{
 		TestURL:     testURL,
-		SelectedMap: loadTUISelectedProxies(paths.homeDir),
+		SelectedMap: loadTUISelectedProxies(paths.HomeDir),
 	}
 	if controller != "" {
 		setup.ExternalController = &controller

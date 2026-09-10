@@ -16,11 +16,6 @@ import (
 
 const cliVersion = "0.5.28"
 
-type cliPaths struct {
-	homeDir    string
-	configPath string
-}
-
 type controllerOptions struct {
 	address    string
 	unixSocket string
@@ -123,8 +118,8 @@ func runCommand(args []string) error {
 	}
 	backendLock, err := acquireCLIBackendLock(cliProcessOwner{
 		Kind:       "foreground",
-		HomeDir:    paths.homeDir,
-		ConfigPath: paths.configPath,
+		HomeDir:    paths.HomeDir,
+		ConfigPath: paths.ConfigPath,
 	})
 	if err != nil {
 		return err
@@ -139,8 +134,8 @@ func runCommand(args []string) error {
 	}
 
 	fmt.Printf("FlClash TUI is running\n")
-	fmt.Printf("  config: %s\n", paths.configPath)
-	fmt.Printf("  data:   %s\n", paths.homeDir)
+	fmt.Printf("  config: %s\n", paths.ConfigPath)
+	fmt.Printf("  data:   %s\n", paths.HomeDir)
 	fmt.Println("Press Ctrl-C to stop.")
 
 	interrupt := make(chan os.Signal, 1)
@@ -182,50 +177,12 @@ func checkCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(paths.configPath); err != nil {
-		return fmt.Errorf("config file %q: %w", paths.configPath, err)
+	if _, err := os.Stat(paths.ConfigPath); err != nil {
+		return fmt.Errorf("config file %q: %w", paths.ConfigPath, err)
 	}
-	if message := handleValidateConfig(paths.configPath); message != "" {
+	if message := handleValidateConfig(paths.ConfigPath); message != "" {
 		return errors.New(message)
 	}
-	fmt.Printf("configuration is valid: %s\n", paths.configPath)
+	fmt.Printf("configuration is valid: %s\n", paths.ConfigPath)
 	return nil
-}
-
-func resolvePaths(configArg, directoryArg string) (cliPaths, error) {
-	var homeDir string
-	var configPath string
-
-	if directoryArg != "" {
-		homeDir = directoryArg
-		if configArg == "" {
-			configArg = "config.yaml"
-		}
-		if !filepath.IsAbs(configArg) {
-			configArg = filepath.Join(homeDir, configArg)
-		}
-	} else if configArg != "" {
-		configPath = configArg
-		homeDir = filepath.Dir(configArg)
-	} else {
-		configRoot, err := os.UserConfigDir()
-		if err != nil {
-			return cliPaths{}, fmt.Errorf("resolve user config directory: %w", err)
-		}
-		homeDir = filepath.Join(configRoot, "flclash")
-		configPath = filepath.Join(homeDir, "config.yaml")
-	}
-
-	absoluteHome, err := filepath.Abs(homeDir)
-	if err != nil {
-		return cliPaths{}, err
-	}
-	if configPath == "" {
-		configPath = configArg
-	}
-	absoluteConfig, err := filepath.Abs(configPath)
-	if err != nil {
-		return cliPaths{}, err
-	}
-	return cliPaths{homeDir: absoluteHome, configPath: absoluteConfig}, nil
 }

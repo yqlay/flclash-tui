@@ -37,7 +37,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 	defer handleStopLog()
 	snapshot := tuiSnapshot{
 		Status:            "Loading...",
-		GroupOrder:        loadTUIProxyGroupOrder(paths.configPath),
+		GroupOrder:        loadTUIProxyGroupOrder(paths.ConfigPath),
 		SelectedGroup:     0,
 		SelectedNode:      0,
 		SelectedRow:       tuiProfileImportSubscriptionRow,
@@ -215,7 +215,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 				toggleCore()
 			case tuiKeyEdit:
 				if snapshot.Page == tuiPageLogs {
-					path, err := exportTUILogs(paths.homeDir, snapshot.Logs)
+					path, err := exportTUILogs(paths.HomeDir, snapshot.Logs)
 					if err != nil {
 						snapshot.Status = "Export logs failed: " + err.Error()
 					} else {
@@ -233,7 +233,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 					break
 				}
 				screen.invalidate()
-				editPath := paths.configPath
+				editPath := paths.ConfigPath
 				if snapshot.Page == tuiPageProfiles && snapshot.SelectedRow >= 0 && snapshot.SelectedRow < len(snapshot.Profiles) {
 					editPath = snapshot.Profiles[snapshot.SelectedRow].Path
 				}
@@ -251,7 +251,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 			case tuiKeyNewProfile:
 				if snapshot.Page == tuiPageProfiles {
 					screen.invalidate()
-					if err := addTUIProfile(paths.homeDir, &oldState); err != nil {
+					if err := addTUIProfile(paths.HomeDir, &oldState); err != nil {
 						if errors.Is(err, errTUIActionCancelled) {
 							snapshot.Status = "Profile download cancelled"
 						} else {
@@ -379,7 +379,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 					if snapshot.ProxyView == tuiProxyViewProviders {
 						updateTUIProvider(&snapshot, client)
 					} else {
-						selectTUIProxy(&snapshot, client, paths.homeDir)
+						selectTUIProxy(&snapshot, client, paths.HomeDir)
 					}
 				} else if snapshot.Page == tuiPageProfiles {
 					switchTUIProfile(&snapshot, &paths, &setupParams, client, ownsCore, coreRunning)
@@ -456,7 +456,7 @@ func executeTUITool(
 ) {
 	switch index {
 	case 0:
-		if err := runTUIEditor(paths.configPath, oldState); err != nil {
+		if err := runTUIEditor(paths.ConfigPath, oldState); err != nil {
 			snapshot.Status = "Editor failed: " + err.Error()
 		} else if ownsCore {
 			if message := handleSetupConfig(setupParams); message != "" {
@@ -468,13 +468,13 @@ func executeTUITool(
 			snapshot.Status = "Configuration saved; reload the external core to apply it"
 		}
 	case 1:
-		if backupPath, err := backupTUIConfig(paths.configPath); err != nil {
+		if backupPath, err := backupTUIConfig(paths.ConfigPath); err != nil {
 			snapshot.Status = "Backup failed: " + err.Error()
 		} else {
 			snapshot.Status = "Backup created: " + filepath.Base(backupPath)
 		}
 	case 2:
-		if backupPath, err := restoreLatestTUIConfig(paths.configPath); err != nil {
+		if backupPath, err := restoreLatestTUIConfig(paths.ConfigPath); err != nil {
 			snapshot.Status = "Restore failed: " + err.Error()
 		} else if ownsCore {
 			if message := handleSetupConfig(setupParams); message != "" {

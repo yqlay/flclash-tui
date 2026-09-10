@@ -940,7 +940,7 @@ func loadCLISSHConfig() (cliSSHConfig, error) {
 	if err != nil {
 		return cliSSHConfig{}, err
 	}
-	path := filepath.Join(paths.homeDir, cliSSHConfigFilename)
+	path := filepath.Join(paths.HomeDir, cliSSHConfigFilename)
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return cliSSHConfig{Version: cliSSHConfigVersion}, nil
@@ -977,10 +977,10 @@ func updateCLISSHConfig(update func(*cliSSHConfig) error) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(paths.homeDir, 0o700); err != nil {
+	if err := os.MkdirAll(paths.HomeDir, 0o700); err != nil {
 		return err
 	}
-	lock, err := acquireCLIFileLock(filepath.Join(paths.homeDir, cliSSHConfigLockFilename), cliProcessOwner{Kind: "ssh-config", PID: os.Getpid(), HomeDir: paths.homeDir, StartedAt: time.Now()})
+	lock, err := acquireCLIFileLock(filepath.Join(paths.HomeDir, cliSSHConfigLockFilename), cliProcessOwner{Kind: "ssh-config", PID: os.Getpid(), HomeDir: paths.HomeDir, StartedAt: time.Now()})
 	if err != nil {
 		return fmt.Errorf("lock SSH configuration: %w", err)
 	}
@@ -997,7 +997,7 @@ func updateCLISSHConfig(update func(*cliSSHConfig) error) error {
 	if err != nil {
 		return err
 	}
-	return writeCLISSHFileAtomically(filepath.Join(paths.homeDir, cliSSHConfigFilename), append(data, '\n'))
+	return writeCLISSHFileAtomically(filepath.Join(paths.HomeDir, cliSSHConfigFilename), append(data, '\n'))
 }
 
 func writeCLISSHFileAtomically(path string, data []byte) error {

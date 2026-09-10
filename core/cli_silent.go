@@ -32,7 +32,7 @@ func writeTUIManagedRuntimeConfig(
 	tunScope string,
 	tunFD int,
 ) (string, error) {
-	data, err := os.ReadFile(paths.configPath)
+	data, err := os.ReadFile(paths.ConfigPath)
 	if err != nil {
 		return "", err
 	}
@@ -114,7 +114,7 @@ func writeTUIManagedRuntimeConfig(
 	if _, err := rand.Read(runtimeID); err != nil {
 		return "", err
 	}
-	runtimePath := filepath.Join(paths.homeDir, tuiManagedRuntimeConfigPrefix+hex.EncodeToString(runtimeID)+".yaml")
+	runtimePath := filepath.Join(paths.HomeDir, tuiManagedRuntimeConfigPrefix+hex.EncodeToString(runtimeID)+".yaml")
 	if err := writeTUIProfileAtomically(runtimePath, updated, 0o600); err != nil {
 		return "", err
 	}
@@ -233,7 +233,7 @@ func writeTUISilentRuntimeConfig(
 			return "", errors.New("silent runtime credentials are incomplete")
 		}
 	}
-	data, err := os.ReadFile(paths.configPath)
+	data, err := os.ReadFile(paths.ConfigPath)
 	if err != nil {
 		return "", err
 	}
@@ -315,7 +315,7 @@ func writeTUISilentRuntimeConfig(
 		return "", fmt.Errorf("generate silent runtime path: %w", err)
 	}
 	runtimePath := filepath.Join(
-		paths.homeDir,
+		paths.HomeDir,
 		tuiSilentRuntimeConfigPrefix+hex.EncodeToString(runtimeID)+".yaml",
 	)
 	if err := writeTUIProfileAtomically(runtimePath, updated, 0o600); err != nil {

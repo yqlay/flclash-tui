@@ -162,8 +162,8 @@ func TestValidateTUIServiceTargetRejectsSecondExplicitBackend(
 	t *testing.T,
 ) {
 	paths := cliPaths{
-		homeDir:    "/tmp/flclash-b",
-		configPath: "/tmp/flclash-b/config.yaml",
+		HomeDir:    "/tmp/flclash-b",
+		ConfigPath: "/tmp/flclash-b/config.yaml",
 	}
 	status := tuiServiceStatus{
 		HomeDir:    "/tmp/flclash-a",
@@ -183,8 +183,8 @@ func TestValidateTUIServiceTargetRejectsSecondExplicitBackend(
 		t.Fatalf("explicit second backend error = %v", err)
 	}
 	sameDirectory := cliPaths{
-		homeDir:    "/tmp/flclash-a",
-		configPath: "/tmp/flclash-a/config.yaml",
+		HomeDir:    "/tmp/flclash-a",
+		ConfigPath: "/tmp/flclash-a/config.yaml",
 	}
 	if err := validateTUIServiceTarget(
 		sameDirectory,

@@ -77,7 +77,7 @@ rules:
 		Password: "0123456789abcdef0123456789abcdef",
 	}
 	runtimePath, err := writeTUISilentRuntimeConfig(
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 		state,
 	)
 	if err != nil {
@@ -242,7 +242,7 @@ rules:
 	serviceDone := make(chan error, 1)
 	go func() {
 		serviceDone <- runTUIService(
-			cliPaths{homeDir: directory, configPath: configPath},
+			cliPaths{HomeDir: directory, ConfigPath: configPath},
 			defaultCLITestURL,
 			nil,
 			false,
@@ -350,7 +350,7 @@ rules:
 	serviceDone := make(chan error, 1)
 	go func() {
 		serviceDone <- runTUIService(
-			cliPaths{homeDir: directory, configPath: configPath},
+			cliPaths{HomeDir: directory, ConfigPath: configPath},
 			defaultCLITestURL,
 			nil,
 			false,
@@ -427,7 +427,7 @@ rules:
 	serviceDone := make(chan error, 1)
 	go func() {
 		serviceDone <- runTUIService(
-			cliPaths{homeDir: directory, configPath: configPath},
+			cliPaths{HomeDir: directory, ConfigPath: configPath},
 			defaultCLITestURL,
 			nil,
 			false,
@@ -482,7 +482,7 @@ rules:
 	serviceDone := make(chan error, 1)
 	go func() {
 		serviceDone <- runTUIService(
-			cliPaths{homeDir: directory, configPath: configPath},
+			cliPaths{HomeDir: directory, ConfigPath: configPath},
 			defaultCLITestURL,
 			nil,
 			false,
@@ -544,7 +544,7 @@ rules:
 	serviceDone := make(chan error, 1)
 	go func() {
 		serviceDone <- runTUIService(
-			cliPaths{homeDir: directory, configPath: configPath},
+			cliPaths{HomeDir: directory, ConfigPath: configPath},
 			defaultCLITestURL,
 			nil,
 			false,
@@ -601,7 +601,7 @@ func TestWriteTUISilentRuntimeConfigRejectsIncompleteCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := writeTUISilentRuntimeConfig(
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 		tuiFLCListenerState{Outbound: "PROXY", Port: 17891},
 	)
 	if err == nil {
@@ -616,7 +616,7 @@ func TestWriteTUISilentRuntimeConfigWithoutOutboundHasNoInbound(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimePath, err := writeTUISilentRuntimeConfig(
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 		tuiFLCListenerState{},
 	)
 	if err != nil {
@@ -667,7 +667,7 @@ rules:
 		t.Fatal(err)
 	}
 	runtimePath, err := writeTUIManagedRuntimeConfig(
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 		"rule",
 		17891,
 		true,
@@ -711,7 +711,7 @@ rules:
 		t.Fatalf("managed TUN UID = %#v", tun["include-uid"])
 	}
 	directPath, err := writeTUIManagedRuntimeConfig(
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 		"direct",
 		17892,
 		false,
@@ -763,7 +763,7 @@ rules:
 	serviceDone := make(chan error, 1)
 	go func() {
 		serviceDone <- runTUIService(
-			cliPaths{homeDir: directory, configPath: configPath},
+			cliPaths{HomeDir: directory, ConfigPath: configPath},
 			defaultCLITestURL,
 			nil,
 			false,
@@ -789,7 +789,7 @@ rules:
 		t.Fatal("stopped silent mode opened the normal proxy listener")
 	}
 	privateProxyURL, err := activeCLIProxyURLForPaths(
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 	)
 	if err != nil {
 		t.Fatalf("first flc command did not repair the private listener: %v", err)
@@ -862,7 +862,7 @@ rules:
 	if err := os.WriteFile(configPath, source, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	paths := cliPaths{homeDir: directory, configPath: configPath}
+	paths := cliPaths{HomeDir: directory, ConfigPath: configPath}
 	if err := rememberTUITrafficMode(directory, "rule"); err != nil {
 		t.Fatal(err)
 	}

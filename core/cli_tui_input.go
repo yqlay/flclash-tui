@@ -174,7 +174,7 @@ func (m *tuiModel) updateSelectedProfileSubscription() tea.Cmd {
 		return nil
 	}
 	profile := m.snapshot.Profiles[m.snapshot.SelectedRow]
-	sourceURL, err := loadTUISubscriptionSource(m.paths.homeDir, profile.Path)
+	sourceURL, err := loadTUISubscriptionSource(m.paths.HomeDir, profile.Path)
 	if err != nil {
 		m.snapshot.Status = "Subscription refresh unavailable: " + err.Error()
 		return nil
@@ -195,7 +195,7 @@ func (m *tuiModel) startProfileSubscriptionUpdate(
 		return nil
 	}
 	return m.startOperation(func(state *tuiOperationState) {
-		isActive := filepath.Clean(profilePath) == filepath.Clean(state.paths.configPath)
+		isActive := filepath.Clean(profilePath) == filepath.Clean(state.paths.ConfigPath)
 		previous, err := os.ReadFile(profilePath)
 		if err != nil {
 			state.snapshot.Status = "Subscription update failed: " + err.Error()
@@ -441,7 +441,7 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			if !prepareTUIBackendRevision(state, m.service) {
 				return
 			}
-			path, err := tuiSubscriptionImportPath(state.paths.homeDir, payload)
+			path, err := tuiSubscriptionImportPath(state.paths.HomeDir, payload)
 			if err != nil {
 				state.snapshot.Status = "Add profile failed: " + err.Error()
 				return
@@ -485,7 +485,7 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			if !prepareTUIBackendRevision(state, m.service) {
 				return
 			}
-			path, err := nextTUIImportedProfilePath(state.paths.homeDir, name)
+			path, err := nextTUIImportedProfilePath(state.paths.HomeDir, name)
 			if err != nil {
 				state.snapshot.Status = "Import local profile failed: " + err.Error()
 				return

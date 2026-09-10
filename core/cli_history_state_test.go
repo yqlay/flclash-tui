@@ -63,7 +63,7 @@ func TestTUIHistoryPersistSkipsUnchangedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := newTUIServiceRuntime(
-		cliPaths{homeDir: directory, configPath: filepath.Join(directory, "config.yaml")},
+		cliPaths{HomeDir: directory, ConfigPath: filepath.Join(directory, "config.yaml")},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
 		nil,
@@ -146,7 +146,7 @@ func TestTUIHistoryPersistsRestoresAndClears(t *testing.T) {
 		t.Fatalf("restored History = %+v", restored)
 	}
 	runtime := newTUIServiceRuntime(
-		cliPaths{homeDir: directory, configPath: filepath.Join(directory, "config.yaml")},
+		cliPaths{HomeDir: directory, ConfigPath: filepath.Join(directory, "config.yaml")},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
 		nil,

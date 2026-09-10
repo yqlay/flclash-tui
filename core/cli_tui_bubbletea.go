@@ -338,7 +338,7 @@ func newTUIModel(
 	ownsCore bool,
 ) *tuiModel {
 	width, height := tuiTerminalSize()
-	stagedSettings := loadTUIConfiguredSettings(paths.configPath, ownsCore)
+	stagedSettings := loadTUIConfiguredSettings(paths.ConfigPath, ownsCore)
 	settings := tuiSettings{}
 	var pendingMixedPort *int
 	if stagedSettings != nil {
@@ -349,7 +349,7 @@ func newTUIModel(
 	return &tuiModel{
 		snapshot: tuiSnapshot{
 			Status:            "Loading...",
-			GroupOrder:        loadTUIProxyGroupOrder(paths.configPath),
+			GroupOrder:        loadTUIProxyGroupOrder(paths.ConfigPath),
 			Settings:          settings,
 			SelectedGroup:     0,
 			SelectedNode:      0,
@@ -912,7 +912,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return
 			}
 			applyTUIOperationServiceStatus(state, status)
-			if filepath.Clean(editorPath) == filepath.Clean(state.paths.configPath) {
+			if filepath.Clean(editorPath) == filepath.Clean(state.paths.ConfigPath) {
 				state.snapshot.Status = "Configuration saved and hot-reloaded"
 				syncStoppedTUISettings(state)
 				state.networkChanged = true

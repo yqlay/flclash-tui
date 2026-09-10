@@ -24,8 +24,8 @@ func TestTUIInitializationDefersProxyListener(t *testing.T) {
 	controllerPort := freeTUITestPort(t)
 	directory := t.TempDir()
 	paths := cliPaths{
-		homeDir:    directory,
-		configPath: filepath.Join(directory, "config.yaml"),
+		HomeDir:    directory,
+		ConfigPath: filepath.Join(directory, "config.yaml"),
 	}
 	configData := fmt.Appendf(nil, `mixed-port: %d
 allow-lan: false
@@ -41,7 +41,7 @@ proxy-groups:
 rules:
   - MATCH,PROXY
 `, mixedPort)
-	if err := os.WriteFile(paths.configPath, configData, 0o600); err != nil {
+	if err := os.WriteFile(paths.ConfigPath, configData, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -790,8 +790,8 @@ func TestResolvePathsUsesDirectoryForDefaultConfig(t *testing.T) {
 	}
 	wantHome, _ := filepath.Abs(directory)
 	wantConfig := filepath.Join(wantHome, "config.yaml")
-	if paths.homeDir != wantHome || paths.configPath != wantConfig {
-		t.Fatalf("paths = (%q, %q), want (%q, %q)", paths.homeDir, paths.configPath, wantHome, wantConfig)
+	if paths.HomeDir != wantHome || paths.ConfigPath != wantConfig {
+		t.Fatalf("paths = (%q, %q), want (%q, %q)", paths.HomeDir, paths.ConfigPath, wantHome, wantConfig)
 	}
 }
 
@@ -803,8 +803,8 @@ func TestResolvePathsUsesRelativeDirectoryOnce(t *testing.T) {
 	}
 	wantHome, _ := filepath.Abs(directory)
 	wantConfig := filepath.Join(wantHome, "config.yaml")
-	if paths.homeDir != wantHome || paths.configPath != wantConfig {
-		t.Fatalf("paths = (%q, %q), want (%q, %q)", paths.homeDir, paths.configPath, wantHome, wantConfig)
+	if paths.HomeDir != wantHome || paths.ConfigPath != wantConfig {
+		t.Fatalf("paths = (%q, %q), want (%q, %q)", paths.HomeDir, paths.ConfigPath, wantHome, wantConfig)
 	}
 }
 
@@ -819,18 +819,18 @@ func TestResolvePathsDefaultConfigUsesUserConfigDirectory(t *testing.T) {
 	}
 	wantHome, _ := filepath.Abs(filepath.Join(configRoot, "flclash"))
 	wantConfig := filepath.Join(wantHome, "config.yaml")
-	if paths.homeDir != wantHome || paths.configPath != wantConfig {
-		t.Fatalf("paths = (%q, %q), want (%q, %q)", paths.homeDir, paths.configPath, wantHome, wantConfig)
+	if paths.HomeDir != wantHome || paths.ConfigPath != wantConfig {
+		t.Fatalf("paths = (%q, %q), want (%q, %q)", paths.HomeDir, paths.ConfigPath, wantHome, wantConfig)
 	}
 }
 
 func TestEnsureTUIConfigCreatesMinimalConfig(t *testing.T) {
 	directory := t.TempDir()
-	paths := cliPaths{homeDir: directory, configPath: filepath.Join(directory, "config.yaml")}
+	paths := cliPaths{HomeDir: directory, ConfigPath: filepath.Join(directory, "config.yaml")}
 	if err := ensureTUIConfig(paths, true); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(paths.configPath)
+	data, err := os.ReadFile(paths.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -851,7 +851,7 @@ func TestEnsureTUIConfigCreatesMinimalConfig(t *testing.T) {
 	if err := ensureTUIConfig(paths, true); err != nil {
 		t.Fatal(err)
 	}
-	second, err := os.ReadFile(paths.configPath)
+	second, err := os.ReadFile(paths.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}

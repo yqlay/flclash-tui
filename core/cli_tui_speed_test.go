@@ -530,7 +530,7 @@ func TestTUIDashboardAndProxySpeedResultsRender(t *testing.T) {
 	drawTUIDashboard(
 		&dashboard,
 		snapshot,
-		cliPaths{configPath: "/tmp/config.yaml"},
+		cliPaths{ConfigPath: "/tmp/config.yaml"},
 		110,
 		30,
 	)

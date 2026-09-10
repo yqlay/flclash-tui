@@ -221,9 +221,9 @@ func logsManagedCommand(args []string) error {
 		return err
 	}
 	if _, status, statusErr := currentManagedService(); statusErr == nil && status.HomeDir != "" {
-		paths.homeDir = status.HomeDir
+		paths.HomeDir = status.HomeDir
 	}
-	return readManagedLog(filepath.Join(paths.homeDir, tuiServiceLogFilename), *lines, *follow)
+	return readManagedLog(filepath.Join(paths.HomeDir, tuiServiceLogFilename), *lines, *follow)
 }
 
 func serviceManagementCommand(args []string) error {
@@ -291,8 +291,8 @@ func serviceManagementCommand(args []string) error {
 			return pathErr
 		}
 		if status.ConfigPath != "" {
-			paths.homeDir = status.HomeDir
-			paths.configPath = status.ConfigPath
+			paths.HomeDir = status.HomeDir
+			paths.ConfigPath = status.ConfigPath
 		} else {
 			paths = preferManagedActivePaths(paths, false, false)
 		}
@@ -341,25 +341,25 @@ func configCommand(args []string) error {
 	}
 	switch args[0] {
 	case "path":
-		fmt.Println(paths.configPath)
+		fmt.Println(paths.ConfigPath)
 	case "show":
-		data, err := os.ReadFile(paths.configPath)
+		data, err := os.ReadFile(paths.ConfigPath)
 		if err != nil {
 			return err
 		}
 		_, err = os.Stdout.Write(data)
 		return err
 	case "validate":
-		if message := handleValidateConfig(paths.configPath); message != "" {
+		if message := handleValidateConfig(paths.ConfigPath); message != "" {
 			return errors.New(message)
 		}
-		fmt.Printf("configuration is valid: %s\n", paths.configPath)
+		fmt.Printf("configuration is valid: %s\n", paths.ConfigPath)
 	case "backup":
 		client, status, err := currentManagedService()
 		if err != nil {
 			return err
 		}
-		status, err = client.backupProfile(paths.configPath, status.Revision)
+		status, err = client.backupProfile(paths.ConfigPath, status.Revision)
 		if err != nil {
 			return err
 		}
@@ -369,13 +369,13 @@ func configCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		status, err = client.restoreProfile(paths.configPath, status.Revision)
+		status, err = client.restoreProfile(paths.ConfigPath, status.Revision)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("Restored %s\n", status.ResultPath)
 	case "edit":
-		return editManagedConfig(paths.configPath)
+		return editManagedConfig(paths.ConfigPath)
 	default:
 		return fmt.Errorf("unknown config command %q", args[0])
 	}

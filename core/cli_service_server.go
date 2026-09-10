@@ -51,8 +51,8 @@ func serviceCommand(args []string) error {
 			lockFile,
 			cliProcessOwner{
 				Kind:       "service",
-				HomeDir:    paths.homeDir,
-				ConfigPath: paths.configPath,
+				HomeDir:    paths.HomeDir,
+				ConfigPath: paths.ConfigPath,
 			},
 		)
 		if err != nil {
@@ -68,11 +68,11 @@ func runTUIService(
 	backendLock *cliFileLock,
 	allowCreate bool,
 ) error {
-	if err := os.MkdirAll(paths.homeDir, 0o700); err != nil {
+	if err := os.MkdirAll(paths.HomeDir, 0o700); err != nil {
 		return err
 	}
 	logWriter, logErr := newTUIRotatingLogWriter(
-		filepath.Join(paths.homeDir, tuiServiceLogFilename),
+		filepath.Join(paths.HomeDir, tuiServiceLogFilename),
 	)
 	if logErr == nil {
 		originalLogOutput := logrus.StandardLogger().Out
@@ -96,26 +96,26 @@ func runTUIService(
 		runtimeDirectory,
 		tuiServiceSocketFilename,
 	)
-	coreSocket := filepath.Join(paths.homeDir, tuiCoreSocketFilename)
+	coreSocket := filepath.Join(paths.HomeDir, tuiCoreSocketFilename)
 	if backendLock == nil {
 		backendLock, err = acquireCLIBackendLock(cliProcessOwner{
 			Kind:       "service",
-			HomeDir:    paths.homeDir,
-			ConfigPath: paths.configPath,
+			HomeDir:    paths.HomeDir,
+			ConfigPath: paths.ConfigPath,
 		})
 		if err != nil {
 			return err
 		}
 	} else if err := backendLock.setOwner(cliProcessOwner{
 		Kind:       "service",
-		HomeDir:    paths.homeDir,
-		ConfigPath: paths.configPath,
+		HomeDir:    paths.HomeDir,
+		ConfigPath: paths.ConfigPath,
 	}); err != nil {
 		backendLock.release()
 		return err
 	}
 	defer backendLock.release()
-	if err := ensureTUIFlClashDefaults(paths.configPath); err != nil {
+	if err := ensureTUIFlClashDefaults(paths.ConfigPath); err != nil {
 		return fmt.Errorf("apply FlClash defaults: %w", err)
 	}
 	if err := removeStaleTUIServiceSocket(
@@ -125,23 +125,23 @@ func runTUIService(
 		return err
 	}
 	if err := removeStaleTUIServiceSocket(
-		paths.homeDir,
+		paths.HomeDir,
 		coreSocket,
 	); err != nil {
 		return err
 	}
-	configuredSettings := loadTUIConfiguredSettings(paths.configPath, true)
+	configuredSettings := loadTUIConfiguredSettings(paths.ConfigPath, true)
 	configuredPort := 0
 	if configuredSettings != nil {
 		configuredPort = configuredSettings.MixedPort
 	}
-	trafficMode := loadTUITrafficMode(paths.homeDir, paths.configPath)
-	tunScope := loadTUITunScope(paths.homeDir)
+	trafficMode := loadTUITrafficMode(paths.HomeDir, paths.ConfigPath)
+	tunScope := loadTUITunScope(paths.HomeDir)
 	tunEnabled := configuredSettings != nil && configuredSettings.TunEnabled && tunScope == tuiTunScopeUser
 	actualPaths := paths
 	runtimePort := configuredPort
-	flcState := tuiFLCListenerState{Outbound: loadTUIFLCOutbound(paths.homeDir)}
-	cleanupTUISilentRuntimeConfigs(paths.homeDir, "")
+	flcState := tuiFLCListenerState{Outbound: loadTUIFLCOutbound(paths.HomeDir)}
+	cleanupTUISilentRuntimeConfigs(paths.HomeDir, "")
 	if trafficMode == tuiSilentMode {
 		tunEnabled = false
 		runtimePort, err = chooseTUIProxyPort(configuredPort)
@@ -157,11 +157,11 @@ func runTUIService(
 				return err
 			}
 		}
-		actualPaths.configPath, err = writeTUISilentRuntimeConfig(paths, flcState)
+		actualPaths.ConfigPath, err = writeTUISilentRuntimeConfig(paths, flcState)
 		if err != nil {
 			return err
 		}
-		defer cleanupTUISilentRuntimeConfigs(paths.homeDir, "")
+		defer cleanupTUISilentRuntimeConfigs(paths.HomeDir, "")
 		if configuredPort > 0 && linuxSystemProxyMatches(configuredPort) {
 			if err := setLinuxSystemProxy(configuredPort, false); err != nil {
 				return fmt.Errorf("disable system proxy for silent mode: %w", err)
@@ -174,7 +174,7 @@ func runTUIService(
 				return err
 			}
 		}
-		actualPaths.configPath, err = writeTUIManagedRuntimeConfig(
+		actualPaths.ConfigPath, err = writeTUIManagedRuntimeConfig(
 			paths,
 			trafficMode,
 			runtimePort,
@@ -185,7 +185,7 @@ func runTUIService(
 		if err != nil {
 			return err
 		}
-		defer cleanupTUISilentRuntimeConfigs(paths.homeDir, "")
+		defer cleanupTUISilentRuntimeConfigs(paths.HomeDir, "")
 	}
 	setupParams, err := initializeCore(
 		actualPaths,
@@ -228,14 +228,14 @@ func runTUIService(
 		trafficMode,
 		configuredPort,
 		runtimePort,
-		actualPaths.configPath,
+		actualPaths.ConfigPath,
 		flcState,
 		tunScope,
 		tunEnabled,
 	)
 	if err := runtime.restoreHistory(); err != nil {
 		appendCLIApplicationLog(
-			paths.homeDir,
+			paths.HomeDir,
 			"WARN",
 			"history_restore",
 			err.Error()+"; starting with empty History",
@@ -246,7 +246,7 @@ func runTUIService(
 		defer close(historyCollectorDone)
 		collectTUIServiceHistory(runtime, shutdown)
 	}()
-	if settings := loadTUIConfiguredSettings(paths.configPath, true); settings != nil {
+	if settings := loadTUIConfiguredSettings(paths.ConfigPath, true); settings != nil {
 		if trafficMode != tuiSilentMode {
 			runtime.setSystemProxyState(
 				linuxSystemProxyMatches(settings.MixedPort),
@@ -268,7 +268,7 @@ func runTUIService(
 		}
 		<-historyCollectorDone
 		if err := runtime.persistHistory(true); err != nil {
-			appendCLIApplicationLog(paths.homeDir, "ERROR", "history_save", err.Error())
+			appendCLIApplicationLog(paths.HomeDir, "ERROR", "history_save", err.Error())
 		}
 		_ = listener.Close()
 	}()
@@ -314,7 +314,7 @@ func collectTUIServiceHistory(
 		case <-persistTicker.C:
 			if err := runtime.persistHistory(false); err != nil {
 				runtime.mu.RLock()
-				homeDir := runtime.paths.homeDir
+				homeDir := runtime.paths.HomeDir
 				runtime.mu.RUnlock()
 				appendCLIApplicationLog(homeDir, "ERROR", "history_save", err.Error())
 			}
@@ -404,12 +404,12 @@ func reloadTUIServiceConfig(
 	running bool,
 ) ([]byte, error) {
 	configPath = filepath.Clean(configPath)
-	if _, err := tuiProfileStateKey(paths.homeDir, configPath); err != nil {
+	if _, err := tuiProfileStateKey(paths.HomeDir, configPath); err != nil {
 		return nil, err
 	}
 	return reloadTUIActualConfig(
-		paths.homeDir,
-		paths.configPath,
+		paths.HomeDir,
+		paths.ConfigPath,
 		configPath,
 		testURL,
 		coreSocket,
@@ -544,7 +544,7 @@ func stopCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	client := newTUIServiceClient(paths.homeDir)
+	client := newTUIServiceClient(paths.HomeDir)
 	status, err := client.status()
 	if err != nil {
 		return errors.New("no FlClash Backend is running")

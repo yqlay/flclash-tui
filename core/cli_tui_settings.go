@@ -130,7 +130,7 @@ func tuiProfileSettingsForCommit(
 	state *tuiOperationState,
 	settings tuiSettings,
 ) (tuiSettings, error) {
-	configured := loadTUIConfiguredSettings(state.paths.configPath, true)
+	configured := loadTUIConfiguredSettings(state.paths.ConfigPath, true)
 	if configured == nil || strings.EqualFold(configured.Mode, tuiSilentMode) {
 		return tuiSettings{}, errors.New(
 			"could not load native mode and TUN settings from the active YAML profile",
@@ -168,7 +168,7 @@ func applyTUIOperationServiceStatus(
 	state.backendRevision = status.Revision
 	state.coreRunning = status.Running
 	if status.ConfigPath != "" {
-		state.paths.configPath = status.ConfigPath
+		state.paths.ConfigPath = status.ConfigPath
 	}
 	state.snapshot.Settings.SystemProxy = status.SystemProxy
 	if status.Mode != "" {
@@ -226,7 +226,7 @@ func syncStoppedTUISettings(state *tuiOperationState) {
 	if state.coreRunning {
 		return
 	}
-	settings := loadTUIConfiguredSettings(state.paths.configPath, true)
+	settings := loadTUIConfiguredSettings(state.paths.ConfigPath, true)
 	if settings == nil {
 		state.snapshot.Status += "; could not reload settings from YAML"
 		return
@@ -277,12 +277,12 @@ func reloadTUIOperationConfigExpected(
 		var err error
 		if expectedSHA256 == "" {
 			status, err = service.reloadAtRevision(
-				state.paths.configPath,
+				state.paths.ConfigPath,
 				state.backendRevision,
 			)
 		} else {
 			status, err = service.reloadAtRevisionWithDigest(
-				state.paths.configPath,
+				state.paths.ConfigPath,
 				state.backendRevision,
 				expectedSHA256,
 			)
@@ -291,17 +291,17 @@ func reloadTUIOperationConfigExpected(
 			return err
 		}
 		applyTUIOperationServiceStatus(state, status)
-		state.snapshot.GroupOrder = loadTUIProxyGroupOrder(state.paths.configPath)
+		state.snapshot.GroupOrder = loadTUIProxyGroupOrder(state.paths.ConfigPath)
 		return nil
 	}
 	if ownsCore {
 		if message := handleSetupConfig(state.setupParams); message != "" {
 			return errors.New(message)
 		}
-		state.snapshot.GroupOrder = loadTUIProxyGroupOrder(state.paths.configPath)
+		state.snapshot.GroupOrder = loadTUIProxyGroupOrder(state.paths.ConfigPath)
 		return nil
 	}
-	data, err := os.ReadFile(state.paths.configPath)
+	data, err := os.ReadFile(state.paths.ConfigPath)
 	if err != nil {
 		return err
 	}
@@ -311,7 +311,7 @@ func reloadTUIOperationConfigExpected(
 	if err := client.reloadConfigPayload(data); err != nil {
 		return err
 	}
-	state.snapshot.GroupOrder = loadTUIProxyGroupOrder(state.paths.configPath)
+	state.snapshot.GroupOrder = loadTUIProxyGroupOrder(state.paths.ConfigPath)
 	return nil
 }
 

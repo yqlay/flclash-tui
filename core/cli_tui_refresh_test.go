@@ -495,7 +495,7 @@ func TestTUIPersistentLogsCanBeReadAndCleared(t *testing.T) {
 func TestTUIEditKeyIsPageScoped(t *testing.T) {
 	model := &tuiModel{
 		snapshot: tuiSnapshot{Page: tuiPageDashboard},
-		paths:    cliPaths{configPath: "/tmp/config.yaml"},
+		paths:    cliPaths{ConfigPath: "/tmp/config.yaml"},
 	}
 	if command := model.handleKey(tuiKeyEdit); command != nil {
 		t.Fatal("Dashboard edit key unexpectedly opened an editor")
@@ -843,7 +843,7 @@ func TestTUIDashboardRendersPublicAndIntranetIP(t *testing.T) {
 	drawTUIDashboard(
 		&output,
 		snapshot,
-		cliPaths{configPath: "/tmp/config.yaml"},
+		cliPaths{ConfigPath: "/tmp/config.yaml"},
 		100,
 		26,
 	)
@@ -1085,7 +1085,7 @@ func TestTUIDashboardOwnsDailyControlsAndSettingsDoesNotRepeatThem(t *testing.T)
 	drawTUIDashboard(
 		&dashboard,
 		snapshot,
-		cliPaths{configPath: "/tmp/config.yaml"},
+		cliPaths{ConfigPath: "/tmp/config.yaml"},
 		100,
 		26,
 	)
@@ -1556,7 +1556,7 @@ func TestTUIDashboardRendersEmbeddedAndExternalMemory(t *testing.T) {
 	drawTUIDashboard(
 		&embedded,
 		base,
-		cliPaths{configPath: "/tmp/config.yaml"},
+		cliPaths{ConfigPath: "/tmp/config.yaml"},
 		100,
 		26,
 	)
@@ -1581,7 +1581,7 @@ func TestTUIDashboardRendersEmbeddedAndExternalMemory(t *testing.T) {
 	drawTUIDashboard(
 		&external,
 		externalSnapshot,
-		cliPaths{configPath: "/tmp/config.yaml"},
+		cliPaths{ConfigPath: "/tmp/config.yaml"},
 		100,
 		26,
 	)
@@ -1607,7 +1607,7 @@ func TestTUIDashboardRendersAdaptiveLiveTrafficChart(t *testing.T) {
 	snapshot.Traffic = snapshot.TrafficHistory[len(snapshot.TrafficHistory)-1]
 	output := renderTUIAtSize(
 		snapshot,
-		cliPaths{configPath: "/tmp/config.yaml"},
+		cliPaths{ConfigPath: "/tmp/config.yaml"},
 		"private Unix socket",
 		true,
 		true,

@@ -30,12 +30,12 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	if mode == currentMode {
 		return false, nil
 	}
-	oldSettings := loadTUIConfiguredSettings(paths.configPath, true)
+	oldSettings := loadTUIConfiguredSettings(paths.ConfigPath, true)
 	if oldSettings == nil {
 		return false, errors.New("could not load active settings")
 	}
 	if mode == tuiSilentMode {
-		outbound := loadTUIFLCOutbound(paths.homeDir)
+		outbound := loadTUIFLCOutbound(paths.HomeDir)
 		flc := tuiFLCListenerState{Outbound: outbound}
 		if outbound != "" {
 			var err error
@@ -63,7 +63,7 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 		r.tunEnabled = false
 		r.tunLease = nil
 		r.mu.Unlock()
-		if _, err := r.reloadUnlocked(paths.configPath, ""); err != nil {
+		if _, err := r.reloadUnlocked(paths.ConfigPath, ""); err != nil {
 			r.mu.Lock()
 			r.trafficMode = currentMode
 			r.flc = oldFLC
@@ -81,14 +81,14 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 			}
 			return false, err
 		}
-		if err := rememberTUITrafficMode(paths.homeDir, mode); err != nil {
+		if err := rememberTUITrafficMode(paths.HomeDir, mode); err != nil {
 			r.mu.Lock()
 			r.trafficMode = currentMode
 			r.flc = oldFLC
 			r.tunEnabled = oldTunEnabled
 			r.tunLease = oldTunLease
 			r.mu.Unlock()
-			_, rollbackErr := r.reloadUnlocked(paths.configPath, "")
+			_, rollbackErr := r.reloadUnlocked(paths.ConfigPath, "")
 			var proxyRollbackErr error
 			if systemProxy {
 				_, proxyRollbackErr = r.applySystemProxy(true)
@@ -122,7 +122,7 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	updated.Mode = mode
 	profileChanged := !strings.EqualFold(oldSettings.Mode, mode)
 	writePath, profileInfo, originalProfile, err := readTUIWritableConfig(
-		paths.configPath,
+		paths.ConfigPath,
 	)
 	if err != nil {
 		return false, err
@@ -151,7 +151,7 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	if profileChanged {
 		_, err = r.applySettings(updated)
 	} else {
-		_, err = r.reloadUnlocked(paths.configPath, "")
+		_, err = r.reloadUnlocked(paths.ConfigPath, "")
 	}
 	if err != nil {
 		restoredTunLease.release()
@@ -163,10 +163,10 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 		r.mu.Unlock()
 		return false, err
 	}
-	if err := rememberTUITrafficMode(paths.homeDir, mode); err != nil {
+	if err := rememberTUITrafficMode(paths.HomeDir, mode); err != nil {
 		var profileRollbackErr error
 		if profileChanged {
-			lease, lockErr := acquireTUIProfileLocks(paths.homeDir, paths.configPath)
+			lease, lockErr := acquireTUIProfileLocks(paths.HomeDir, paths.ConfigPath)
 			if lockErr != nil {
 				profileRollbackErr = lockErr
 			} else {
@@ -185,7 +185,7 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 		r.tunLease = nil
 		r.mu.Unlock()
 		restoredTunLease.release()
-		_, coreRollbackErr := r.reloadUnlocked(paths.configPath, "")
+		_, coreRollbackErr := r.reloadUnlocked(paths.ConfigPath, "")
 		if profileRollbackErr != nil || coreRollbackErr != nil {
 			return false, fmt.Errorf(
 				"save mode: %v; profile rollback: %v; Core silent-mode rollback: %v",
@@ -207,14 +207,14 @@ func (r *tuiServiceRuntime) applyNativeTrafficMode(
 	oldSettings tuiSettings,
 	running bool,
 ) (bool, error) {
-	lease, err := acquireTUIProfileLocks(paths.homeDir, paths.configPath)
+	lease, err := acquireTUIProfileLocks(paths.HomeDir, paths.ConfigPath)
 	if err != nil {
 		return false, err
 	}
 	defer lease.release()
 
 	writePath, profileInfo, originalProfile, err := readTUIWritableConfig(
-		paths.configPath,
+		paths.ConfigPath,
 	)
 	if err != nil {
 		return false, err
@@ -223,7 +223,7 @@ func (r *tuiServiceRuntime) applyNativeTrafficMode(
 	if profileChanged {
 		updated := oldSettings
 		updated.Mode = mode
-		if err := persistTUISettings(paths.configPath, updated); err != nil {
+		if err := persistTUISettings(paths.ConfigPath, updated); err != nil {
 			return false, err
 		}
 	}
@@ -249,7 +249,7 @@ func (r *tuiServiceRuntime) applyNativeTrafficMode(
 		}
 	}
 
-	if err := rememberTUITrafficMode(paths.homeDir, mode); err != nil {
+	if err := rememberTUITrafficMode(paths.HomeDir, mode); err != nil {
 		var profileRollbackErr error
 		if profileChanged {
 			profileRollbackErr = writeTUIProfileAtomically(
@@ -315,19 +315,19 @@ func (r *tuiServiceRuntime) applyFLCOutbound(outbound string) (bool, error) {
 		r.mu.Lock()
 		r.flc = next
 		r.mu.Unlock()
-		if _, err := r.reloadUnlocked(paths.configPath, ""); err != nil {
+		if _, err := r.reloadUnlocked(paths.ConfigPath, ""); err != nil {
 			r.mu.Lock()
 			r.flc = previous
 			r.mu.Unlock()
 			return false, err
 		}
 	}
-	if err := rememberTUIFLCOutbound(paths.homeDir, outbound); err != nil {
+	if err := rememberTUIFLCOutbound(paths.HomeDir, outbound); err != nil {
 		if mode == tuiSilentMode {
 			r.mu.Lock()
 			r.flc = previous
 			r.mu.Unlock()
-			if _, rollbackErr := r.reloadUnlocked(paths.configPath, ""); rollbackErr != nil {
+			if _, rollbackErr := r.reloadUnlocked(paths.ConfigPath, ""); rollbackErr != nil {
 				return false, fmt.Errorf(
 					"save FLC outbound: %v; Core rollback failed: %w",
 					err,
@@ -352,7 +352,7 @@ func (r *tuiServiceRuntime) selectProxy(group, proxy string) (bool, error) {
 		return false, errors.New("proxy group and node must not be empty")
 	}
 	r.mu.RLock()
-	homeDir := r.paths.homeDir
+	homeDir := r.paths.HomeDir
 	r.mu.RUnlock()
 	controller := r.coreController
 	data, err := controller.request(http.MethodGet, "/proxies", nil)

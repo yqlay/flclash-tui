@@ -37,8 +37,8 @@ func (r *tuiServiceRuntime) applySettings(
 	settings tuiSettings,
 ) (bool, error) {
 	r.mu.RLock()
-	homeDir := r.paths.homeDir
-	configPath := r.paths.configPath
+	homeDir := r.paths.HomeDir
+	configPath := r.paths.ConfigPath
 	systemProxy := r.systemProxy
 	proxyPort := r.proxyPort
 	mode := r.trafficMode
@@ -234,7 +234,7 @@ func (r *tuiServiceRuntime) applyTun(enabled bool, requestedScope string) (bool,
 	if enabled && previousEnabled && scope != previousScope {
 		return false, errors.New("turn TUN off before changing its scope")
 	}
-	settings := loadTUIConfiguredSettings(r.paths.configPath, true)
+	settings := loadTUIConfiguredSettings(r.paths.ConfigPath, true)
 	if settings == nil {
 		return false, errors.New("could not read the active configuration")
 	}
@@ -245,7 +245,7 @@ func (r *tuiServiceRuntime) applyTun(enabled bool, requestedScope string) (bool,
 			return false, err
 		}
 	}
-	if err := rememberTUITunScope(r.paths.homeDir, scope); err != nil {
+	if err := rememberTUITunScope(r.paths.HomeDir, scope); err != nil {
 		replacementLease.release()
 		return false, fmt.Errorf("remember TUN scope: %w", err)
 	}
@@ -264,10 +264,10 @@ func (r *tuiServiceRuntime) applyTun(enabled bool, requestedScope string) (bool,
 		r.mu.Unlock()
 		replacementLease.release()
 		scopeRestoreErr := rememberTUITunScope(
-			r.paths.homeDir,
+			r.paths.HomeDir,
 			previousScope,
 		)
-		_, coreRestoreErr := r.reloadUnlocked(r.paths.configPath, "")
+		_, coreRestoreErr := r.reloadUnlocked(r.paths.ConfigPath, "")
 		if scopeRestoreErr != nil || coreRestoreErr != nil {
 			var rollbackErrors []error
 			if scopeRestoreErr != nil {

@@ -24,7 +24,7 @@ import (
 func TestTUIStagesMixedPortUntilCoreStart(t *testing.T) {
 	model := newTUIModel(
 		controllerClient{},
-		cliPaths{configPath: filepath.Join(t.TempDir(), "missing.yaml")},
+		cliPaths{ConfigPath: filepath.Join(t.TempDir(), "missing.yaml")},
 		nil,
 		true,
 	)
@@ -66,7 +66,7 @@ func TestTUIStagesMixedPortUntilCoreStart(t *testing.T) {
 func TestTUIStagesPreStartSettings(t *testing.T) {
 	model := newTUIModel(
 		controllerClient{},
-		cliPaths{configPath: filepath.Join(t.TempDir(), "missing.yaml")},
+		cliPaths{ConfigPath: filepath.Join(t.TempDir(), "missing.yaml")},
 		nil,
 		true,
 	)
@@ -332,7 +332,7 @@ func TestSyncStoppedSettingsSeparatesBackendAndProfileState(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := tuiOperationState{
-		paths: cliPaths{homeDir: directory, configPath: configPath},
+		paths: cliPaths{HomeDir: directory, ConfigPath: configPath},
 		snapshot: tuiSnapshot{Settings: tuiSettings{
 			Mode:        tuiSilentMode,
 			SystemProxy: false,
@@ -404,7 +404,7 @@ func TestTUISilentStopStartDoesNotCommitDisplayMode(t *testing.T) {
 	}()
 
 	state := tuiOperationState{
-		paths:           cliPaths{homeDir: directory, configPath: configPath},
+		paths:           cliPaths{HomeDir: directory, ConfigPath: configPath},
 		coreRunning:     true,
 		backendRevision: 7,
 		snapshot: tuiSnapshot{Settings: tuiSettings{
@@ -500,7 +500,7 @@ func TestTUISilentDirtyStagedSettingsRecoverNativeProfileMode(t *testing.T) {
 	}()
 
 	state := tuiOperationState{
-		paths:         cliPaths{homeDir: directory, configPath: configPath},
+		paths:         cliPaths{HomeDir: directory, ConfigPath: configPath},
 		settingsDirty: true,
 		stagedSettings: &tuiSettings{
 			Mode:       tuiSilentMode,
@@ -598,7 +598,7 @@ func TestTUISilentSettingsCommitPreservesNativeModeAndTun(t *testing.T) {
 	}()
 
 	state := tuiOperationState{
-		paths:           cliPaths{homeDir: directory, configPath: configPath},
+		paths:           cliPaths{HomeDir: directory, ConfigPath: configPath},
 		backendRevision: 11,
 		snapshot: tuiSnapshot{Settings: tuiSettings{
 			Mode:      tuiSilentMode,
@@ -739,8 +739,8 @@ rules:
 	directory := t.TempDir()
 	runtime := newTUIServiceRuntime(
 		cliPaths{
-			homeDir:    directory,
-			configPath: filepath.Join(directory, "config.yaml"),
+			HomeDir:    directory,
+			ConfigPath: filepath.Join(directory, "config.yaml"),
 		},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
@@ -835,7 +835,7 @@ rules:
 	}
 
 	runtime := newTUIServiceRuntime(
-		cliPaths{homeDir: directory, configPath: activePath},
+		cliPaths{HomeDir: directory, ConfigPath: activePath},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
 		nil,
@@ -912,7 +912,7 @@ func TestTUIUnlinkedProfileDoesNotPretendToRefreshSubscription(t *testing.T) {
 	}
 	model := newTUIModel(
 		controllerClient{},
-		cliPaths{homeDir: directory, configPath: activePath},
+		cliPaths{HomeDir: directory, ConfigPath: activePath},
 		nil,
 		true,
 	)
@@ -946,7 +946,7 @@ func TestTUIProfileDeleteValidationAndTransaction(t *testing.T) {
 	}
 	model := newTUIModel(
 		controllerClient{},
-		cliPaths{homeDir: directory, configPath: activePath},
+		cliPaths{HomeDir: directory, ConfigPath: activePath},
 		nil,
 		true,
 	)
@@ -1084,7 +1084,7 @@ rules:
 	}))
 	defer server.Close()
 
-	paths := cliPaths{homeDir: directory, configPath: configPath}
+	paths := cliPaths{HomeDir: directory, ConfigPath: configPath}
 	controllerAddress := fmt.Sprintf("127.0.0.1:%d", controllerPort)
 	setupParams, err := initializeCore(
 		paths,
@@ -1198,7 +1198,7 @@ rules:
 		t.Fatal(err)
 	}
 
-	paths := cliPaths{homeDir: directory, configPath: configPath}
+	paths := cliPaths{HomeDir: directory, ConfigPath: configPath}
 	serviceDone := make(chan error, 1)
 	go func() {
 		serviceDone <- runTUIService(
@@ -1433,7 +1433,7 @@ func TestTUIInvalidProfileEditNeverTouchesOriginalFile(t *testing.T) {
 	}
 	model := newTUIModel(
 		controllerClient{},
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 		nil,
 		true,
 	)
@@ -1553,8 +1553,8 @@ func TestTUIStateRestoresActiveProfileAndProxySelections(t *testing.T) {
 		}
 	}
 	activePaths := cliPaths{
-		homeDir:    directory,
-		configPath: activePath,
+		HomeDir:    directory,
+		ConfigPath: activePath,
 	}
 	if err := rememberTUIActiveProfile(activePaths); err != nil {
 		t.Fatal(err)
@@ -1567,14 +1567,14 @@ func TestTUIStateRestoresActiveProfileAndProxySelections(t *testing.T) {
 	}
 
 	restored, err := restoreTUIActiveProfile(cliPaths{
-		homeDir:    directory,
-		configPath: defaultPath,
+		HomeDir:    directory,
+		ConfigPath: defaultPath,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.configPath != activePath {
-		t.Fatalf("restored profile = %q, want %q", restored.configPath, activePath)
+	if restored.ConfigPath != activePath {
+		t.Fatalf("restored profile = %q, want %q", restored.ConfigPath, activePath)
 	}
 	selected := loadTUISelectedProxies(directory)
 	if selected["PROXY"] != "Tokyo" || selected["AUTO"] != "Singapore" {
@@ -1694,7 +1694,7 @@ func TestTUIStateRejectsInvalidSavedProfileAndRecovers(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	paths := cliPaths{homeDir: directory, configPath: defaultPath}
+	paths := cliPaths{HomeDir: directory, ConfigPath: defaultPath}
 	restored, err := restoreTUIActiveProfile(paths)
 	if err == nil {
 		t.Fatal("unsafe saved profile was accepted")
@@ -1706,7 +1706,7 @@ func TestTUIStateRejectsInvalidSavedProfileAndRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	recovered, err := restoreTUIActiveProfile(paths)
-	if err != nil || recovered.configPath != defaultPath {
+	if err != nil || recovered.ConfigPath != defaultPath {
 		t.Fatalf("state did not recover: paths=%+v err=%v", recovered, err)
 	}
 }
@@ -1739,7 +1739,7 @@ func TestTUIStoppedSettingsStayStagedWithoutBackend(t *testing.T) {
 	}
 	model := newTUIModel(
 		controllerClient{},
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 		nil,
 		true,
 	)

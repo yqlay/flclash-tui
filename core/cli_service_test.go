@@ -126,8 +126,8 @@ func TestTUIServiceShutdownWritesACKBeforeSignallingExit(t *testing.T) {
 	shutdownCalled := false
 	runtime := newTUIServiceRuntime(
 		cliPaths{
-			homeDir:    directory,
-			configPath: filepath.Join(directory, "config.yaml"),
+			HomeDir:    directory,
+			ConfigPath: filepath.Join(directory, "config.yaml"),
 		},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
@@ -196,8 +196,8 @@ func TestTUIServiceShutdownDoesNotExitWhenACKWriteFails(t *testing.T) {
 	shutdownCalled := false
 	runtime := newTUIServiceRuntime(
 		cliPaths{
-			homeDir:    directory,
-			configPath: filepath.Join(directory, "config.yaml"),
+			HomeDir:    directory,
+			ConfigPath: filepath.Join(directory, "config.yaml"),
 		},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
@@ -441,8 +441,8 @@ func TestFindLegacyTUIServiceOutsidePerUserRuntime(t *testing.T) {
 	}()
 
 	client, status, found := findLegacyTUIService(cliPaths{
-		homeDir:    legacyDirectory,
-		configPath: filepath.Join(legacyDirectory, "config.yaml"),
+		HomeDir:    legacyDirectory,
+		ConfigPath: filepath.Join(legacyDirectory, "config.yaml"),
 	})
 	if !found || client == nil {
 		t.Fatal("legacy service was not discovered")

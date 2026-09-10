@@ -95,7 +95,7 @@ rules:
 	serviceDone := make(chan error, 1)
 	go func() {
 		serviceDone <- runTUIService(
-			cliPaths{homeDir: directory, configPath: configPath},
+			cliPaths{HomeDir: directory, ConfigPath: configPath},
 			defaultCLITestURL,
 			nil,
 			false,

@@ -275,11 +275,11 @@ func (r *tuiServiceRuntime) reloadExpected(
 	proxyPort := r.proxyPort
 	r.mu.RUnlock()
 	if configPath == "" {
-		configPath = paths.configPath
+		configPath = paths.ConfigPath
 	}
 	lease, err := acquireTUIProfileLocks(
-		paths.homeDir,
-		paths.configPath,
+		paths.HomeDir,
+		paths.ConfigPath,
 		configPath,
 	)
 	if err != nil {
@@ -292,7 +292,7 @@ func (r *tuiServiceRuntime) reloadExpected(
 	}
 	if loadTUIConfiguredSettings(configPath, true) == nil {
 		return r.rollbackReloadProxy(
-			paths.configPath,
+			paths.ConfigPath,
 			proxyPort,
 			errors.New("reloaded profile has no usable Proxy port (Mihomo mixed-port)"),
 		)
@@ -306,7 +306,7 @@ func (r *tuiServiceRuntime) reloadExpected(
 	r.mu.RUnlock()
 	if activePort <= 0 {
 		if err := setLinuxSystemProxy(proxyPort, false); err != nil {
-			return r.rollbackReloadProxy(paths.configPath, proxyPort, err)
+			return r.rollbackReloadProxy(paths.ConfigPath, proxyPort, err)
 		}
 		r.setSystemProxyState(false, 0)
 		return changed, nil
@@ -315,7 +315,7 @@ func (r *tuiServiceRuntime) reloadExpected(
 		return changed, nil
 	}
 	if err := setLinuxSystemProxy(activePort, true); err != nil {
-		return r.rollbackReloadProxy(paths.configPath, proxyPort, err)
+		return r.rollbackReloadProxy(paths.ConfigPath, proxyPort, err)
 	}
 	r.setSystemProxyState(true, activePort)
 	return changed, nil
@@ -339,7 +339,7 @@ func (r *tuiServiceRuntime) rollbackReloadProxy(
 	cause error,
 ) (bool, error) {
 	r.mu.RLock()
-	currentPath := r.paths.configPath
+	currentPath := r.paths.ConfigPath
 	r.mu.RUnlock()
 	if filepath.Clean(currentPath) == filepath.Clean(previousPath) {
 		if proxyPort > 0 {
@@ -399,7 +399,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 	previousActualPath := r.actualConfigPath
 	r.mu.RUnlock()
 	if configPath == "" {
-		configPath = paths.configPath
+		configPath = paths.ConfigPath
 	}
 	configPath = filepath.Clean(configPath)
 	if expectedSHA256 != "" {
@@ -422,7 +422,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 	tunFD := 0
 	if mode == tuiSilentMode {
 		logicalPaths := paths
-		logicalPaths.configPath = configPath
+		logicalPaths.ConfigPath = configPath
 		var err error
 		actualConfigPath, err = writeTUISilentRuntimeConfig(logicalPaths, flc)
 		if err != nil {
@@ -449,7 +449,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 			}
 		}
 		logicalPaths := paths
-		logicalPaths.configPath = configPath
+		logicalPaths.ConfigPath = configPath
 		var err error
 		actualConfigPath, err = writeTUIManagedRuntimeConfig(
 			logicalPaths,
@@ -467,7 +467,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 		}
 	}
 	reloaded, err := reloadTUIActualConfig(
-		paths.homeDir,
+		paths.HomeDir,
 		previousActualPath,
 		actualConfigPath,
 		r.testURL,
@@ -489,7 +489,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 			validationErr := err
 			if filepath.Clean(actualConfigPath) != filepath.Clean(previousActualPath) {
 				_, rollbackErr := reloadTUIActualConfig(
-					paths.homeDir,
+					paths.HomeDir,
 					actualConfigPath,
 					previousActualPath,
 					r.testURL,
@@ -515,11 +515,11 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 		}
 	}
 	updatedPaths := paths
-	updatedPaths.configPath = configPath
-	if configPath != paths.configPath {
+	updatedPaths.ConfigPath = configPath
+	if configPath != paths.ConfigPath {
 		if err := rememberTUIActiveProfile(updatedPaths); err != nil {
 			_, rollbackErr := reloadTUIActualConfig(
-				paths.homeDir,
+				paths.HomeDir,
 				actualConfigPath,
 				previousActualPath,
 				r.testURL,
@@ -541,7 +541,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 		}
 	}
 	r.mu.Lock()
-	r.paths.configPath = configPath
+	r.paths.ConfigPath = configPath
 	r.setupParams = append([]byte(nil), reloaded...)
 	r.actualConfigPath = actualConfigPath
 	r.runtimePort = targetPort
@@ -556,13 +556,13 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 	}
 	r.mu.Unlock()
 	if mode != tuiSilentMode && settings != nil {
-		_ = rememberTUITrafficMode(paths.homeDir, settings.Mode)
+		_ = rememberTUITrafficMode(paths.HomeDir, settings.Mode)
 	}
 	if previousActualPath != actualConfigPath &&
 		(strings.Contains(filepath.Base(previousActualPath), tuiSilentRuntimeConfigPrefix) ||
 			strings.Contains(filepath.Base(previousActualPath), tuiManagedRuntimeConfigPrefix)) {
 		_ = os.Remove(previousActualPath)
 	}
-	cleanupTUISilentRuntimeConfigs(paths.homeDir, actualConfigPath)
+	cleanupTUISilentRuntimeConfigs(paths.HomeDir, actualConfigPath)
 	return true, nil
 }

@@ -44,7 +44,7 @@ func TestTUIFormatting(t *testing.T) {
 }
 
 func TestTUIRenderingFitsTerminalWidth(t *testing.T) {
-	paths := cliPaths{configPath: "/tmp/flclash/config.yaml"}
+	paths := cliPaths{ConfigPath: "/tmp/flclash/config.yaml"}
 	for _, size := range []struct {
 		width  int
 		height int
@@ -82,7 +82,7 @@ func TestTUIRenderingFitsTerminalWidth(t *testing.T) {
 }
 
 func TestTUIRenderingFitsEveryPositiveTerminalSize(t *testing.T) {
-	paths := cliPaths{configPath: "/tmp/flclash/config.yaml"}
+	paths := cliPaths{ConfigPath: "/tmp/flclash/config.yaml"}
 	snapshots := make([]tuiSnapshot, 0, int(tuiPageCount))
 	for page := tuiPageDashboard; page < tuiPageCount; page++ {
 		snapshots = append(snapshots, populatedTUISnapshot(page))
@@ -129,7 +129,7 @@ func TestTUIRenderingFitsEveryPositiveTerminalSize(t *testing.T) {
 }
 
 func TestTUINotificationRenderingFitsEveryPositiveTerminalSize(t *testing.T) {
-	paths := cliPaths{configPath: "/tmp/flclash/config.yaml"}
+	paths := cliPaths{ConfigPath: "/tmp/flclash/config.yaml"}
 	notifications := []tuiNotification{
 		{
 			level:     tuiNotificationError,
@@ -192,7 +192,7 @@ func TestTUINotificationRenderingFitsEveryPositiveTerminalSize(t *testing.T) {
 }
 
 func TestTUIProfileDeleteConfirmationOverridesCompactNavigation(t *testing.T) {
-	paths := cliPaths{configPath: "/tmp/flclash/config.yaml"}
+	paths := cliPaths{ConfigPath: "/tmp/flclash/config.yaml"}
 	for _, size := range []struct {
 		width  int
 		height int
@@ -302,8 +302,8 @@ func TestTUICompactDashboardCanScrollEverySection(t *testing.T) {
 	model := newTUIModel(
 		controllerClient{},
 		cliPaths{
-			homeDir:    "/tmp/flclash",
-			configPath: "/tmp/flclash/config.yaml",
+			HomeDir:    "/tmp/flclash",
+			ConfigPath: "/tmp/flclash/config.yaml",
 		},
 		nil,
 		true,
@@ -687,7 +687,7 @@ func TestTUINotificationLogsRedactSensitiveURLs(t *testing.T) {
 	clearTUILogs()
 	model := newTUIModel(
 		controllerClient{},
-		cliPaths{homeDir: "/tmp/private-flclash"},
+		cliPaths{HomeDir: "/tmp/private-flclash"},
 		nil,
 		true,
 	)

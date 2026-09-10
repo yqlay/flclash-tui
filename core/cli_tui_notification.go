@@ -192,7 +192,7 @@ func (m *tuiModel) enqueueNotification(notification tuiNotification) {
 	}
 	notification.acknowledged = false
 	logMessage := sanitizeCLIApplicationLogDetail(
-		m.paths.homeDir,
+		m.paths.HomeDir,
 		notification.message,
 	)
 	appendTUILogEvent(string(notification.level), logMessage)

@@ -272,7 +272,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			return m.startEditor(m.snapshot.Profiles[m.snapshot.SelectedRow].Path)
 		case tuiPageLogs:
 			return m.startOperation(func(state *tuiOperationState) {
-				path, err := exportTUILogs(state.paths.homeDir, state.snapshot.Logs)
+				path, err := exportTUILogs(state.paths.HomeDir, state.snapshot.Logs)
 				if err != nil {
 					state.snapshot.Status = "Export logs failed: " + err.Error()
 				} else {
@@ -280,7 +280,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				}
 			})
 		case tuiPageMaintenance:
-			return m.startEditor(m.paths.configPath)
+			return m.startEditor(m.paths.ConfigPath)
 		default:
 			m.snapshot.Status = "Edit YAML is available in Profiles and Maintenance"
 		}

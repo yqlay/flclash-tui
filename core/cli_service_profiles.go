@@ -18,7 +18,7 @@ func (r *tuiServiceRuntime) putProfile(
 	paths := r.paths
 	r.mu.RUnlock()
 	target := filepath.Clean(request.ConfigPath)
-	if _, err := tuiProfileStateKey(paths.homeDir, target); err != nil {
+	if _, err := tuiProfileStateKey(paths.HomeDir, target); err != nil {
 		return false, "", err
 	}
 	if len(request.ProfileData) == 0 {
@@ -39,7 +39,7 @@ func (r *tuiServiceRuntime) putProfile(
 		}
 	}
 
-	lease, err := acquireTUIProfileLocks(paths.homeDir, target)
+	lease, err := acquireTUIProfileLocks(paths.HomeDir, target)
 	if err != nil {
 		return false, "", err
 	}
@@ -78,7 +78,7 @@ func (r *tuiServiceRuntime) putProfile(
 	if err := writeTUIProfileAtomically(target, request.ProfileData, mode); err != nil {
 		return false, "", err
 	}
-	active := filepath.Clean(target) == filepath.Clean(paths.configPath)
+	active := filepath.Clean(target) == filepath.Clean(paths.ConfigPath)
 	rollback := func(cause error) error {
 		var restoreErr error
 		if existed {
@@ -109,7 +109,7 @@ func (r *tuiServiceRuntime) putProfile(
 	}
 	if request.SubscriptionURL != nil {
 		if err := rememberTUISubscriptionSource(
-			paths.homeDir,
+			paths.HomeDir,
 			target,
 			*request.SubscriptionURL,
 		); err != nil {
@@ -127,13 +127,13 @@ func (r *tuiServiceRuntime) renameProfile(
 	paths := r.paths
 	r.mu.RUnlock()
 	path = filepath.Clean(path)
-	if _, err := tuiProfileStateKey(paths.homeDir, path); err != nil {
+	if _, err := tuiProfileStateKey(paths.HomeDir, path); err != nil {
 		return false, "", err
 	}
-	if path == filepath.Clean(paths.configPath) {
+	if path == filepath.Clean(paths.ConfigPath) {
 		return false, "", errors.New("activate another profile before renaming the current profile")
 	}
-	renamed, err := renameTUIProfile(paths.homeDir, path, newName)
+	renamed, err := renameTUIProfile(paths.HomeDir, path, newName)
 	if err != nil {
 		return false, "", err
 	}
@@ -145,14 +145,14 @@ func (r *tuiServiceRuntime) deleteProfile(path string) (bool, error) {
 	paths := r.paths
 	r.mu.RUnlock()
 	path = filepath.Clean(path)
-	key, err := tuiProfileStateKey(paths.homeDir, path)
+	key, err := tuiProfileStateKey(paths.HomeDir, path)
 	if err != nil {
 		return false, err
 	}
-	if path == filepath.Clean(paths.configPath) {
+	if path == filepath.Clean(paths.ConfigPath) {
 		return false, errors.New("cannot delete the active profile")
 	}
-	lease, err := acquireTUIProfileLocks(paths.homeDir, path)
+	lease, err := acquireTUIProfileLocks(paths.HomeDir, path)
 	if err != nil {
 		return false, err
 	}
@@ -171,7 +171,7 @@ func (r *tuiServiceRuntime) deleteProfile(path string) (bool, error) {
 	if err := os.Remove(path); err != nil {
 		return false, err
 	}
-	if err := updateTUIState(paths.homeDir, func(state *tuiPersistentState) {
+	if err := updateTUIState(paths.HomeDir, func(state *tuiPersistentState) {
 		delete(state.SubscriptionSources, key)
 	}); err != nil {
 		if restoreErr := writeTUIProfileAtomically(path, data, info.Mode()); restoreErr != nil {
@@ -196,7 +196,7 @@ func (r *tuiServiceRuntime) linkProfile(
 	paths := r.paths
 	r.mu.RUnlock()
 	path = filepath.Clean(path)
-	if _, err := tuiProfileStateKey(paths.homeDir, path); err != nil {
+	if _, err := tuiProfileStateKey(paths.HomeDir, path); err != nil {
 		return false, err
 	}
 	info, err := os.Lstat(path)
@@ -206,11 +206,11 @@ func (r *tuiServiceRuntime) linkProfile(
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return false, errors.New("profile must be a regular file, not a symlink")
 	}
-	current, currentErr := loadTUISubscriptionSource(paths.homeDir, path)
+	current, currentErr := loadTUISubscriptionSource(paths.HomeDir, path)
 	if currentErr == nil && current == strings.TrimSpace(*subscriptionURL) {
 		return false, nil
 	}
-	if err := rememberTUISubscriptionSource(paths.homeDir, path, *subscriptionURL); err != nil {
+	if err := rememberTUISubscriptionSource(paths.HomeDir, path, *subscriptionURL); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -221,10 +221,10 @@ func (r *tuiServiceRuntime) backupProfile(path string) (bool, string, error) {
 	paths := r.paths
 	r.mu.RUnlock()
 	path = filepath.Clean(path)
-	if _, err := tuiProfileStateKey(paths.homeDir, path); err != nil {
+	if _, err := tuiProfileStateKey(paths.HomeDir, path); err != nil {
 		return false, "", err
 	}
-	lease, err := acquireTUIProfileLocks(paths.homeDir, path)
+	lease, err := acquireTUIProfileLocks(paths.HomeDir, path)
 	if err != nil {
 		return false, "", err
 	}
@@ -271,15 +271,15 @@ func (r *tuiServiceRuntime) restoreProfile(path string) (bool, string, error) {
 	paths := r.paths
 	r.mu.RUnlock()
 	path = filepath.Clean(path)
-	if _, err := tuiProfileStateKey(paths.homeDir, path); err != nil {
+	if _, err := tuiProfileStateKey(paths.HomeDir, path); err != nil {
 		return false, "", err
 	}
-	backupPath, backup, err := restoreLatestTUIConfigLocked(paths.homeDir, path)
+	backupPath, backup, err := restoreLatestTUIConfigLocked(paths.HomeDir, path)
 	if err != nil {
 		return false, "", err
 	}
 	defer backup.release()
-	if path != filepath.Clean(paths.configPath) {
+	if path != filepath.Clean(paths.ConfigPath) {
 		return true, backupPath, nil
 	}
 	if _, err := r.reloadAndRepairFLCUnlocked(path, backup.updatedSHA256); err != nil {

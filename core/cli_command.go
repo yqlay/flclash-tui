@@ -92,7 +92,7 @@ func activeCLIProxyURL() (string, error) {
 }
 
 func activeCLIProxyURLForPaths(paths cliPaths) (string, error) {
-	client := newTUIServiceClient(paths.homeDir)
+	client := newTUIServiceClient(paths.HomeDir)
 	status, statusErr := client.status()
 	if statusErr == nil && status.Version != "" && status.ProtocolVersion != 0 &&
 		(status.Version != cliVersion ||

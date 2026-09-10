@@ -90,7 +90,7 @@ func newTUIServiceRuntime(
 		setupParams:      append([]byte(nil), setupParams...),
 		trafficMode:      tuiSilentMode,
 		tunScope:         tuiTunScopeUser,
-		actualConfigPath: paths.configPath,
+		actualConfigPath: paths.ConfigPath,
 		revision:         1,
 		changed:          make(chan struct{}),
 		dedup:            map[string]tuiServiceStatus{},
@@ -137,7 +137,7 @@ func (r *tuiServiceRuntime) handle(
 		status = r.connectionsStatus(request.RequestID)
 	case "logs":
 		status = r.snapshot(request.RequestID)
-		status.Logs = readTUIPersistentLogs(r.paths.homeDir, request.LogLimit)
+		status.Logs = readTUIPersistentLogs(r.paths.HomeDir, request.LogLimit)
 	case "watch":
 		status = r.watch(request)
 	case "speed_proxy":
@@ -172,8 +172,8 @@ func (r *tuiServiceRuntime) snapshot(requestID string) tuiServiceStatus {
 		OK:                  true,
 		PID:                 os.Getpid(),
 		Version:             cliVersion,
-		HomeDir:             r.paths.homeDir,
-		ConfigPath:          r.paths.configPath,
+		HomeDir:             r.paths.HomeDir,
+		ConfigPath:          r.paths.ConfigPath,
 		CoreSocket:          r.coreSocket,
 		Running:             r.running,
 		ShuttingDown:        r.shuttingDown,
@@ -303,7 +303,7 @@ func (r *tuiServiceRuntime) mutate(
 	case "clear_history":
 		changed, err = r.clearPersistentHistory()
 	case "clear_logs":
-		err = clearTUIPersistentLogs(r.paths.homeDir)
+		err = clearTUIPersistentLogs(r.paths.HomeDir)
 		changed = err == nil
 	case "close_connection":
 		if strings.TrimSpace(request.ConnectionID) == "" {
@@ -362,7 +362,7 @@ func (r *tuiServiceRuntime) logMutation(
 	err error,
 ) {
 	r.mu.RLock()
-	homeDir := r.paths.homeDir
+	homeDir := r.paths.HomeDir
 	r.mu.RUnlock()
 	level := "INFO"
 	result := "succeeded"
@@ -608,7 +608,7 @@ func (r *tuiServiceRuntime) repairFLCOutbound() (bool, error) {
 	mode := r.trafficMode
 	outbound := strings.TrimSpace(r.flc.Outbound)
 	incomplete := r.flc.proxyURL() == ""
-	configPath := r.paths.configPath
+	configPath := r.paths.ConfigPath
 	r.mu.RUnlock()
 	if mode != tuiSilentMode {
 		return false, nil

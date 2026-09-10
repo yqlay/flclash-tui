@@ -65,7 +65,7 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			} else if selectTUIProxy(
 				&state.snapshot,
 				m.client,
-				state.paths.homeDir,
+				state.paths.HomeDir,
 			) {
 				state.networkChanged = true
 			}
@@ -162,7 +162,7 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 	case tuiPageMaintenance:
 		switch m.snapshot.SelectedMaintenance {
 		case tuiMaintenanceEditConfigRow:
-			return m.startEditor(m.paths.configPath)
+			return m.startEditor(m.paths.ConfigPath)
 		case tuiMaintenanceBackupRow:
 			return m.runTool(1)
 		case tuiMaintenanceRestoreRow:
@@ -271,7 +271,7 @@ func switchTUIServiceProfile(
 		state.snapshot.Status = "Profile hot-reload failed: " + err.Error()
 		return
 	}
-	state.paths.configPath = profile.Path
+	state.paths.ConfigPath = profile.Path
 	state.snapshot.GroupOrder = loadTUIProxyGroupOrder(profile.Path)
 	state.snapshot.ProxyNodeFocus = false
 	state.snapshot.Status = "Active profile: " + profile.Name
@@ -315,7 +315,7 @@ func (m *tuiModel) runTool(index int) tea.Cmd {
 				return
 			}
 			status, err := m.service.backupProfile(
-				state.paths.configPath,
+				state.paths.ConfigPath,
 				state.backendRevision,
 			)
 			if err != nil {
@@ -333,7 +333,7 @@ func (m *tuiModel) runTool(index int) tea.Cmd {
 				return
 			}
 			status, err := m.service.restoreProfile(
-				state.paths.configPath,
+				state.paths.ConfigPath,
 				state.backendRevision,
 			)
 			if err != nil {

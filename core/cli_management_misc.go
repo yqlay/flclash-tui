@@ -33,7 +33,7 @@ func geoCommand(args []string) error {
 	switch args[0] {
 	case "status":
 		for _, file := range tuiBundledGeoFiles {
-			path := filepath.Join(paths.homeDir, file.name)
+			path := filepath.Join(paths.HomeDir, file.name)
 			state := "missing"
 			if tuiGeoTargetIsUsable(path, file) {
 				state = "ready"
@@ -239,8 +239,8 @@ func preferManagedActivePaths(
 			status.HomeDir,
 			status.ConfigPath,
 		); pathErr == nil {
-			paths.homeDir = status.HomeDir
-			paths.configPath = status.ConfigPath
+			paths.HomeDir = status.HomeDir
+			paths.ConfigPath = status.ConfigPath
 			return paths
 		}
 	}
@@ -266,7 +266,7 @@ func currentManagedServiceRaw() (*tuiServiceClient, tuiServiceStatus, error) {
 	if err != nil {
 		return nil, tuiServiceStatus{}, err
 	}
-	client := newTUIServiceClient(paths.homeDir)
+	client := newTUIServiceClient(paths.HomeDir)
 	status, err := client.compatibleStatus()
 	if err != nil {
 		return nil, tuiServiceStatus{}, errors.New("no FlClash backend is running")
@@ -294,8 +294,8 @@ func activeCLIPaths() (cliPaths, error) {
 		return cliPaths{}, err
 	}
 	if _, status, statusErr := currentManagedService(); statusErr == nil {
-		paths.homeDir = status.HomeDir
-		paths.configPath = status.ConfigPath
+		paths.HomeDir = status.HomeDir
+		paths.ConfigPath = status.ConfigPath
 	} else if restored, restoreErr := restoreTUIActiveProfile(paths); restoreErr == nil {
 		paths = restored
 	}

@@ -312,13 +312,13 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 	if snapshot.SelectedRow >= 0 && snapshot.SelectedRow < len(snapshot.Profiles) {
 		selectedProfilePath = snapshot.Profiles[snapshot.SelectedRow].Path
 	}
-	entries, err := os.ReadDir(paths.homeDir)
+	entries, err := os.ReadDir(paths.HomeDir)
 	if err != nil {
 		snapshot.Profiles = nil
 		return
 	}
 	profiles := make([]tuiProfile, 0, len(entries)+1)
-	subscriptionSources := loadTUISubscriptionSources(paths.homeDir)
+	subscriptionSources := loadTUISubscriptionSources(paths.HomeDir)
 	currentFound := false
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -331,11 +331,11 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 		if ext != ".yaml" && ext != ".yml" {
 			continue
 		}
-		path := filepath.Join(paths.homeDir, entry.Name())
-		current := filepath.Clean(path) == filepath.Clean(paths.configPath)
+		path := filepath.Join(paths.HomeDir, entry.Name())
+		current := filepath.Clean(path) == filepath.Clean(paths.ConfigPath)
 		currentFound = currentFound || current
 		subscriptionURL := ""
-		if stateKey, err := tuiProfileStateKey(paths.homeDir, path); err == nil {
+		if stateKey, err := tuiProfileStateKey(paths.HomeDir, path); err == nil {
 			subscriptionURL = subscriptionSources[stateKey]
 		}
 		profiles = append(profiles, tuiProfile{
@@ -348,14 +348,14 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 	if !currentFound {
 		subscriptionURL := ""
 		if stateKey, err := tuiProfileStateKey(
-			paths.homeDir,
-			paths.configPath,
+			paths.HomeDir,
+			paths.ConfigPath,
 		); err == nil {
 			subscriptionURL = subscriptionSources[stateKey]
 		}
 		profiles = append(profiles, tuiProfile{
-			Name:            filepath.Base(paths.configPath),
-			Path:            paths.configPath,
+			Name:            filepath.Base(paths.ConfigPath),
+			Path:            paths.ConfigPath,
 			Current:         true,
 			SubscriptionURL: subscriptionURL,
 		})
@@ -508,7 +508,7 @@ func switchTUIProfile(
 	systemProxyEnabled := snapshot.Settings.SystemProxy
 	rollback := func() string {
 		initParams, err := json.Marshal(InitParams{
-			HomeDir: previousPaths.homeDir, ConfigPath: previousPaths.configPath, Version: 1,
+			HomeDir: previousPaths.HomeDir, ConfigPath: previousPaths.ConfigPath, Version: 1,
 		})
 		if err != nil || !handleInitClash(string(initParams)) {
 			return "previous profile initialization failed"
@@ -531,7 +531,7 @@ func switchTUIProfile(
 			return
 		}
 	}
-	params.SelectedMap = loadTUISelectedProxies(paths.homeDir)
+	params.SelectedMap = loadTUISelectedProxies(paths.HomeDir)
 	if controllerUnix != "" {
 		params.ExternalController = nil
 		params.ExternalControllerUnix = &controllerUnix
@@ -546,7 +546,7 @@ func switchTUIProfile(
 		return
 	}
 	initParams, err := json.Marshal(InitParams{
-		HomeDir: paths.homeDir, ConfigPath: profile.Path, Version: 1,
+		HomeDir: paths.HomeDir, ConfigPath: profile.Path, Version: 1,
 	})
 	if err != nil || !handleInitClash(string(initParams)) {
 		snapshot.Status = "Profile initialization failed"
@@ -566,7 +566,7 @@ func switchTUIProfile(
 		}
 		return
 	}
-	paths.configPath = profile.Path
+	paths.ConfigPath = profile.Path
 	*setupParams = newSetupParams
 	snapshot.GroupOrder = loadTUIProxyGroupOrder(profile.Path)
 	snapshot.ProxyNodeFocus = false

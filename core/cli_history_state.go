@@ -102,7 +102,7 @@ func saveTUIHistory(homeDir string, entries []tuiRequest) error {
 
 func (r *tuiServiceRuntime) restoreHistory() error {
 	r.mu.RLock()
-	homeDir := r.paths.homeDir
+	homeDir := r.paths.HomeDir
 	r.mu.RUnlock()
 	entries, err := loadTUIHistory(homeDir)
 	if err != nil {
@@ -125,7 +125,7 @@ func (r *tuiServiceRuntime) persistHistory(force bool) error {
 		r.mu.RUnlock()
 		return nil
 	}
-	homeDir := r.paths.homeDir
+	homeDir := r.paths.HomeDir
 	entries := append([]tuiRequest(nil), r.history...)
 	r.mu.RUnlock()
 	if err := saveTUIHistory(homeDir, entries); err != nil {

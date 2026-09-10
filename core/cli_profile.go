@@ -37,8 +37,8 @@ func profileCommand(args []string) error {
 	if *configArg == "" && *directoryArg == "" {
 		_, status, statusErr := currentManagedService()
 		if statusErr == nil {
-			paths.homeDir = status.HomeDir
-			paths.configPath = status.ConfigPath
+			paths.HomeDir = status.HomeDir
+			paths.ConfigPath = status.ConfigPath
 		} else if restored, restoreErr := restoreTUIActiveProfile(paths); restoreErr == nil {
 			paths = restored
 		}
@@ -66,7 +66,7 @@ func profileCommand(args []string) error {
 		}
 		return nil
 	case "current":
-		fmt.Println(paths.configPath)
+		fmt.Println(paths.ConfigPath)
 		return nil
 	case "import":
 		if len(positional) != 1 {
@@ -103,7 +103,7 @@ func profileCommand(args []string) error {
 		}
 		data, name, err := readTUILocalProfile(positional[0])
 		if err != nil {
-			appendCLIApplicationLog(paths.homeDir, "ERROR", "profile_import_file", "local profile validation failed")
+			appendCLIApplicationLog(paths.HomeDir, "ERROR", "profile_import_file", "local profile validation failed")
 			return err
 		}
 		client, status, err := currentManagedService()
@@ -131,7 +131,7 @@ func profileCommand(args []string) error {
 		if len(positional) != 1 {
 			return errors.New("usage: flclash profile use NAME")
 		}
-		target, err := resolveCLIProfile(paths.homeDir, positional[0])
+		target, err := resolveCLIProfile(paths.HomeDir, positional[0])
 		if err != nil {
 			return err
 		}
@@ -150,7 +150,7 @@ func profileCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		sourceURL, err := loadTUISubscriptionSource(paths.homeDir, target)
+		sourceURL, err := loadTUISubscriptionSource(paths.HomeDir, target)
 		if err != nil {
 			return err
 		}
@@ -188,11 +188,11 @@ func profileCommand(args []string) error {
 		if len(positional) != 2 {
 			return errors.New("usage: flclash profile rename NAME NEW_NAME")
 		}
-		target, err := resolveCLIProfile(paths.homeDir, positional[0])
+		target, err := resolveCLIProfile(paths.HomeDir, positional[0])
 		if err != nil {
 			return err
 		}
-		if filepath.Clean(target) == filepath.Clean(paths.configPath) {
+		if filepath.Clean(target) == filepath.Clean(paths.ConfigPath) {
 			return errors.New("activate another profile before renaming the current profile")
 		}
 		client, status, err := currentManagedService()
@@ -215,11 +215,11 @@ func profileCommand(args []string) error {
 		if len(positional) != 1 {
 			return errors.New("usage: flclash profile delete NAME")
 		}
-		target, err := resolveCLIProfile(paths.homeDir, positional[0])
+		target, err := resolveCLIProfile(paths.HomeDir, positional[0])
 		if err != nil {
 			return err
 		}
-		if filepath.Clean(target) == filepath.Clean(paths.configPath) {
+		if filepath.Clean(target) == filepath.Clean(paths.ConfigPath) {
 			return errors.New("cannot delete the active profile")
 		}
 		client, status, err := currentManagedService()
@@ -235,7 +235,7 @@ func profileCommand(args []string) error {
 		if len(positional) != 1 {
 			return errors.New("usage: flclash profile link [--config PATH] URL")
 		}
-		if _, err := os.Stat(paths.configPath); err != nil {
+		if _, err := os.Stat(paths.ConfigPath); err != nil {
 			return err
 		}
 		sourceURL := positional[0]
@@ -247,13 +247,13 @@ func profileCommand(args []string) error {
 			return err
 		}
 		if _, err := client.linkProfile(
-			paths.configPath,
+			paths.ConfigPath,
 			sourceURL,
 			status.Revision,
 		); err != nil {
 			return err
 		}
-		fmt.Printf("Linked %s to its subscription source\n", filepath.Base(paths.configPath))
+		fmt.Printf("Linked %s to its subscription source\n", filepath.Base(paths.ConfigPath))
 		return nil
 	default:
 		return fmt.Errorf("unknown profile command %q; use `flclash profile -help`", command)
@@ -261,11 +261,11 @@ func profileCommand(args []string) error {
 }
 
 func listCLIProfiles(paths cliPaths) ([]tuiProfile, error) {
-	entries, err := os.ReadDir(paths.homeDir)
+	entries, err := os.ReadDir(paths.HomeDir)
 	if err != nil {
 		return nil, err
 	}
-	sources := loadTUISubscriptionSources(paths.homeDir)
+	sources := loadTUISubscriptionSources(paths.HomeDir)
 	profiles := make([]tuiProfile, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -278,11 +278,11 @@ func listCLIProfiles(paths cliPaths) ([]tuiProfile, error) {
 		if extension != ".yaml" && extension != ".yml" {
 			continue
 		}
-		path := filepath.Join(paths.homeDir, entry.Name())
+		path := filepath.Join(paths.HomeDir, entry.Name())
 		profiles = append(profiles, tuiProfile{
 			Name:            entry.Name(),
 			Path:            path,
-			Current:         filepath.Clean(path) == filepath.Clean(paths.configPath),
+			Current:         filepath.Clean(path) == filepath.Clean(paths.ConfigPath),
 			SubscriptionURL: sources[entry.Name()],
 		})
 	}
@@ -317,12 +317,12 @@ func resolveCLIProfile(homeDir, value string) (string, error) {
 
 func cliProfileTarget(paths cliPaths, positional []string) (string, error) {
 	if len(positional) == 0 {
-		return paths.configPath, nil
+		return paths.ConfigPath, nil
 	}
 	if len(positional) != 1 {
 		return "", errors.New("expected at most one profile name")
 	}
-	return resolveCLIProfile(paths.homeDir, positional[0])
+	return resolveCLIProfile(paths.HomeDir, positional[0])
 }
 
 type controllerClient struct {

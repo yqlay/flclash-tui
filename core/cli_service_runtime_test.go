@@ -55,8 +55,8 @@ func newTestTUIServiceRuntime(t *testing.T) *tuiServiceRuntime {
 	directory := t.TempDir()
 	return newTUIServiceRuntime(
 		cliPaths{
-			homeDir:    directory,
-			configPath: filepath.Join(directory, "config.yaml"),
+			HomeDir:    directory,
+			ConfigPath: filepath.Join(directory, "config.yaml"),
 		},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
@@ -185,7 +185,7 @@ func TestTUIServiceRuntimeDeletesProfileAndLinkedMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := newTUIServiceRuntime(
-		cliPaths{homeDir: directory, configPath: activePath},
+		cliPaths{HomeDir: directory, ConfigPath: activePath},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
 		nil,
@@ -254,8 +254,8 @@ func TestTUIServiceRuntimeDeduplicatesConcurrentMutation(t *testing.T) {
 	var shutdownCount atomic.Int32
 	runtime := newTUIServiceRuntime(
 		cliPaths{
-			homeDir:    directory,
-			configPath: filepath.Join(directory, "config.yaml"),
+			HomeDir:    directory,
+			ConfigPath: filepath.Join(directory, "config.yaml"),
 		},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
@@ -380,8 +380,8 @@ func TestTUIServiceRuntimeReusesCoreControllerConnection(t *testing.T) {
 
 	runtime := newTUIServiceRuntime(
 		cliPaths{
-			homeDir:    directory,
-			configPath: filepath.Join(directory, "config.yaml"),
+			HomeDir:    directory,
+			ConfigPath: filepath.Join(directory, "config.yaml"),
 		},
 		defaultCLITestURL,
 		socketPath,
@@ -453,8 +453,8 @@ func TestTUIServiceRuntimeSelectProxyValidatesAndRollsBack(t *testing.T) {
 
 	runtime := newTUIServiceRuntime(
 		cliPaths{
-			homeDir:    directory,
-			configPath: filepath.Join(directory, "config.yaml"),
+			HomeDir:    directory,
+			ConfigPath: filepath.Join(directory, "config.yaml"),
 		},
 		defaultCLITestURL,
 		socketPath,
@@ -542,7 +542,7 @@ func TestTUIServiceRuntimePatchesNativeModeWithoutReload(t *testing.T) {
 	t.Cleanup(func() { _ = server.Close() })
 
 	runtime := newTUIServiceRuntime(
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 		defaultCLITestURL,
 		coreSocket,
 		nil,
@@ -599,7 +599,7 @@ func TestTUIServiceRuntimeRestoresProfileWhenNativeModePatchFails(t *testing.T) 
 	t.Cleanup(func() { _ = server.Close() })
 
 	runtime := newTUIServiceRuntime(
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 		defaultCLITestURL,
 		coreSocket,
 		nil,
@@ -631,7 +631,7 @@ func TestTUIServiceRuntimeChangesNativeModeWhileCoreStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := newTUIServiceRuntime(
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 		defaultCLITestURL,
 		filepath.Join(directory, "missing-core.sock"),
 		nil,
@@ -667,7 +667,7 @@ func TestTUIServiceRuntimeRejectsActiveTunScopeChange(t *testing.T) {
 		"rule",
 		7890,
 		7890,
-		runtime.paths.configPath,
+		runtime.paths.ConfigPath,
 		tuiFLCListenerState{},
 		tuiTunScopeUser,
 		true,
@@ -698,7 +698,7 @@ func TestTUIServiceRuntimeDoesNotApplyTunWhenScopeSaveFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := newTUIServiceRuntime(
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
 		nil,
@@ -744,7 +744,7 @@ func TestTUIServiceRuntimeRestoresTunRuntimeAfterSettingsFailure(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(profileDirectory, 0o700) })
 
 	runtime := newTUIServiceRuntime(
-		cliPaths{homeDir: directory, configPath: configPath},
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
 		nil,
@@ -803,7 +803,7 @@ func TestTUIServiceRuntimeRemovesGeneratedConfigWhenProfileSwitchFails(
 		}
 	}
 	runtime := newTUIServiceRuntime(
-		cliPaths{homeDir: directory, configPath: currentPath},
+		cliPaths{HomeDir: directory, ConfigPath: currentPath},
 		defaultCLITestURL,
 		filepath.Join(directory, "core.sock"),
 		nil,
@@ -846,7 +846,7 @@ func TestTUIServiceRuntimeRemovesGeneratedConfigWhenProfileSwitchFails(
 
 func TestTUIServiceRuntimeBacksUpNestedProfileThroughBackend(t *testing.T) {
 	runtime := newTestTUIServiceRuntime(t)
-	nested := filepath.Join(runtime.paths.homeDir, "profiles")
+	nested := filepath.Join(runtime.paths.HomeDir, "profiles")
 	if err := os.Mkdir(nested, 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -183,7 +183,7 @@ func updateTUIState(
 }
 
 func rememberTUIActiveProfile(paths cliPaths) error {
-	profile, err := filepath.Rel(paths.homeDir, paths.configPath)
+	profile, err := filepath.Rel(paths.HomeDir, paths.ConfigPath)
 	if err != nil {
 		return err
 	}
@@ -192,7 +192,7 @@ func rememberTUIActiveProfile(paths cliPaths) error {
 		strings.HasPrefix(profile, ".."+string(filepath.Separator)) {
 		return errors.New("active profile must be inside the TUI data directory")
 	}
-	return updateTUIState(paths.homeDir, func(state *tuiPersistentState) {
+	return updateTUIState(paths.HomeDir, func(state *tuiPersistentState) {
 		state.ActiveProfile = filepath.Clean(profile)
 	})
 }
@@ -292,15 +292,15 @@ func renameTUISubscriptionSource(homeDir, oldPath, newPath string) error {
 }
 
 func restoreTUIActiveProfile(paths cliPaths) (cliPaths, error) {
-	state, err := loadTUIState(paths.homeDir)
+	state, err := loadTUIState(paths.HomeDir)
 	if err != nil || state.ActiveProfile == "" {
 		return paths, err
 	}
 	if filepath.IsAbs(state.ActiveProfile) {
 		return paths, errors.New("saved active profile must be a relative path")
 	}
-	profilePath := filepath.Clean(filepath.Join(paths.homeDir, state.ActiveProfile))
-	relative, err := filepath.Rel(paths.homeDir, profilePath)
+	profilePath := filepath.Clean(filepath.Join(paths.HomeDir, state.ActiveProfile))
+	relative, err := filepath.Rel(paths.HomeDir, profilePath)
 	if err != nil ||
 		relative == ".." ||
 		strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
@@ -324,7 +324,7 @@ func restoreTUIActiveProfile(paths cliPaths) (cliPaths, error) {
 	if message := validateConfigBytes(data); message != "" {
 		return paths, errors.New("saved active profile is invalid: " + message)
 	}
-	paths.configPath = profilePath
+	paths.ConfigPath = profilePath
 	return paths, nil
 }
 
