@@ -24,11 +24,6 @@ const (
 	tuiProgramFPS      = 15
 )
 
-const (
-	tuiSubscriptionUserAgent = "mihomo"
-	tuiSubscriptionMaxBytes  = 32 << 20
-)
-
 type tuiTickMsg time.Time
 
 // tuiIdleTickPlan is the work a periodic tick may start. Public-IP / delay /

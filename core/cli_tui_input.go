@@ -5,13 +5,10 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io"
-	nethttp "net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -463,7 +460,7 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			}
 			state.backendRevision = status.Revision
 			path = status.ResultPath
-			state.snapshot.Status = "Subscription linked: " + payload.summary() +
+			state.snapshot.Status = "Subscription linked: " + payload.Summary() +
 				" · U refreshes from the saved URL"
 			refreshTUIProfiles(&state.snapshot, state.paths)
 			state.snapshot.SelectedRow = findTUIProfile(state.snapshot.Profiles, path)
@@ -508,7 +505,7 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			state.backendRevision = status.Revision
 			path = status.ResultPath
 			state.snapshot.Status = "Local profile imported: " + filepath.Base(path) +
-				" · " + payload.summary()
+				" · " + payload.Summary()
 			refreshTUIProfiles(&state.snapshot, state.paths)
 			state.snapshot.SelectedRow = findTUIProfile(state.snapshot.Profiles, path)
 			state.profileSelection = path
@@ -704,90 +701,6 @@ func readTUILocalProfileDetails(
 	return payload, tuiImportedProfileName(name), nil
 }
 
-func tuiImportedProfileName(sourceName string) string {
-	base := filepath.Base(strings.TrimSpace(sourceName))
-	extension := strings.ToLower(filepath.Ext(base))
-	if extension == ".yaml" || extension == ".yml" {
-		return base
-	}
-	stem := strings.TrimSuffix(base, filepath.Ext(base))
-	if stem == "" || stem == "." || stem == ".." {
-		stem = "imported-profile"
-	}
-	return stem + ".yaml"
-}
-
-func nextTUIImportedProfilePath(homeDir, sourceName string) (string, error) {
-	extension := strings.ToLower(filepath.Ext(sourceName))
-	stem := strings.TrimSuffix(filepath.Base(sourceName), filepath.Ext(sourceName))
-	if extension != ".yaml" && extension != ".yml" || stem == "" {
-		return "", errors.New("profile file must end in .yaml or .yml")
-	}
-	if isTUIRuntimeProfileName(sourceName) {
-		stem = "imported-" + strings.TrimLeft(stem, ".")
-	}
-	for suffix := 1; suffix <= 10000; suffix++ {
-		name := stem + extension
-		if suffix > 1 {
-			name = fmt.Sprintf("%s-%d%s", stem, suffix, extension)
-		}
-		path := filepath.Join(homeDir, name)
-		if _, err := os.Lstat(path); os.IsNotExist(err) {
-			return path, nil
-		} else if err != nil {
-			return "", err
-		}
-	}
-	return "", errors.New("could not allocate a unique profile name")
-}
-
-func fetchTUISubscription(value string) ([]byte, error) {
-	payload, err := fetchTUISubscriptionDetails(value)
-	return payload.Data, err
-}
-
-func fetchTUISubscriptionDetails(
-	value string,
-) (tuiSubscriptionPayload, error) {
-	request, err := newTUISubscriptionRequest(value)
-	if err != nil {
-		return tuiSubscriptionPayload{}, err
-	}
-	client := &nethttp.Client{Timeout: 30 * time.Second}
-	response, err := client.Do(request)
-	if err != nil {
-		return tuiSubscriptionPayload{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return tuiSubscriptionPayload{}, fmt.Errorf("subscription returned %s", response.Status)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, tuiSubscriptionMaxBytes+1))
-	if err != nil {
-		return tuiSubscriptionPayload{}, err
-	}
-	if len(data) == 0 {
-		return tuiSubscriptionPayload{}, errors.New("subscription response is empty")
-	}
-	if len(data) > tuiSubscriptionMaxBytes {
-		return tuiSubscriptionPayload{}, fmt.Errorf(
-			"subscription response exceeds %d MiB",
-			tuiSubscriptionMaxBytes>>20,
-		)
-	}
-	payload, err := normalizeTUISubscription(data)
-	if err != nil {
-		return tuiSubscriptionPayload{}, fmt.Errorf(
-			"downloaded subscription is invalid: %w",
-			err,
-		)
-	}
-	payload.FileName = tuiNewSubscriptionFileName(
-		response.Header.Get("Content-Disposition"),
-	)
-	return payload, nil
-}
-
 func writeTUIProfileAtomically(path string, data []byte, mode os.FileMode) error {
 	temp, err := os.CreateTemp(
 		filepath.Dir(path),
@@ -920,20 +833,6 @@ func restoreTUIProfileIfUnchanged(
 		return errors.New("profile changed concurrently")
 	}
 	return restoreTUISubscriptionProfile(path, backup)
-}
-
-func newTUISubscriptionRequest(value string) (*nethttp.Request, error) {
-	request, err := nethttp.NewRequest(nethttp.MethodGet, value, nil)
-	if err != nil ||
-		(request.URL.Scheme != "http" && request.URL.Scheme != "https") {
-		return nil, errors.New("subscription URL must use http or https")
-	}
-	request.Header.Set("User-Agent", tuiSubscriptionUserAgent)
-	request.Header.Set(
-		"Accept",
-		"application/yaml, application/x-yaml, application/json, text/yaml, text/plain, */*",
-	)
-	return request, nil
 }
 
 func tuiKeyFromTea(message tea.KeyMsg) (tuiKey, bool) {

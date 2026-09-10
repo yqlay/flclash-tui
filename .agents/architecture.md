@@ -159,6 +159,10 @@ It uses token-based auth with the Flutter app.
 
 The Linux terminal client is built from `core/` with `CGO_ENABLED=0 go build -tags cli`. It shares `package main` with the Mihomo hub (`hub.go`, `action.go`, `common.go`) because Backend and TUI call unexported hub functions such as `handleSetupConfig`, `handleValidateConfig`, `handleInitClash`, and `handleStartListener` in-process. Do not move Backend or TUI into another package unless those hub APIs are first exported or extracted; `package main` cannot be imported.
 
+Leaf packages under `core/internal/` are for code that does not call hub:
+
+- `internal/subscription`: subscription conversion, HTTP fetch, and import filenames. `package main` keeps thin wrappers (`normalizeTUISubscription`, `fetchTUISubscriptionDetails`, …) so TUI/Backend call sites stay unchanged.
+
 New CLI code goes in a `core/cli_*.go` file named for the domain, not into a kitchen-sink file. Current file map:
 
 Entry and commands:

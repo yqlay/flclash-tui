@@ -273,22 +273,6 @@ Node = trojan, example.com, 443, password=secret, sni=example.com
 	}
 }
 
-func TestReadTUILocalProfileAcceptsNonYAMLExtension(t *testing.T) {
-	directory := t.TempDir()
-	path := filepath.Join(directory, "nodes.txt")
-	data := "hysteria2://secret@example.com:443/?sni=example.com#HY2\n"
-	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	payload, name, err := readTUILocalProfileDetails(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if name != "nodes.yaml" || payload.Nodes != 1 {
-		t.Fatalf("local import = %q %+v", name, payload)
-	}
-}
-
 func TestTUISubscriptionFileNameFollowsOriginalFlClash(t *testing.T) {
 	if name := tuiNewSubscriptionFileName(`attachment; filename="Singapore.yaml"`); name != "Singapore.yaml" {
 		t.Fatalf("quoted filename = %q", name)
