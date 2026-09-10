@@ -626,11 +626,11 @@ func initializeCore(
 	if err != nil {
 		return nil, err
 	}
-	if !handleInitClash(string(initParams)) {
+	if !cliHub.Init(string(initParams)) {
 		return nil, errors.New("initialize FlClash core failed")
 	}
 	if !startListeners {
-		handleStopListener()
+		cliHub.StopListener()
 	}
 
 	setup := SetupParams{
@@ -653,10 +653,10 @@ func initializeCore(
 	if err != nil {
 		return nil, err
 	}
-	if message := handleSetupConfig(setupParams); message != "" {
+	if message := cliHub.SetupConfig(setupParams); message != "" {
 		return nil, fmt.Errorf("load config: %s", message)
 	}
-	if startListeners && !handleStartListener() {
+	if startListeners && !cliHub.StartListener() {
 		return nil, errors.New("start proxy listeners failed")
 	}
 	return setupParams, nil

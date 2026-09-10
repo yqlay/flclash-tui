@@ -792,7 +792,7 @@ func TestTUIServiceRuntimeRemovesGeneratedConfigWhenProfileSwitchFails(
 	t *testing.T,
 ) {
 	t.Cleanup(func() {
-		_ = handleShutdown()
+		_ = cliHub.Shutdown()
 	})
 	directory := t.TempDir()
 	currentPath := filepath.Join(directory, "current.yaml")

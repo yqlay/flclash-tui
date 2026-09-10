@@ -198,7 +198,7 @@ func runTUIService(
 	if err != nil {
 		return err
 	}
-	defer handleShutdown()
+	defer cliHub.Shutdown()
 
 	listener, err := net.Listen("unix", managerSocket)
 	if err != nil {
@@ -319,7 +319,7 @@ func collectTUIServiceHistory(
 				appendCLIApplicationLog(homeDir, "ERROR", "history_save", err.Error())
 			}
 		case <-scavengeTicker.C:
-			handleForceGC()
+			cliHub.ForceGC()
 		case <-shutdown:
 			return
 		}
@@ -438,7 +438,7 @@ func reloadTUIActualConfig(
 	if err := ensureTUIBundledGeoData(homeDir); err != nil {
 		return nil, fmt.Errorf("prepare offline Geo data: %w", err)
 	}
-	if message := handleValidateConfig(configPath); message != "" {
+	if message := cliHub.ValidateConfig(configPath); message != "" {
 		return nil, errors.New(message)
 	}
 	rollback := func() error {
@@ -447,16 +447,16 @@ func reloadTUIActualConfig(
 			ConfigPath: previousPath,
 			Version:    1,
 		})
-		if marshalErr != nil || !handleInitClash(string(initParams)) {
+		if marshalErr != nil || !cliHub.Init(string(initParams)) {
 			return errors.New("restore previous profile initialization failed")
 		}
-		if message := handleSetupConfig(previousSetup); message != "" {
+		if message := cliHub.SetupConfig(previousSetup); message != "" {
 			return errors.New("restore previous profile failed: " + message)
 		}
 		if running {
-			handleStartListener()
+			cliHub.StartListener()
 		} else {
-			handleStopListener()
+			cliHub.StopListener()
 		}
 		return nil
 	}
@@ -465,7 +465,7 @@ func reloadTUIActualConfig(
 		ConfigPath: configPath,
 		Version:    1,
 	})
-	if err != nil || !handleInitClash(string(initParams)) {
+	if err != nil || !cliHub.Init(string(initParams)) {
 		return nil, errors.New("initialize updated profile failed")
 	}
 	setup := SetupParams{
@@ -478,7 +478,7 @@ func reloadTUIActualConfig(
 		_ = rollback()
 		return nil, err
 	}
-	if message := handleSetupConfig(setupParams); message != "" {
+	if message := cliHub.SetupConfig(setupParams); message != "" {
 		rollbackErr := rollback()
 		if rollbackErr != nil {
 			return nil, fmt.Errorf("%s; rollback failed: %w", message, rollbackErr)
@@ -486,9 +486,9 @@ func reloadTUIActualConfig(
 		return nil, errors.New(message)
 	}
 	if running {
-		handleStartListener()
+		cliHub.StartListener()
 	} else {
-		handleStopListener()
+		cliHub.StopListener()
 	}
 	options := controllerOptions{unixSocket: coreSocket}
 	controller := controllerClient{

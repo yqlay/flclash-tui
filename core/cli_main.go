@@ -148,10 +148,10 @@ func runCommand(args []string) error {
 	for {
 		select {
 		case <-interrupt:
-			handleShutdown()
+			cliHub.Shutdown()
 			return nil
 		case <-reload:
-			if message := handleSetupConfig(setupParams); message != "" {
+			if message := cliHub.SetupConfig(setupParams); message != "" {
 				fmt.Fprintf(os.Stderr, "flclash: reload failed: %s\n", message)
 			} else {
 				fmt.Println("configuration reloaded")
@@ -180,7 +180,7 @@ func checkCommand(args []string) error {
 	if _, err := os.Stat(paths.ConfigPath); err != nil {
 		return fmt.Errorf("config file %q: %w", paths.ConfigPath, err)
 	}
-	if message := handleValidateConfig(paths.ConfigPath); message != "" {
+	if message := cliHub.ValidateConfig(paths.ConfigPath); message != "" {
 		return errors.New(message)
 	}
 	fmt.Printf("configuration is valid: %s\n", paths.ConfigPath)

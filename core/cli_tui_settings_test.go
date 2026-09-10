@@ -1098,7 +1098,7 @@ rules:
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		handleShutdown()
+		cliHub.Shutdown()
 	})
 	client := controllerClient{
 		options: controllerOptions{address: controllerAddress},

@@ -14,13 +14,15 @@ import (
 	"strconv"
 	"strings"
 
+	clipaths "core/internal/paths"
+
 	"gopkg.in/yaml.v3"
 )
 
 const (
 	tuiSilentMode                 = "silent"
-	tuiSilentRuntimeConfigPrefix  = ".flclash-silent-runtime-"
-	tuiManagedRuntimeConfigPrefix = ".flclash-managed-runtime-"
+	tuiSilentRuntimeConfigPrefix  = clipaths.SilentRuntimePrefix
+	tuiManagedRuntimeConfigPrefix = clipaths.ManagedRuntimePrefix
 	tuiFLCListenerName            = "flc-private"
 )
 

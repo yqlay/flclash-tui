@@ -409,8 +409,8 @@ func runTUI(
 	}
 
 	logrus.SetOutput(io.Discard)
-	handleStartLog()
-	defer handleStopLog()
+	cliHub.StartLog()
+	defer cliHub.StopLog()
 
 	model := newTUIModel(client, paths, setupParams, ownsCore)
 	model.service = service

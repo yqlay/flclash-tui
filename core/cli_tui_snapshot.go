@@ -495,7 +495,7 @@ func switchTUIProfile(
 		snapshot.Status = "Profile is already active"
 		return
 	}
-	if message := handleValidateConfig(profile.Path); message != "" {
+	if message := cliHub.ValidateConfig(profile.Path); message != "" {
 		snapshot.Status = "Profile invalid: " + message
 		return
 	}
@@ -510,13 +510,13 @@ func switchTUIProfile(
 		initParams, err := json.Marshal(InitParams{
 			HomeDir: previousPaths.HomeDir, ConfigPath: previousPaths.ConfigPath, Version: 1,
 		})
-		if err != nil || !handleInitClash(string(initParams)) {
+		if err != nil || !cliHub.Init(string(initParams)) {
 			return "previous profile initialization failed"
 		}
-		if message := handleSetupConfig(previousSetupParams); message != "" {
+		if message := cliHub.SetupConfig(previousSetupParams); message != "" {
 			return "previous profile reload failed: " + message
 		}
-		if startListeners && !handleStartListener() {
+		if startListeners && !cliHub.StartListener() {
 			return "previous profile listener restart failed"
 		}
 		return ""
@@ -548,18 +548,18 @@ func switchTUIProfile(
 	initParams, err := json.Marshal(InitParams{
 		HomeDir: paths.HomeDir, ConfigPath: profile.Path, Version: 1,
 	})
-	if err != nil || !handleInitClash(string(initParams)) {
+	if err != nil || !cliHub.Init(string(initParams)) {
 		snapshot.Status = "Profile initialization failed"
 		return
 	}
-	if message := handleSetupConfig(newSetupParams); message != "" {
+	if message := cliHub.SetupConfig(newSetupParams); message != "" {
 		snapshot.Status = "Profile load failed: " + message
 		if rollbackMessage := rollback(); rollbackMessage != "" {
 			snapshot.Status += "; rollback failed: " + rollbackMessage
 		}
 		return
 	}
-	if startListeners && !handleStartListener() {
+	if startListeners && !cliHub.StartListener() {
 		snapshot.Status = "Profile listener start failed"
 		if rollbackMessage := rollback(); rollbackMessage != "" {
 			snapshot.Status += "; rollback failed: " + rollbackMessage

@@ -370,7 +370,7 @@ func (r *tuiServiceRuntime) testRoute(
 		closeClient()
 	}
 	if !wasRunning {
-		cleanupErr := r.restoreStoppedRouteTestState(handleStopListener())
+		cleanupErr := r.restoreStoppedRouteTestState(cliHub.StopListener())
 		if err == nil {
 			err = cleanupErr
 		}

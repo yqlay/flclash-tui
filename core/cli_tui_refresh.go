@@ -23,7 +23,7 @@ func (m *tuiModel) shutdown() {
 		return
 	}
 	if m.ownsCore {
-		handleShutdown()
+		cliHub.Shutdown()
 	}
 }
 

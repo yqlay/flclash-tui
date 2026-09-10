@@ -250,7 +250,7 @@ func switchTUIServiceProfile(
 		state.snapshot.Status = "Profile is already active"
 		return
 	}
-	if message := handleValidateConfig(profile.Path); message != "" {
+	if message := cliHub.ValidateConfig(profile.Path); message != "" {
 		state.snapshot.Status = "Profile invalid: " + message
 		return
 	}
@@ -352,7 +352,7 @@ func (m *tuiModel) runTool(index int) tea.Cmd {
 			}
 		case 4:
 			if m.ownsCore {
-				handleResetTraffic()
+				cliHub.ResetTraffic()
 				state.snapshot.Status = "Traffic counters reset"
 			} else {
 				state.snapshot.Status = "Traffic reset requires a core started by this process"

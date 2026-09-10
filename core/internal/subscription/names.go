@@ -8,11 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	clipaths "core/internal/paths"
 )
 
 const (
-	silentRuntimePrefix  = ".flclash-silent-runtime-"
-	managedRuntimePrefix = ".flclash-managed-runtime-"
+	silentRuntimePrefix  = clipaths.SilentRuntimePrefix
+	managedRuntimePrefix = clipaths.ManagedRuntimePrefix
 )
 
 func tuiImportedProfileName(sourceName string) string {

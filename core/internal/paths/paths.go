@@ -18,6 +18,8 @@ import (
 const (
 	RuntimeLockFilename     = ".flclash-runtime.lock"
 	FrontendDirectoryName   = ".flclash-frontends"
+	SilentRuntimePrefix     = ".flclash-silent-runtime-"
+	ManagedRuntimePrefix    = ".flclash-managed-runtime-"
 	frontendSessionFileMode = 0o600
 )
 

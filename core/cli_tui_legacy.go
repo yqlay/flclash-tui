@@ -33,8 +33,8 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 	}()
 
 	logrus.SetOutput(io.Discard)
-	handleStartLog()
-	defer handleStopLog()
+	cliHub.StartLog()
+	defer cliHub.StopLog()
 	snapshot := tuiSnapshot{
 		Status:            "Loading...",
 		GroupOrder:        loadTUIProxyGroupOrder(paths.ConfigPath),
@@ -61,14 +61,14 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 			snapshot.Settings.SystemProxy = false
 		}
 		if ownsCore {
-			handleShutdown()
+			cliHub.Shutdown()
 		}
 	}
 	toggleCore := func() {
 		if !ownsCore {
 			snapshot.Status = "Core lifecycle is owned by the external process"
 		} else if coreRunning {
-			if handleStopListener() {
+			if cliHub.StopListener() {
 				coreRunning = false
 				snapshot.Status = "Core listeners stopped"
 				if systemProxyManaged && snapshot.Settings.SystemProxy {
@@ -84,7 +84,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 					}
 				}
 			}
-		} else if handleStartListener() {
+		} else if cliHub.StartListener() {
 			coreRunning = true
 			snapshot.Status = "Core listeners started"
 			refreshTUISnapshot(&snapshot, client)
@@ -131,7 +131,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 			case syscall.SIGHUP:
 				if !ownsCore {
 					snapshot.Status = "Reload requires a core started by this process"
-				} else if message := handleSetupConfig(setupParams); message != "" {
+				} else if message := cliHub.SetupConfig(setupParams); message != "" {
 					snapshot.Status = "Reload failed: " + message
 				} else {
 					snapshot.Status = "Configuration reloaded"
@@ -171,7 +171,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 					snapshot.Status = "Reload requires a core started by this process"
 					break
 				}
-				if message := handleSetupConfig(setupParams); message != "" {
+				if message := cliHub.SetupConfig(setupParams); message != "" {
 					snapshot.Status = "Reload failed: " + message
 				} else {
 					snapshot.Status = "Configuration reloaded"
@@ -240,7 +240,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 				if err := runTUIEditor(editPath, &oldState); err != nil {
 					snapshot.Status = "Editor failed: " + err.Error()
 				} else if ownsCore {
-					if message := handleSetupConfig(setupParams); message != "" {
+					if message := cliHub.SetupConfig(setupParams); message != "" {
 						snapshot.Status = "Edited config is invalid: " + message
 					} else {
 						snapshot.Status = "Configuration applied"
@@ -459,7 +459,7 @@ func executeTUITool(
 		if err := runTUIEditor(paths.ConfigPath, oldState); err != nil {
 			snapshot.Status = "Editor failed: " + err.Error()
 		} else if ownsCore {
-			if message := handleSetupConfig(setupParams); message != "" {
+			if message := cliHub.SetupConfig(setupParams); message != "" {
 				snapshot.Status = "Edited config is invalid: " + message
 			} else {
 				snapshot.Status = "Configuration applied"
@@ -477,7 +477,7 @@ func executeTUITool(
 		if backupPath, err := restoreLatestTUIConfig(paths.ConfigPath); err != nil {
 			snapshot.Status = "Restore failed: " + err.Error()
 		} else if ownsCore {
-			if message := handleSetupConfig(setupParams); message != "" {
+			if message := cliHub.SetupConfig(setupParams); message != "" {
 				snapshot.Status = "Restore applied with errors: " + message
 			} else {
 				snapshot.Status = "Restored: " + filepath.Base(backupPath)
@@ -493,7 +493,7 @@ func executeTUITool(
 		}
 	case 4:
 		if ownsCore {
-			handleResetTraffic()
+			cliHub.ResetTraffic()
 			snapshot.Status = "Traffic counters reset"
 		} else {
 			snapshot.Status = "Traffic reset requires a core started by this process"

@@ -161,7 +161,10 @@ The Linux terminal client is built from `core/` with `CGO_ENABLED=0 go build -ta
 
 Leaf packages under `core/internal/` are for code that does not call hub:
 
+- `internal/paths`: home/config resolution, runtime directory, file locks. Silent/managed runtime YAML prefixes live here (`SilentRuntimePrefix`, `ManagedRuntimePrefix`).
+- `internal/protocol`: Backend JSON DTOs (`TuiConnection`, `TuiRequest`, `TuiServiceStatus`, …). `package main` keeps type aliases.
 - `internal/subscription`: subscription conversion, HTTP fetch, and import filenames. `package main` keeps thin wrappers (`normalizeTUISubscription`, `fetchTUISubscriptionDetails`, …) so TUI/Backend call sites stay unchanged.
+- `internal/hubapi`: Core listener/config interface. CLI code goes through `cliHub` (`cli_hub_adapter.go`), which still calls unexported `handle*` in `hub.go`. Do not move `hub.go`; Android CGO and the desktop server keep calling it directly.
 
 New CLI code goes in a `core/cli_*.go` file named for the domain, not into a kitchen-sink file. Current file map:
 

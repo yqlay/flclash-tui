@@ -295,7 +295,7 @@ func reloadTUIOperationConfigExpected(
 		return nil
 	}
 	if ownsCore {
-		if message := handleSetupConfig(state.setupParams); message != "" {
+		if message := cliHub.SetupConfig(state.setupParams); message != "" {
 			return errors.New(message)
 		}
 		state.snapshot.GroupOrder = loadTUIProxyGroupOrder(state.paths.ConfigPath)
@@ -504,7 +504,7 @@ func stageTUICoreSettings(settings tuiSettings) string {
 	if err != nil {
 		return err.Error()
 	}
-	return handleUpdateConfig(data)
+	return cliHub.UpdateConfig(data)
 }
 
 func startTUIManagedCore(
@@ -570,7 +570,7 @@ func startTUIManagedCore(
 			return false
 		}
 		applyTUIOperationServiceStatus(state, status)
-	} else if !handleStartListener() {
+	} else if !cliHub.StartListener() {
 		state.snapshot.Status = "Cannot start core listeners"
 		return false
 	}
@@ -607,7 +607,7 @@ func stopTUIManagedCore(
 			return false
 		}
 		applyTUIOperationServiceStatus(state, status)
-	} else if !handleStopListener() {
+	} else if !cliHub.StopListener() {
 		state.snapshot.Status = "Cannot stop core listeners"
 		return false
 	}

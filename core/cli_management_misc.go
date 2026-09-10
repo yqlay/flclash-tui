@@ -92,7 +92,7 @@ func doctorCommand(args []string) error {
 	checks["revision"] = status.Revision
 	checks["core_running"] = status.Running
 	checks["config_path"] = status.ConfigPath
-	checks["config_valid"] = handleValidateConfig(status.ConfigPath) == ""
+	checks["config_valid"] = cliHub.ValidateConfig(status.ConfigPath) == ""
 	_, controllerErr := managedController(status).request(http.MethodGet, "/version", nil)
 	checks["controller"] = controllerErr == nil
 	if status.Running {

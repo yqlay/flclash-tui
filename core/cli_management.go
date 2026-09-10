@@ -350,7 +350,7 @@ func configCommand(args []string) error {
 		_, err = os.Stdout.Write(data)
 		return err
 	case "validate":
-		if message := handleValidateConfig(paths.ConfigPath); message != "" {
+		if message := cliHub.ValidateConfig(paths.ConfigPath); message != "" {
 			return errors.New(message)
 		}
 		fmt.Printf("configuration is valid: %s\n", paths.ConfigPath)

@@ -27,8 +27,8 @@ const (
 )
 
 var (
-	startTUIServiceCoreListeners = handleStartListener
-	stopTUIServiceCoreListeners  = handleStopListener
+	startTUIServiceCoreListeners = func() bool { return cliHub.StartListener() }
+	stopTUIServiceCoreListeners  = func() bool { return cliHub.StopListener() }
 	waitTUIServiceProxyPortState = waitForTUIProxyPortState
 )
 
