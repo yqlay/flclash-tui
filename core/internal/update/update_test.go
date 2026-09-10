@@ -1,6 +1,6 @@
 //go:build linux && !cgo && cli
 
-package main
+package update
 
 import (
 	"bytes"
@@ -18,12 +18,25 @@ import (
 	"time"
 )
 
+func TestMain(m *testing.M) {
+	if Version == "" {
+		Version = "0.5.28"
+	}
+	os.Exit(m.Run())
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(data []byte) (int, error) {
+	return len(data), nil
+}
+
 func TestFetchLatestCLIRelease(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(
 		writer http.ResponseWriter,
 		request *http.Request,
 	) {
-		if request.UserAgent() != "flclash/"+cliVersion {
+		if request.UserAgent() != "flclash/"+Version {
 			t.Fatalf("user agent = %q", request.UserAgent())
 		}
 		if request.Header.Get("Accept") != "application/vnd.github+json" {
