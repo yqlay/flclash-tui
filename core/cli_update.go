@@ -9,6 +9,10 @@ import (
 	"core/internal/update"
 )
 
+func init() {
+	update.Version = cliVersion
+}
+
 func updateCommand(args []string) error {
 	update.Version = cliVersion
 	return update.Command(args)
@@ -23,6 +27,7 @@ func normalizeCLIVersion(value string) string {
 }
 
 func fetchLatestCLIRelease(ctx context.Context, client *http.Client, endpoint string) (update.Release, error) {
+	update.Version = cliVersion
 	return update.FetchLatest(ctx, client, endpoint)
 }
 
