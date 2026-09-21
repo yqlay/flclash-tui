@@ -126,9 +126,8 @@ func cliSSHMasterCheck(sshPath, controlPath string, profile cliSSHProfile) bool 
 }
 
 func attachCLISSHTunnel(profile cliSSHProfile, controlPath string) (cliSSHTunnelState, error) {
-	var err error
-	profile, err = prepareCLISSHProfileCredentials(profile, cliSSHCredentials{})
-	if err != nil {
+	profile = normalizeCLISSHProfile(profile)
+	if err := validateCLISSHProfile(profile); err != nil {
 		return cliSSHTunnelState{}, err
 	}
 	sshPath, err := exec.LookPath("ssh")
@@ -264,6 +263,15 @@ func stopCLIAttachedTunnel(state cliSSHTunnelState) error {
 	return errors.Join(cleanupErrors...)
 }
 
+func restoreCLIPreviousSSHTunnel(old cliSSHTunnelState, oldProfile cliSSHProfile) error {
+	if cliSSHTunnelOwnsMaster(old) {
+		_, err := startCLIPersistentSSHTunnelForOperation(oldProfile)
+		return err
+	}
+	_, err := attachCLISSHTunnelForOperation(oldProfile, old.ControlPath)
+	return err
+}
+
 func persistCLISSHTunnelState(state cliSSHTunnelState) (cliSSHTunnelState, error) {
 	runtimeDirectory, err := ensureCLISSHRuntimeDirectory()
 	if err != nil {
@@ -313,10 +321,7 @@ func attachCLISSHProfile(name string) (cliSSHTunnelState, bool, error) {
 		_ = saveCLISSHLastError(profile.Name, err.Error())
 		return cliSSHTunnelState{}, false, err
 	}
-	// Do not disrupt the current route merely because the requested master
-	// cannot be captured. Validate the target before releasing our old tunnel.
-	profile, err = prepareCLISSHProfileCredentials(profile, cliSSHCredentials{})
-	if err != nil {
+	if err := validateCLISSHProfile(normalizeCLISSHProfile(profile)); err != nil {
 		return cliSSHTunnelState{}, false, err
 	}
 	var oldProfile cliSSHProfile
@@ -335,14 +340,7 @@ func attachCLISSHProfile(name string) (cliSSHTunnelState, bool, error) {
 	if err != nil {
 		_ = saveCLISSHLastError(profile.Name, err.Error())
 		if oldActive {
-			var restoreErr error
-			if cliSSHTunnelOwnsMaster(old) {
-				_, restoreErr = startCLIPersistentSSHTunnelForOperation(oldProfile)
-			} else {
-				// An external master must never be replaced by a new login.
-				_, restoreErr = attachCLISSHTunnelForOperation(oldProfile, old.ControlPath)
-			}
-			if restoreErr != nil {
+			if restoreErr := restoreCLIPreviousSSHTunnel(old, oldProfile); restoreErr != nil {
 				return cliSSHTunnelState{}, false, fmt.Errorf("capture SSH: %v; restore previous tunnel %q: %w", err, old.Name, restoreErr)
 			}
 			return cliSSHTunnelState{}, false, fmt.Errorf("capture SSH: %w; previous tunnel %q restored", err, old.Name)

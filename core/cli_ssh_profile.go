@@ -484,8 +484,7 @@ func connectCLISSHProfileWithCredentials(
 	if !oldActive {
 		return cliSSHTunnelState{}, false, err
 	}
-	_, restoreErr := startCLIPersistentSSHTunnelForOperation(oldProfile)
-	if restoreErr != nil {
+	if restoreErr := restoreCLIPreviousSSHTunnel(old, oldProfile); restoreErr != nil {
 		return cliSSHTunnelState{}, false, fmt.Errorf(
 			"connect SSH profile %q: %v; restore previous tunnel %q: %w",
 			profile.Name,

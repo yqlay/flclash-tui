@@ -173,6 +173,9 @@ func (m *tuiModel) handleSSHCapture(message tea.KeyMsg) tea.Cmd {
 			len(m.sshCaptureOptions),
 		)
 	case tuiKeySelect:
+		if m.sshCaptureNames == nil {
+			return nil
+		}
 		if m.sshCaptureSelected < 0 ||
 			m.sshCaptureSelected >= len(m.sshCaptureNames) {
 			m.sshCaptureOpen = false
