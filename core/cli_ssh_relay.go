@@ -26,7 +26,11 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-const cliSSHRelayControlTimeout = 2 * time.Second
+const (
+	cliSSHRelayControlTimeout  = 2 * time.Second
+	cliSSHRelayClosedFlowLimit = 256
+	cliSSHFlowIDPrefix         = "ssh:"
+)
 
 type cliSSHRelayStats struct {
 	PID          int       `json:"pid"`
@@ -42,30 +46,71 @@ type cliSSHRelayStats struct {
 
 type cliSSHRelayRequest struct {
 	Action string `json:"action"`
+	ID     string `json:"id,omitempty"`
+}
+
+type cliSSHRelayFlow struct {
+	ID        string    `json:"id"`
+	Host      string    `json:"host"`
+	Network   string    `json:"network"`
+	Chain     string    `json:"chain"`
+	Upload    int64     `json:"upload"`
+	Download  int64     `json:"download"`
+	StartedAt time.Time `json:"started_at"`
+	LastSeen  time.Time `json:"last_seen"`
+	Active    bool      `json:"active"`
+}
+
+type cliSSHRelayFlowsReply struct {
+	OK    bool              `json:"ok"`
+	Error string            `json:"error,omitempty"`
+	Flows []cliSSHRelayFlow `json:"flows,omitempty"`
+}
+
+type cliSSHRelayFlowState struct {
+	id        string
+	host      string
+	chain     string
+	client    net.Conn
+	upload    atomic.Int64
+	download  atomic.Int64
+	startedAt time.Time
 }
 
 type cliSSHRelay struct {
 	listenPort   int
 	upstreamPort int
 	controlPath  string
+	profile      string
 	startedAt    time.Time
 	upload       atomic.Int64
 	download     atomic.Int64
 	connections  atomic.Int64
+	flowSeq      atomic.Uint64
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
 	listener     net.Listener
 	control      net.Listener
+	flowsMu      sync.Mutex
+	active       map[string]*cliSSHRelayFlowState
+	closed       []cliSSHRelayFlow
 }
 
 type cliSSHCountingWriter struct {
 	writer  io.Writer
 	counter *atomic.Int64
+	extra   *atomic.Int64
 }
 
 func (w cliSSHCountingWriter) Write(data []byte) (int, error) {
 	written, err := w.writer.Write(data)
-	w.counter.Add(int64(written))
+	n := int64(written)
+	if w.counter != nil {
+		w.counter.Add(n)
+	}
+	if w.extra != nil {
+		w.extra.Add(n)
+	}
 	return written, err
 }
 
@@ -75,6 +120,7 @@ func runCLISSHRelayCommand(args []string) error {
 	listenPort := fs.Int("listen-port", 0, "public SOCKS5 port")
 	upstreamPort := fs.Int("upstream-port", 0, "OpenSSH SOCKS5 port")
 	controlPath := fs.String("control", "", "private control socket")
+	profile := fs.String("profile", "", "SSH profile name")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -89,8 +135,10 @@ func runCLISSHRelayCommand(args []string) error {
 		listenPort:   *listenPort,
 		upstreamPort: *upstreamPort,
 		controlPath:  filepath.Clean(*controlPath),
+		profile:      strings.TrimSpace(*profile),
 		startedAt:    time.Now(),
 		shutdown:     make(chan struct{}),
+		active:       map[string]*cliSSHRelayFlowState{},
 	}
 	return relay.run()
 }
@@ -172,14 +220,27 @@ func (r *cliSSHRelay) serveControl(connection net.Conn) {
 		_ = json.NewEncoder(connection).Encode(cliSSHRelayStats{Error: err.Error()})
 		return
 	}
-	stats := r.stats()
 	switch request.Action {
 	case "status":
-		_ = json.NewEncoder(connection).Encode(stats)
+		_ = json.NewEncoder(connection).Encode(r.stats())
 	case "shutdown":
-		_ = json.NewEncoder(connection).Encode(stats)
+		_ = json.NewEncoder(connection).Encode(r.stats())
 		r.stop()
+	case "flows":
+		_ = json.NewEncoder(connection).Encode(cliSSHRelayFlowsReply{
+			OK:    true,
+			Flows: r.listFlows(),
+		})
+	case "close":
+		if err := r.closeFlows(request.ID); err != nil {
+			_ = json.NewEncoder(connection).Encode(cliSSHRelayStats{
+				Error: err.Error(),
+			})
+			return
+		}
+		_ = json.NewEncoder(connection).Encode(r.stats())
 	default:
+		stats := r.stats()
 		stats.OK = false
 		stats.Error = "unknown relay action"
 		_ = json.NewEncoder(connection).Encode(stats)
@@ -219,25 +280,135 @@ func (r *cliSSHRelay) serveSOCKS(client net.Conn) {
 	}
 	_ = client.SetDeadline(time.Time{})
 	_ = upstream.SetDeadline(time.Time{})
+	flow := r.beginFlow(client, target)
+	defer r.endFlow(flow)
 	r.connections.Add(1)
 	defer r.connections.Add(-1)
 	var wait sync.WaitGroup
 	wait.Add(2)
 	go func() {
 		defer wait.Done()
-		_, _ = io.Copy(cliSSHCountingWriter{writer: upstream, counter: &r.upload}, client)
+		_, _ = io.Copy(cliSSHCountingWriter{
+			writer:  upstream,
+			counter: &r.upload,
+			extra:   &flow.upload,
+		}, client)
 		if tcp, ok := upstream.(*net.TCPConn); ok {
 			_ = tcp.CloseWrite()
 		}
 	}()
 	go func() {
 		defer wait.Done()
-		_, _ = io.Copy(cliSSHCountingWriter{writer: client, counter: &r.download}, upstream)
+		_, _ = io.Copy(cliSSHCountingWriter{
+			writer:  client,
+			counter: &r.download,
+			extra:   &flow.download,
+		}, upstream)
 		if tcp, ok := client.(*net.TCPConn); ok {
 			_ = tcp.CloseWrite()
 		}
 	}()
 	wait.Wait()
+}
+
+func cliSSHRelayChain(profile string) string {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return "SSH"
+	}
+	return "SSH · " + profile
+}
+
+func (r *cliSSHRelay) beginFlow(client net.Conn, host string) *cliSSHRelayFlowState {
+	flow := &cliSSHRelayFlowState{
+		id: fmt.Sprintf(
+			"%s%d-%d",
+			cliSSHFlowIDPrefix,
+			os.Getpid(),
+			r.flowSeq.Add(1),
+		),
+		host:      host,
+		chain:     cliSSHRelayChain(r.profile),
+		client:    client,
+		startedAt: time.Now(),
+	}
+	r.flowsMu.Lock()
+	if r.active == nil {
+		r.active = map[string]*cliSSHRelayFlowState{}
+	}
+	r.active[flow.id] = flow
+	r.flowsMu.Unlock()
+	return flow
+}
+
+func (r *cliSSHRelay) endFlow(flow *cliSSHRelayFlowState) {
+	if flow == nil {
+		return
+	}
+	now := time.Now()
+	snapshot := cliSSHRelayFlow{
+		ID:        flow.id,
+		Host:      flow.host,
+		Network:   "tcp",
+		Chain:     flow.chain,
+		Upload:    flow.upload.Load(),
+		Download:  flow.download.Load(),
+		StartedAt: flow.startedAt,
+		LastSeen:  now,
+		Active:    false,
+	}
+	r.flowsMu.Lock()
+	delete(r.active, flow.id)
+	r.closed = append(r.closed, snapshot)
+	if len(r.closed) > cliSSHRelayClosedFlowLimit {
+		r.closed = append([]cliSSHRelayFlow(nil), r.closed[len(r.closed)-cliSSHRelayClosedFlowLimit:]...)
+	}
+	r.flowsMu.Unlock()
+}
+
+func (r *cliSSHRelay) listFlows() []cliSSHRelayFlow {
+	now := time.Now()
+	r.flowsMu.Lock()
+	defer r.flowsMu.Unlock()
+	flows := make([]cliSSHRelayFlow, 0, len(r.active)+len(r.closed))
+	for _, flow := range r.active {
+		flows = append(flows, cliSSHRelayFlow{
+			ID:        flow.id,
+			Host:      flow.host,
+			Network:   "tcp",
+			Chain:     flow.chain,
+			Upload:    flow.upload.Load(),
+			Download:  flow.download.Load(),
+			StartedAt: flow.startedAt,
+			LastSeen:  now,
+			Active:    true,
+		})
+	}
+	flows = append(flows, r.closed...)
+	return flows
+}
+
+func (r *cliSSHRelay) closeFlows(id string) error {
+	id = strings.TrimSpace(id)
+	r.flowsMu.Lock()
+	targets := make([]*cliSSHRelayFlowState, 0, len(r.active))
+	if id == "" || strings.EqualFold(id, "all") {
+		for _, flow := range r.active {
+			targets = append(targets, flow)
+		}
+	} else if flow, ok := r.active[id]; ok {
+		targets = append(targets, flow)
+	}
+	r.flowsMu.Unlock()
+	if id != "" && !strings.EqualFold(id, "all") && len(targets) == 0 {
+		return fmt.Errorf("SSH flow %q is not active", id)
+	}
+	for _, flow := range targets {
+		if flow.client != nil {
+			_ = flow.client.Close()
+		}
+	}
+	return nil
 }
 
 func dialCLISSHRelayUpstream(ctx context.Context, port int, target string) (net.Conn, error) {
@@ -345,13 +516,16 @@ func startCLISSHRelay(state *cliSSHTunnelState) error {
 	}
 	digest := fmt.Sprintf("%x", time.Now().UnixNano())
 	state.RelayControl = filepath.Join(socketDirectory, "relay-"+digest+".sock")
-	command := exec.Command(
-		executable,
+	args := []string{
 		"_ssh_relay",
 		"--listen-port", strconv.Itoa(state.Port),
 		"--upstream-port", strconv.Itoa(state.UpstreamPort),
 		"--control", state.RelayControl,
-	)
+	}
+	if name := strings.TrimSpace(state.Name); name != "" {
+		args = append(args, "--profile", name)
+	}
+	command := exec.Command(executable, args...)
 	command.Stdin = nil
 	command.Stdout = nil
 	command.Stderr = nil
@@ -375,6 +549,13 @@ func startCLISSHRelay(state *cliSSHTunnelState) error {
 }
 
 func queryCLISSHRelay(state cliSSHTunnelState, action string) (cliSSHRelayStats, error) {
+	return queryCLISSHRelayRequest(state, cliSSHRelayRequest{Action: action})
+}
+
+func queryCLISSHRelayRequest(
+	state cliSSHTunnelState,
+	request cliSSHRelayRequest,
+) (cliSSHRelayStats, error) {
 	if state.RelayControl == "" {
 		return cliSSHRelayStats{}, errors.New("SSH traffic meter is unavailable")
 	}
@@ -384,7 +565,7 @@ func queryCLISSHRelay(state cliSSHTunnelState, action string) (cliSSHRelayStats,
 	}
 	defer connection.Close()
 	_ = connection.SetDeadline(time.Now().Add(cliSSHRelayControlTimeout))
-	if err := json.NewEncoder(connection).Encode(cliSSHRelayRequest{Action: action}); err != nil {
+	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return cliSSHRelayStats{}, err
 	}
 	var stats cliSSHRelayStats
@@ -395,6 +576,63 @@ func queryCLISSHRelay(state cliSSHTunnelState, action string) (cliSSHRelayStats,
 		return stats, errors.New(stats.Error)
 	}
 	return stats, nil
+}
+
+func queryCLISSHRelayFlows(state cliSSHTunnelState) ([]cliSSHRelayFlow, error) {
+	if state.RelayControl == "" {
+		return nil, errors.New("SSH traffic meter is unavailable")
+	}
+	connection, err := net.DialTimeout("unix", state.RelayControl, cliSSHRelayControlTimeout)
+	if err != nil {
+		return nil, err
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(cliSSHRelayControlTimeout))
+	if err := json.NewEncoder(connection).Encode(cliSSHRelayRequest{Action: "flows"}); err != nil {
+		return nil, err
+	}
+	var reply cliSSHRelayFlowsReply
+	if err := json.NewDecoder(bufio.NewReader(connection)).Decode(&reply); err != nil {
+		return nil, err
+	}
+	if !reply.OK {
+		if reply.Error == "" {
+			reply.Error = "SSH flow list is unavailable"
+		}
+		return nil, errors.New(reply.Error)
+	}
+	return reply.Flows, nil
+}
+
+func closeCLISSHRelayFlow(id string) error {
+	state, active, err := activeCLIPersistentSSHTunnel()
+	if err != nil {
+		return err
+	}
+	if !active {
+		return errors.New("no SSH tunnel is connected")
+	}
+	_, err = queryCLISSHRelayRequest(state, cliSSHRelayRequest{
+		Action: "close",
+		ID:     strings.TrimSpace(id),
+	})
+	return err
+}
+
+func closeAllCLISSHRelayFlows() error {
+	return closeCLISSHRelayFlow("all")
+}
+
+func loadCLISSHRelayFlows() []cliSSHRelayFlow {
+	state, active, err := activeCLIPersistentSSHTunnel()
+	if err != nil || !active {
+		return nil
+	}
+	flows, err := queryCLISSHRelayFlows(state)
+	if err != nil {
+		return nil
+	}
+	return flows
 }
 
 func stopCLISSHRelay(state cliSSHTunnelState) error {

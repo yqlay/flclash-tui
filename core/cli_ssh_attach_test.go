@@ -495,12 +495,21 @@ func startTestSSHRelay(t *testing.T, state *cliSSHTunnelState) error {
 				_ = connection.Close()
 				continue
 			}
+			if request.Action == "flows" {
+				_ = json.NewEncoder(connection).Encode(cliSSHRelayFlowsReply{OK: true})
+				_ = connection.Close()
+				continue
+			}
 			stats := cliSSHRelayStats{
 				PID:          state.RelayPID,
 				StartedAt:    time.Now(),
 				ListenPort:   state.Port,
 				UpstreamPort: state.UpstreamPort,
 				OK:           true,
+			}
+			if request.Action != "status" && request.Action != "shutdown" && request.Action != "close" {
+				stats.OK = false
+				stats.Error = "unknown relay action"
 			}
 			_ = json.NewEncoder(connection).Encode(stats)
 			_ = connection.Close()
@@ -829,6 +838,206 @@ func TestTUICaptureEnterWhileCheckingDoesNotFailClosed(t *testing.T) {
 	}
 	if strings.Contains(model.snapshot.Status, "No live ControlMaster") {
 		t.Fatalf("status = %q", model.snapshot.Status)
+	}
+}
+
+func TestConnectAlreadyReadySkipsIdentityInspect(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:     "home",
+		Username: "deploy",
+		Host:     "gateway.example.com",
+		Port:     22,
+		Identity: filepath.Join(t.TempDir(), "missing-id"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previousActive := activeCLIPersistentSSHTunnelForOperation
+	previousStart := startCLIPersistentSSHTunnelForOperation
+	t.Cleanup(func() {
+		activeCLIPersistentSSHTunnelForOperation = previousActive
+		startCLIPersistentSSHTunnelForOperation = previousStart
+	})
+	activeCLIPersistentSSHTunnelForOperation = func() (cliSSHTunnelState, bool, error) {
+		return cliSSHTunnelState{Name: "home", Port: port}, true, nil
+	}
+	startCLIPersistentSSHTunnelForOperation = func(cliSSHProfile) (cliSSHTunnelState, error) {
+		t.Fatal("already-ready connect must not start a tunnel")
+		return cliSSHTunnelState{}, nil
+	}
+	state, already, err := connectCLISSHProfile("home")
+	if err != nil || !already || state.Port != port {
+		t.Fatalf("already-ready connect = already:%t port:%d err:%v", already, state.Port, err)
+	}
+}
+
+func TestConnectReusesLiveMasterWithoutIdentity(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	binDirectory := t.TempDir()
+	sshPath := filepath.Join(binDirectory, "ssh")
+	controlPath := filepath.Join(t.TempDir(), "cm.sock")
+	if err := os.WriteFile(controlPath, []byte("master"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"control=''\noperation=''\nprevious=''\n" +
+		"for argument in \"$@\"; do\n" +
+		"  if [ \"$previous\" = '-S' ]; then control=\"$argument\"; fi\n" +
+		"  if [ \"$previous\" = '-O' ]; then operation=\"$argument\"; fi\n" +
+		"  previous=\"$argument\"\n" +
+		"done\n" +
+		"case \" $* \" in\n" +
+		"  *' -G '*) printf 'controlmaster auto\\ncontrolpath %s\\n' '" + controlPath + "' ;;\n" +
+		"  *)\n" +
+		"    if [ \"$operation\" = check ]; then test -e \"$control\"; exit $?; fi\n" +
+		"    if [ \"$operation\" = forward ]; then exit 0; fi\n" +
+		"    if [ \"$operation\" = cancel ]; then exit 0; fi\n" +
+		"    exit 1 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	runtimeRoot := t.TempDir()
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	previousForward := addCLISSHDynamicForwardForOperation
+	previousRelay := startCLISSHRelayForOperation
+	var upstream net.Listener
+	addCLISSHDynamicForwardForOperation = func(path string, state cliSSHTunnelState) error {
+		if err := addCLISSHDynamicForward(path, state); err != nil {
+			return err
+		}
+		var err error
+		upstream, err = net.Listen(
+			"tcp4",
+			net.JoinHostPort("127.0.0.1", strconv.Itoa(cliSSHUpstreamPort(state))),
+		)
+		return err
+	}
+	startCLISSHRelayForOperation = func(state *cliSSHTunnelState) error {
+		return startTestSSHRelay(t, state)
+	}
+	t.Cleanup(func() {
+		if upstream != nil {
+			_ = upstream.Close()
+		}
+		cliRuntimeDirectoryOverride = previousRuntime
+		addCLISSHDynamicForwardForOperation = previousForward
+		startCLISSHRelayForOperation = previousRelay
+	})
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:     "home",
+		Username: "deploy",
+		Host:     "gateway.example.com",
+		Port:     22,
+		Identity: filepath.Join(t.TempDir(), "missing-id"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, already, err := connectCLISSHProfile("home")
+	if err != nil {
+		t.Fatalf("connect with missing identity: %v", err)
+	}
+	if already || state.Kind != cliSSHAttachedKind {
+		t.Fatalf("connected=%t kind=%q", already, state.Kind)
+	}
+}
+
+func TestDeleteAttachedSSHProfileRestoresWithoutLogin(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	directory := t.TempDir()
+	control := filepath.Join(directory, "master")
+	if err := os.WriteFile(control, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:     "home",
+		Username: "user",
+		Host:     "example.test",
+		Port:     22,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previousActive, previousStop := activeCLIPersistentSSHTunnelForOperation, stopCLIStateTunnelForOperation
+	previousAttach, previousStart := attachCLISSHTunnelForOperation, startCLIPersistentSSHTunnelForOperation
+	previousUpdate := updateCLISSHConfigForOperation
+	t.Cleanup(func() {
+		activeCLIPersistentSSHTunnelForOperation, stopCLIStateTunnelForOperation = previousActive, previousStop
+		attachCLISSHTunnelForOperation, startCLIPersistentSSHTunnelForOperation = previousAttach, previousStart
+		updateCLISSHConfigForOperation = previousUpdate
+	})
+	activeCLIPersistentSSHTunnelForOperation = func() (cliSSHTunnelState, bool, error) {
+		return cliSSHTunnelState{
+			Name:        "home",
+			Kind:        cliSSHAttachedKind,
+			ControlPath: control,
+		}, true, nil
+	}
+	stopCLIStateTunnelForOperation = func(cliSSHTunnelState) error { return nil }
+	startCLIPersistentSSHTunnelForOperation = func(cliSSHProfile) (cliSSHTunnelState, error) {
+		t.Fatal("attached delete restore must not create a new login")
+		return cliSSHTunnelState{}, nil
+	}
+	restored := false
+	attachCLISSHTunnelForOperation = func(profile cliSSHProfile, path string) (cliSSHTunnelState, error) {
+		restored = profile.Name == "home" && path == control
+		return cliSSHTunnelState{Name: profile.Name}, nil
+	}
+	updateCLISSHConfigForOperation = func(func(*cliSSHConfig) error) error {
+		return errors.New("simulated config write failure")
+	}
+	err := deleteCLISSHProfile("home")
+	if err == nil || !restored || !strings.Contains(err.Error(), "previous tunnel restored") {
+		t.Fatalf("restored=%t err=%v", restored, err)
+	}
+}
+
+func TestStopAttachedSSHTunnelKeepsStateWhenCancelFails(t *testing.T) {
+	binDirectory := t.TempDir()
+	sshPath := filepath.Join(binDirectory, "ssh")
+	script := "#!/bin/sh\n" +
+		"control=''\noperation=''\nprevious=''\n" +
+		"for argument in \"$@\"; do\n" +
+		"  if [ \"$previous\" = '-S' ]; then control=\"$argument\"; fi\n" +
+		"  if [ \"$previous\" = '-O' ]; then operation=\"$argument\"; fi\n" +
+		"  previous=\"$argument\"\n" +
+		"done\n" +
+		"if [ \"$operation\" = check ]; then test -f \"$control\"; exit $?; fi\n" +
+		"if [ \"$operation\" = cancel ]; then exit 1; fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	controlPath := filepath.Join(t.TempDir(), "control.sock")
+	statePath := filepath.Join(t.TempDir(), "persistent.json")
+	for _, path := range []string{controlPath, statePath} {
+		if err := os.WriteFile(path, []byte("state"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := cliSSHTunnelState{
+		Name:        "home",
+		Destination: "deploy@gateway.example.com",
+		ControlPath: controlPath,
+		Kind:        cliSSHAttachedKind,
+		StatePath:   statePath,
+	}
+	if err := stopCLIStateTunnel(state); err == nil {
+		t.Fatal("failed OpenSSH cancel was reported as success")
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("failed cancel removed attached state: %v", err)
+	}
+	if _, err := os.Stat(controlPath); err != nil {
+		t.Fatalf("failed cancel removed the user ControlMaster: %v", err)
 	}
 }
 

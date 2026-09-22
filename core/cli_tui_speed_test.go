@@ -18,6 +18,56 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func TestNewTUISOCKSHTTPClientDialHonorsCancellation(t *testing.T) {
+	listener := listenCLITestTCP(t)
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		connection, err := listener.Accept()
+		if err == nil {
+			accepted <- connection
+		}
+	}()
+	client, closeClient, err := newTUISOCKSHTTPClient(listener.Addr().(*net.TCPAddr).Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeClient()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		request, requestErr := http.NewRequestWithContext(
+			ctx,
+			http.MethodGet,
+			"http://example.test/",
+			nil,
+		)
+		if requestErr != nil {
+			done <- requestErr
+			return
+		}
+		_, doErr := client.Do(request)
+		done <- doErr
+	}()
+	var upstream net.Conn
+	select {
+	case upstream = <-accepted:
+		defer upstream.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("SOCKS handshake was not started")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled SOCKS dial unexpectedly succeeded")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DialContext did not honor cancellation")
+	}
+}
+
 func TestSummarizeTUIDelaysUsesMedianAndMeanSuccessiveJitter(t *testing.T) {
 	result, err := summarizeTUIDelays([]int{10, 14, 12, 80, 11})
 	if err != nil {

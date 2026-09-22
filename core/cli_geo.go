@@ -125,13 +125,23 @@ func findTUIExistingGeoTarget(
 		if entry.IsDir() {
 			continue
 		}
-		for _, alias := range geoFile.aliases {
-			if strings.EqualFold(entry.Name(), alias) {
-				return filepath.Join(homeDir, entry.Name()), true, nil
-			}
+		if geoFileNameMatches(geoFile, entry.Name()) {
+			return filepath.Join(homeDir, entry.Name()), true, nil
 		}
 	}
 	return filepath.Join(homeDir, geoFile.name), false, nil
+}
+
+func geoFileNameMatches(geoFile tuiBundledGeoFile, name string) bool {
+	if strings.EqualFold(name, geoFile.name) {
+		return true
+	}
+	for _, alias := range geoFile.aliases {
+		if strings.EqualFold(name, alias) {
+			return true
+		}
+	}
+	return false
 }
 
 func tuiGeoTargetIsUsable(path string, geoFile tuiBundledGeoFile) bool {

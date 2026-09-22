@@ -31,7 +31,7 @@ func drawTUIRequests(b *strings.Builder, snapshot tuiSnapshot, width, height int
 	tuiTitle(
 		b,
 		"History",
-		fmt.Sprintf("%d/%d shown · %d active · ↑%s ↓%s · / search · f filter:%s · Enter detail · x clear", len(indexes), len(snapshot.Requests), active, formatBytes(upload), formatBytes(download), tuiDefaultValue(snapshot.HistoryFilter, "all")),
+		fmt.Sprintf("%d/%d shown · %d active · ↑%s ↓%s · source:%s · / search · o origin · f filter:%s · Enter detail · x clear", len(indexes), len(snapshot.Requests), active, formatBytes(upload), formatBytes(download), tuiDefaultValue(snapshot.TrafficSource, tuiTrafficSourceMixed), tuiDefaultValue(snapshot.HistoryFilter, "all")),
 		width,
 	)
 	if len(indexes) == 0 {
@@ -60,11 +60,12 @@ func drawTUIRequests(b *strings.Builder, snapshot tuiSnapshot, width, height int
 			color = tuiGreen
 		}
 		row := fmt.Sprintf(
-			"%-7s %-30s %-7s %-18s %s",
+			"%-5s %-7s %-28s %-7s %-16s %s",
+			tuiConnectionSource(request.TuiConnection),
 			state,
-			truncateTUI(host, 30),
+			truncateTUI(host, 28),
 			request.Network,
-			truncateTUI(request.Chain, 18),
+			truncateTUI(request.Chain, 16),
 			request.LastSeen.Format("15:04:05"),
 		)
 		tuiRow(
@@ -108,7 +109,7 @@ func drawTUIConnections(b *strings.Builder, snapshot tuiSnapshot, width, height 
 		upload += connection.Upload
 		download += connection.Download
 	}
-	tuiTitle(b, "Connections", fmt.Sprintf("%d/%d active · ↑%s ↓%s · / search · Enter detail · d close · x close all", len(indexes), len(snapshot.Connections), formatBytes(upload), formatBytes(download)), width)
+	tuiTitle(b, "Connections", fmt.Sprintf("%d/%d active · ↑%s ↓%s · source:%s · / search · f origin · Enter detail · d close · x close all", len(indexes), len(snapshot.Connections), formatBytes(upload), formatBytes(download), tuiDefaultValue(snapshot.TrafficSource, tuiTrafficSourceMixed)), width)
 	if len(indexes) == 0 {
 		tuiRow(b, "No matching active connections", width, false, tuiDim)
 		tuiEndPanel(b, width)
@@ -127,7 +128,7 @@ func drawTUIConnections(b *strings.Builder, snapshot tuiSnapshot, width, height 
 		if label == "" {
 			label = connection.ID
 		}
-		row := fmt.Sprintf("%-32s %-7s %-18s ↑%-9s ↓%-9s", truncateTUI(label, 32), connection.Network, truncateTUI(connection.Chain, 18), formatBytes(connection.Upload), formatBytes(connection.Download))
+		row := fmt.Sprintf("%-5s %-30s %-7s %-16s ↑%-9s ↓%-9s", tuiConnectionSource(connection), truncateTUI(label, 30), connection.Network, truncateTUI(connection.Chain, 16), formatBytes(connection.Upload), formatBytes(connection.Download))
 		tuiRow(b, row, width, actualIndex == snapshot.SelectedConnection && !snapshot.FocusSidebar, "")
 		rows++
 		if (connection.Process != "" || connection.UID != 0) && rows < height-3 {
@@ -193,9 +194,12 @@ func matchedTUIRequestIndexes(snapshot tuiSnapshot) []int {
 		if filter == "active" && !request.Active || filter == "completed" && request.Active {
 			continue
 		}
+		if !trafficSourceMatches(snapshot.TrafficSource, tuiConnectionSource(request.TuiConnection)) {
+			continue
+		}
 		haystack := strings.ToLower(strings.Join([]string{
 			request.ID, request.Host, request.Process, request.ProcessPath,
-			request.Network, request.Chain,
+			request.Network, request.Chain, tuiConnectionSource(request.TuiConnection),
 		}, " "))
 		if query == "" || strings.Contains(haystack, query) {
 			indexes = append(indexes, index)
@@ -208,9 +212,12 @@ func matchedTUIConnectionIndexes(snapshot tuiSnapshot) []int {
 	query := strings.ToLower(strings.TrimSpace(snapshot.ConnectionsQuery))
 	indexes := make([]int, 0, len(snapshot.Connections))
 	for index, connection := range snapshot.Connections {
+		if !trafficSourceMatches(snapshot.TrafficSource, tuiConnectionSource(connection)) {
+			continue
+		}
 		haystack := strings.ToLower(strings.Join([]string{
 			connection.ID, connection.Host, connection.Process, connection.ProcessPath,
-			connection.Network, connection.Chain,
+			connection.Network, connection.Chain, tuiConnectionSource(connection),
 		}, " "))
 		if query == "" || strings.Contains(haystack, query) {
 			indexes = append(indexes, index)
@@ -344,6 +351,7 @@ func drawTUIConnectionDetail(b *strings.Builder, snapshot tuiSnapshot, width int
 }
 
 func drawTUIConnectionFields(b *strings.Builder, connection tuiConnection, width int) {
+	tuiRow(b, "Source        "+tuiConnectionSource(connection), width, false, tuiCyan)
 	tuiRow(b, "Host          "+cliDisplayValue(connection.Host), width, false, tuiCyan)
 	tuiRow(b, "Network       "+cliDisplayValue(connection.Network), width, false, "")
 	tuiRow(b, "Route         "+cliDisplayValue(connection.Chain), width, false, "")

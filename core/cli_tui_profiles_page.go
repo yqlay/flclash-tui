@@ -318,7 +318,7 @@ func drawTUISSHDashboard(
 	if profile.Connected && !profile.StartedAt.IsZero() {
 		uptime = time.Since(profile.StartedAt).Round(time.Second).String()
 	}
-	tuiTitle(b, "Overview", "SSH relay metering · live status", width)
+	tuiTitle(b, "Overview", "SSH relay metering · live status · flows on Connections", width)
 	tuiRow(b, fmt.Sprintf("Traffic total ↑ %s   ↓ %s", formatBytes(snapshot.SSHTotalTraffic.Up), formatBytes(snapshot.SSHTotalTraffic.Down)), width, false, "")
 	tuiRow(b, fmt.Sprintf("Connections   %d active", snapshot.SSHConnections), width, false, "")
 	tuiRow(b, "Uptime        "+uptime, width, false, "")

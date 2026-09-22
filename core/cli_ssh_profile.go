@@ -381,8 +381,7 @@ func deleteCLISSHProfile(name string) error {
 	if err == nil || !wasConnected {
 		return err
 	}
-	_, restoreErr := startCLIPersistentSSHTunnelForOperation(profile)
-	if restoreErr != nil {
+	if restoreErr := restoreCLIPreviousSSHTunnel(state, profile); restoreErr != nil {
 		return fmt.Errorf(
 			"delete SSH profile %q: %v; restore previous tunnel: %w",
 			name,
@@ -432,8 +431,8 @@ func connectCLISSHProfileWithCredentials(
 		_ = saveCLISSHLastError(name, err.Error())
 		return cliSSHTunnelState{}, false, err
 	}
-	profile, err = prepareCLISSHProfileCredentials(profile, credentials)
-	if err != nil {
+	profile = normalizeCLISSHProfile(profile)
+	if err := validateCLISSHProfile(profile); err != nil {
 		_ = saveCLISSHLastError(profile.Name, err.Error())
 		return cliSSHTunnelState{}, false, err
 	}
@@ -446,6 +445,15 @@ func connectCLISSHProfileWithCredentials(
 			_ = clearCLISSHLastError(profile.Name)
 			return old, true, nil
 		}
+	}
+	if _, ok := findCLILiveSSHMaster(profile); !ok {
+		profile, err = prepareCLISSHProfileCredentials(profile, credentials)
+		if err != nil {
+			_ = saveCLISSHLastError(profile.Name, err.Error())
+			return cliSSHTunnelState{}, false, err
+		}
+	}
+	if oldActive && strings.EqualFold(old.Name, profile.Name) {
 		if err := stopCLIStateTunnelForOperation(old); err != nil {
 			_ = saveCLISSHLastError(old.Name, err.Error())
 			return cliSSHTunnelState{}, false,

@@ -171,7 +171,7 @@ func TestFilterCLIHistoryCombinesStateSearchAndLimit(t *testing.T) {
 		{TuiConnection: tuiConnection{ID: "2", Host: "other.example", Process: "browser", Network: "tcp", Chain: "DIRECT"}},
 		{TuiConnection: tuiConnection{ID: "3", Host: "cdn.example", Process: "curl", Network: "udp", Chain: "PROXY"}},
 	}
-	filtered := filterCLIHistory(history, "done", "curl", 1)
+	filtered := filterCLIHistory(history, tuiTrafficSourceMixed, "done", "curl", 1)
 	if len(filtered) != 1 || filtered[0].ID != "3" {
 		t.Fatalf("filtered History = %+v", filtered)
 	}

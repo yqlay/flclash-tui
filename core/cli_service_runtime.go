@@ -301,7 +301,7 @@ func (r *tuiServiceRuntime) mutate(
 	case "select_proxy":
 		changed, err = r.selectProxy(request.ProxyGroup, request.ProxyName)
 	case "clear_history":
-		changed, err = r.clearPersistentHistory()
+		changed, err = r.clearPersistentHistoryForSource(request.Source)
 	case "clear_logs":
 		err = clearTUIPersistentLogs(r.paths.HomeDir)
 		changed = err == nil
@@ -309,11 +309,11 @@ func (r *tuiServiceRuntime) mutate(
 		if strings.TrimSpace(request.ConnectionID) == "" {
 			err = errors.New("connection ID is required")
 		} else {
-			err = closeTUIVisibleConnections(r.coreController, uint32(os.Getuid()), status.TunState == "on" && status.TunScope == tuiTunScopeSystem, request.ConnectionID)
+			err = closeTUIVisibleConnectionsForSource(r.coreController, uint32(os.Getuid()), status.TunState == "on" && status.TunScope == tuiTunScopeSystem, request.ConnectionID, request.Source)
 			changed = err == nil
 		}
 	case "close_all_connections":
-		err = closeTUIVisibleConnections(r.coreController, uint32(os.Getuid()), status.TunState == "on" && status.TunScope == tuiTunScopeSystem, "")
+		err = closeTUIVisibleConnectionsForSource(r.coreController, uint32(os.Getuid()), status.TunState == "on" && status.TunScope == tuiTunScopeSystem, "", request.Source)
 		changed = err == nil
 	case "put_profile":
 		changed, resultPath, err = r.putProfile(request)

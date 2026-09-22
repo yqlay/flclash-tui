@@ -66,6 +66,7 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 	data, err := client.request("GET", "/proxies", nil)
 	if err != nil {
 		snapshot.Status = "Controller unavailable: " + err.Error()
+		applyTUISSHConnections(snapshot, nil, selectedConnectionID, selectedRequestID)
 		snapshot.UpdatedAt = time.Now()
 		return
 	}
@@ -159,6 +160,7 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 					SourceIP: item.Metadata.SourceIP, InboundName: item.Metadata.InboundName,
 					InboundUser: item.Metadata.InboundUser,
 					Network:     item.Metadata.Network, Chain: chain,
+					Source: tuiTrafficSourceProxy,
 					Upload: item.Upload, Download: item.Download,
 				}
 				if snapshot.ManagedService &&
@@ -167,39 +169,21 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 				}
 				activeConnections = append(activeConnections, connection)
 			}
-			snapshot.Requests = updateTUIRequestHistory(
-				snapshot.Requests,
+			applyTUISSHConnections(
+				snapshot,
 				activeConnections,
-				time.Now(),
+				selectedConnectionID,
+				selectedRequestID,
 			)
-			snapshot.Connections = activeConnections
-			if selectedConnectionID == "" {
-				snapshot.SelectedConnection = clampTUISelection(
-					snapshot.SelectedConnection,
-					len(snapshot.Connections),
-				)
-			} else {
-				snapshot.SelectedConnection = findTUIConnection(
-					snapshot.Connections,
-					selectedConnectionID,
-				)
-			}
-			if selectedRequestID == "" {
-				snapshot.SelectedRequest = clampTUISelection(
-					snapshot.SelectedRequest,
-					len(snapshot.Requests),
-				)
-			} else {
-				snapshot.SelectedRequest = findTUIRequest(
-					snapshot.Requests,
-					selectedRequestID,
-				)
-			}
 		} else if snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Loading..." {
 			snapshot.Status = "Connections refresh failed: invalid controller response"
+			applyTUISSHConnections(snapshot, nil, selectedConnectionID, selectedRequestID)
 		}
-	} else if snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Loading..." {
-		snapshot.Status = "Connections refresh failed: " + err.Error()
+	} else {
+		if snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Loading..." {
+			snapshot.Status = "Connections refresh failed: " + err.Error()
+		}
+		applyTUISSHConnections(snapshot, nil, selectedConnectionID, selectedRequestID)
 	}
 	systemProxyEnabled := snapshot.Settings.SystemProxy
 	checkSystemProxy := snapshot.UpdatedAt.IsZero()
@@ -244,6 +228,45 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 		snapshot.Status = "Connected"
 	}
 	snapshot.UpdatedAt = time.Now()
+}
+
+func applyTUISSHConnections(
+	snapshot *tuiSnapshot,
+	proxy []tuiConnection,
+	selectedConnectionID,
+	selectedRequestID string,
+) {
+	liveSSH, recentSSH := loadCLISSHRelayConnections()
+	now := time.Now()
+	live := mergeTUITrafficConnections(proxy, liveSSH)
+	snapshot.Requests = rememberClosedSSHHistory(
+		updateTUIRequestHistory(snapshot.Requests, live, now),
+		recentSSH,
+		now,
+	)
+	snapshot.Connections = live
+	if selectedConnectionID == "" {
+		snapshot.SelectedConnection = clampTUISelection(
+			snapshot.SelectedConnection,
+			len(snapshot.Connections),
+		)
+	} else {
+		snapshot.SelectedConnection = findTUIConnection(
+			snapshot.Connections,
+			selectedConnectionID,
+		)
+	}
+	if selectedRequestID == "" {
+		snapshot.SelectedRequest = clampTUISelection(
+			snapshot.SelectedRequest,
+			len(snapshot.Requests),
+		)
+	} else {
+		snapshot.SelectedRequest = findTUIRequest(
+			snapshot.Requests,
+			selectedRequestID,
+		)
+	}
 }
 
 const tuiRequestHistoryLimit = 500

@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,7 +32,10 @@ func geoCommand(args []string) error {
 	switch args[0] {
 	case "status":
 		for _, file := range tuiBundledGeoFiles {
-			path := filepath.Join(paths.HomeDir, file.name)
+			path, _, err := findTUIExistingGeoTarget(paths.HomeDir, file)
+			if err != nil {
+				return err
+			}
 			state := "missing"
 			if tuiGeoTargetIsUsable(path, file) {
 				state = "ready"

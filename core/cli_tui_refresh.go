@@ -285,6 +285,10 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	)
 	updated.SSHTotalTraffic = current.SSHTotalTraffic
 	updated.SSHConnections = current.SSHConnections
+	updated.TrafficSource = current.TrafficSource
+	updated.HistoryFilter = current.HistoryFilter
+	updated.HistoryQuery = current.HistoryQuery
+	updated.ConnectionsQuery = current.ConnectionsQuery
 	if len(current.GroupOrder) > 0 {
 		updated.GroupOrder = append([]string(nil), current.GroupOrder...)
 		orderTUIGroups(updated.Groups, updated.GroupOrder)

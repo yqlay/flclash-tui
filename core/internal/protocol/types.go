@@ -15,6 +15,7 @@ type TuiConnection struct {
 	InboundUser string `json:"inbound_user,omitempty"`
 	Network     string `json:"network,omitempty"`
 	Chain       string `json:"chain,omitempty"`
+	Source      string `json:"source,omitempty"`
 	Upload      int64  `json:"upload"`
 	Download    int64  `json:"download"`
 }
@@ -68,6 +69,7 @@ type TuiServiceRequest struct {
 	SubscriptionURL  *string      `json:"subscription_url,omitempty"`
 	NewName          string       `json:"new_name,omitempty"`
 	ConnectionID     string       `json:"connection_id,omitempty"`
+	Source           string       `json:"source,omitempty"`
 	AfterRevision    uint64       `json:"after_revision,omitempty"`
 	WatchTimeoutMS   int          `json:"watch_timeout_ms,omitempty"`
 	LogLimit         int          `json:"log_limit,omitempty"`
@@ -90,7 +92,7 @@ type TuiServiceStatus struct {
 	SystemProxy         bool            `json:"system_proxy"`
 	Mode                string          `json:"mode,omitempty"`
 	ProxyPort           int             `json:"proxy_port,omitempty"`
-	ConfiguredProxyPort int             `json:"configured_proxy_port,omitempty"`
+	ConfiguredProxyPort int             `json:"configured_proxy_port"`
 	ActiveProxyPort     int             `json:"active_proxy_port,omitempty"`
 	TunScope            string          `json:"tun_scope,omitempty"`
 	TunState            string          `json:"tun_state,omitempty"`

@@ -213,13 +213,20 @@ func cleanupCLIExitArtifacts(excludePID int) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range []string{
-		tuiServiceSocketFilename,
-		tuiCoreSocketFilename,
-	} {
-		if err := os.Remove(filepath.Join(runtimeDirectory, name)); err != nil &&
-			!os.IsNotExist(err) {
-			return fmt.Errorf("remove stale runtime socket %q: %w", name, err)
+	owner, active, err := activeCLIBackendOwner()
+	if err != nil {
+		return err
+	}
+	backendAlive := active && owner.PID != excludePID
+	if !backendAlive {
+		for _, name := range []string{
+			tuiServiceSocketFilename,
+			tuiCoreSocketFilename,
+		} {
+			if err := os.Remove(filepath.Join(runtimeDirectory, name)); err != nil &&
+				!os.IsNotExist(err) {
+				return fmt.Errorf("remove stale runtime socket %q: %w", name, err)
+			}
 		}
 	}
 	frontends, err := activeCLIFrontendsExcept(excludePID)
@@ -233,9 +240,7 @@ func cleanupCLIExitArtifacts(excludePID int) error {
 	if err != nil {
 		return err
 	}
-	if owner, active, activeErr := activeCLIBackendOwner(); activeErr != nil {
-		return activeErr
-	} else if !active && owner.PID != excludePID {
+	if !active && owner.PID != excludePID {
 		_ = os.Remove(lockPath)
 	}
 	return nil

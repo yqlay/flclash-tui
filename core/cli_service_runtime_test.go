@@ -661,6 +661,45 @@ func TestTUIServiceRuntimeChangesNativeModeWhileCoreStopped(t *testing.T) {
 	}
 }
 
+func TestLeaveSilentModeWithProfileTUNWhileCoreStopped(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "config.yaml")
+	source := defaultTUIConfig + "tun:\n  enable: true\n"
+	if err := os.WriteFile(configPath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newTUIServiceRuntime(
+		cliPaths{HomeDir: directory, ConfigPath: configPath},
+		defaultCLITestURL,
+		filepath.Join(directory, "missing-core.sock"),
+		nil,
+		nil,
+	)
+	runtime.configureManagedRuntimePolicy(
+		tuiSilentMode,
+		0,
+		0,
+		configPath,
+		tuiFLCListenerState{},
+		tuiTunScopeUser,
+		false,
+	)
+	changed, err := runtime.applyTrafficMode("rule")
+	if err != nil {
+		if strings.Contains(err.Error(), "TUN lease has no file descriptor") {
+			t.Fatalf("leaving silent mode while Core is stopped required a TUN FD: %v", err)
+		}
+		t.Fatalf("leave silent mode while Core is stopped: %v", err)
+	}
+	if !changed {
+		t.Fatal("leave silent mode reported no change")
+	}
+	status := runtime.snapshot("")
+	if status.Mode != "rule" || status.Running {
+		t.Fatalf("runtime after leaving silent = %+v", status)
+	}
+}
+
 func TestTUIServiceRuntimeRejectsActiveTunScopeChange(t *testing.T) {
 	runtime := newTestTUIServiceRuntime(t)
 	runtime.configureManagedRuntimePolicy(

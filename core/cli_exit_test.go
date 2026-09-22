@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCompleteCLIExitIsIdempotentWithoutRuntime(t *testing.T) {
@@ -64,5 +65,28 @@ func TestCompleteCLIExitContinuesAfterSSHCleanupFailure(t *testing.T) {
 		if _, statErr := os.Stat(filepath.Join(runtimeDirectory, name)); !os.IsNotExist(statErr) {
 			t.Fatalf("complete exit stopped before removing %q: %v", name, statErr)
 		}
+	}
+}
+
+func TestCleanupCLIExitArtifactsKeepsSocketsWhileBackendAlive(t *testing.T) {
+	runtimeDirectory := useTestCLIRuntimeDirectory(t)
+	lock, err := acquireCLIBackendLock(cliProcessOwner{
+		Kind:      "service",
+		PID:       os.Getpid(),
+		StartedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { lock.release() })
+	socketPath := filepath.Join(runtimeDirectory, tuiServiceSocketFilename)
+	if err := os.WriteFile(socketPath, []byte("live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupCLIExitArtifacts(0); err != nil {
+		t.Fatalf("cleanup while backend alive: %v", err)
+	}
+	if _, err := os.Stat(socketPath); err != nil {
+		t.Fatalf("live backend socket was removed: %v", err)
 	}
 }

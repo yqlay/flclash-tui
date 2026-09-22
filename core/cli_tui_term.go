@@ -185,6 +185,7 @@ const (
 	tuiKeyNotifications
 	tuiKeySearch
 	tuiKeyFilter
+	tuiKeySourceFilter
 )
 
 func readTUIKeys(reader io.Reader, keys chan<- tuiKey) {

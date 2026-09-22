@@ -131,7 +131,7 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	r.trafficMode = mode
 	r.flc = tuiFLCListenerState{Outbound: oldFLC.Outbound}
 	restoreUserTun := oldTunScope == tuiTunScopeUser && oldSettings.TunEnabled
-	r.tunEnabled = restoreUserTun
+	r.tunEnabled = restoreUserTun && running
 	r.mu.Unlock()
 	var restoredTunLease *tuiTunLease
 	if restoreUserTun && running {
@@ -195,6 +195,11 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 			)
 		}
 		return false, fmt.Errorf("save mode: %w", err)
+	}
+	if restoreUserTun {
+		r.mu.Lock()
+		r.tunEnabled = true
+		r.mu.Unlock()
 	}
 	return true, nil
 }

@@ -115,3 +115,23 @@ func TestEnsureTUIBundledGeoDataPreservesValidDAT(t *testing.T) {
 		t.Fatal("valid user GeoIP.dat was replaced")
 	}
 }
+
+func TestFindTUIExistingGeoTargetAcceptsCountryMMDB(t *testing.T) {
+	assetDirectory, err := filepath.Abs(filepath.Join("..", "assets", "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	homeDir := t.TempDir()
+	sourcePath := filepath.Join(assetDirectory, "GEOIP.metadb")
+	targetPath := filepath.Join(homeDir, "Country.mmdb")
+	if err := copyTUIBundledGeoFile(sourcePath, targetPath); err != nil {
+		t.Fatal(err)
+	}
+	path, found, err := findTUIExistingGeoTarget(homeDir, tuiBundledGeoFiles[0])
+	if err != nil || !found || filepath.Base(path) != "Country.mmdb" {
+		t.Fatalf("alias target = %q found=%t err=%v", path, found, err)
+	}
+	if !tuiGeoTargetIsUsable(path, tuiBundledGeoFiles[0]) {
+		t.Fatal("Country.mmdb was not treated as a usable GeoIP database")
+	}
+}

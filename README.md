@@ -84,7 +84,7 @@ flc claude
   <img src="readme-assets/photo-4.png" alt="flc codex 启动成功" width="920">
 </p>
 
-可以在 Dashboard 上看流量图，也可以在 **Connections** 里看到走代理的具体连接：
+可以在 Dashboard 上看流量图，也可以在 **Connections** 里看到走代理和 SSH 反代的具体连接（`f` 可过滤 proxy / ssh）：
 
 <p align="center">
   <img src="readme-assets/photo-5.png" alt="Connections 里走代理的连接" width="920">

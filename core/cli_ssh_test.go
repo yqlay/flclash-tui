@@ -2492,6 +2492,9 @@ func TestActiveCLISSHTunnelKeepsBrokenForwardManageable(t *testing.T) {
 	}
 	controlPath := filepath.Join(directory, "control.sock")
 	masterMarker := controlPath + ".master"
+	if err := os.WriteFile(controlPath, []byte("socket"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(masterMarker, []byte("alive"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2572,6 +2575,59 @@ func TestStopAllCLISSHTunnelsPreservesInvalidRuntimeState(t *testing.T) {
 	}
 	if _, err := os.Stat(statePath); err != nil {
 		t.Fatalf("invalid SSH runtime state was hidden by deletion: %v", err)
+	}
+}
+
+func TestActiveCLISSHTunnelDoesNotReapOnCheckTimeout(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	binDirectory := t.TempDir()
+	sshPath := filepath.Join(binDirectory, "ssh")
+	script := "#!/bin/sh\n" +
+		"control=''\noperation=''\nprevious=''\n" +
+		"for argument in \"$@\"; do\n" +
+		"  if [ \"$previous\" = '-S' ]; then control=\"$argument\"; fi\n" +
+		"  if [ \"$previous\" = '-O' ]; then operation=\"$argument\"; fi\n" +
+		"  previous=\"$argument\"\n" +
+		"done\n" +
+		"if [ \"$operation\" = check ]; then sleep 30; exit 0; fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	runtimeRoot := t.TempDir()
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntime })
+	directory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlPath := filepath.Join(directory, "control.sock")
+	if err := os.WriteFile(controlPath, []byte("master"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(directory, cliSSHPersistentStateFile)
+	state := cliSSHTunnelState{
+		Name:        "school",
+		Destination: "student@example.edu",
+		Port:        1080,
+		ControlPath: controlPath,
+		Kind:        cliSSHAttachedKind,
+		StatePath:   statePath,
+	}
+	if err := saveCLISSHTunnelState(state); err != nil {
+		t.Fatal(err)
+	}
+	loaded, active, err := activeCLIPersistentSSHTunnel()
+	if err != nil || !active || loaded.Name != "school" {
+		t.Fatalf("timed-out SSH check = active:%t err:%v state:%+v", active, err, loaded)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("timed-out SSH check reaped persistent state: %v", err)
+	}
+	if _, err := os.Stat(controlPath); err != nil {
+		t.Fatalf("timed-out SSH check removed the ControlMaster: %v", err)
 	}
 }
 

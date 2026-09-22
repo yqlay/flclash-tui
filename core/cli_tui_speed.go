@@ -387,7 +387,10 @@ func newTUISOCKSHTTPClient(port int) (*http.Client, func(), error) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	transport.DialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+			return contextDialer.DialContext(ctx, network, address)
+		}
 		return dialer.Dial(network, address)
 	}
 	configureTUIHTTP1Transport(transport)

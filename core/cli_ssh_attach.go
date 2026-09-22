@@ -250,10 +250,15 @@ func stopCLIAttachedTunnel(state cliSSHTunnelState) error {
 		cleanupErrors = append(cleanupErrors, errors.New("OpenSSH client `ssh` is required to detach the SSH tunnel"))
 		return errors.Join(cleanupErrors...)
 	}
+	cancelFailed := false
 	if cliSSHMasterAlive(sshPath, state) {
 		if err := cancelCLISSHDynamicForward(sshPath, state); err != nil && cliSSHMasterAlive(sshPath, state) {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("cancel SSH SOCKS5 forward %q: %w", state.Name, err))
+			cancelFailed = true
 		}
+	}
+	if cancelFailed {
+		return errors.Join(cleanupErrors...)
 	}
 	if state.StatePath != "" {
 		if err := os.Remove(state.StatePath); err != nil && !os.IsNotExist(err) {

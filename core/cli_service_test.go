@@ -486,15 +486,45 @@ func TestTUIServiceReloadTimeoutCoversModeChanges(t *testing.T) {
 		"set_flc_outbound",
 		"put_profile",
 		"restore_profile",
+		"select_proxy",
+		"start",
+		"stop",
+		"set_tun",
+		"flc_proxy",
 	} {
 		if !tuiServiceActionUsesReloadTimeout(action) {
 			t.Fatalf("%s does not use the Core reload timeout", action)
 		}
 	}
-	for _, action := range []string{"status", "watch", "select_proxy"} {
+	for _, action := range []string{"status", "watch"} {
 		if tuiServiceActionUsesReloadTimeout(action) {
 			t.Fatalf("%s unexpectedly uses the Core reload timeout", action)
 		}
+	}
+}
+
+func TestApplyTUIServiceStatusCompatibilityKeepsSilentMixedPortOff(t *testing.T) {
+	status := tuiServiceStatus{
+		Mode:                tuiSilentMode,
+		ProxyPort:           17891,
+		ConfiguredProxyPort: 0,
+		ActiveProxyPort:     17891,
+		FLCEnabled:          true,
+		Running:             true,
+	}
+	applyTUIServiceStatusCompatibility(&status)
+	if status.ConfiguredProxyPort != 0 {
+		t.Fatalf("silent mixed-port 0 was shimmed to %d", status.ConfiguredProxyPort)
+	}
+	rule := tuiServiceStatus{
+		Mode:                "rule",
+		ProxyPort:           7890,
+		ConfiguredProxyPort: 0,
+		Running:             true,
+	}
+	applyTUIServiceStatusCompatibility(&rule)
+	if rule.ConfiguredProxyPort != 7890 {
+		t.Fatalf("legacy omitted configured port = %d, want 7890", rule.ConfiguredProxyPort)
 	}
 }
 

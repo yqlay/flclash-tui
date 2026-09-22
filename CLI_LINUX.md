@@ -111,14 +111,14 @@ flclash proxy select GROUP NODE
 flclash proxy delay NODE [--test-url URL]
 flclash proxy speed NODE
 
-flclash history show [--follow] [--json] [--state all|active|done] [--search TEXT] [--limit N]
-flclash history clear
-flclash connections show [--json]
+flclash history show [--follow] [--json] [--source mixed|proxy|ssh] [--state all|active|done] [--search TEXT] [--limit N]
+flclash history clear [--source mixed|proxy|ssh]
+flclash connections show [--json] [--source mixed|proxy|ssh]
 flclash connections close ID
-flclash connections close all
+flclash connections close all [--source mixed|proxy|ssh]
 ```
 
-History is Backend's shared, persistent, up-to-500-entry record derived from active Mihomo connections. It contains active and recently completed flows, not HTTP bodies. Backend reloads it after restart; restored entries begin as completed until Mihomo reports them active again. `history clear` clears both memory and disk without closing connections, while `connections close all` does not erase History.
+History is Backend's shared, persistent, up-to-500-entry record. It contains active and recently completed **proxy** (Mihomo) and **ssh** (independent reverse-proxy) flows, not HTTP bodies. Filter with `--source mixed|proxy|ssh` (default mixed). Backend reloads it after restart; restored entries begin as completed until they are seen active again. `history clear` clears matching memory and disk entries without closing connections; `connections close all` closes matching live flows and does not erase History. Close an `ssh:` id through the SSH relay; other ids go to Mihomo. TUI Connections uses `f` for source; History keeps `f` for all/active/completed and uses `o` for source.
 
 Authenticated loopback traffic from the private silent-mode FLC listener is included even when Mihomo cannot resolve its process UID; unknown UID traffic from any other inbound remains hidden outside system-scoped TUN. Connections and History show the complete route from the selected node through its proxy group. `flclash port` prints the configured port; `flclash status --json` exposes both `configured_proxy_port` and the possibly reallocated `active_proxy_port`.
 
@@ -201,9 +201,10 @@ address for other local applications. Use `--local-port auto` to return to
 automatic allocation. Temporary `flc ssh -u` tunnels always use an automatic
 port, so they cannot steal the persistent application endpoint. Fixed-port
 conflicts fail closed instead of silently choosing another port.
-The relay counts bytes and active connections as they pass through, so the SSH
-Dashboard can show 30-sample live traffic and cumulative totals without root,
-eBPF, packet capture, or changes to the remote SSH server.
+The relay counts bytes and records each SOCKS flow, so the SSH Dashboard can
+show 30-sample live traffic and cumulative totals, and Connections / History
+list the same flows beside Mihomo proxy traffic, without root, eBPF, packet
+capture, or changes to the remote SSH server.
 
 `flc ssh COMMAND` only hands traffic to the SSH host. The host decides whether
 its Clash/TUN/routing policy handles the post-decryption connection. `flc ssh

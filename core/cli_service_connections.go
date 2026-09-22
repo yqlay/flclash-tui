@@ -19,57 +19,96 @@ func (r *tuiServiceRuntime) historyStatus(requestID string) tuiServiceStatus {
 	r.historyUpdateMu.Lock()
 	defer r.historyUpdateMu.Unlock()
 	status := r.snapshot(requestID)
-	if status.Running {
-		connections, err := loadTUIActiveConnections(r.coreController)
-		if err != nil {
-			return failTUIServiceStatus(
-				status,
-				tuiServiceErrorOperation,
-				err.Error(),
-			)
-		}
-		connections = filterTUIConnections(
-			connections,
-			uint32(os.Getuid()),
-			status.TunState == "on" && status.TunScope == tuiTunScopeSystem,
-		)
-		r.mu.RLock()
-		previous := append([]tuiRequest(nil), r.history...)
-		r.mu.RUnlock()
-		updated := updateTUIRequestHistory(previous, connections, time.Now())
-		r.recordHistoryUpdate(updated)
-		status.History = append([]tuiRequest(nil), updated...)
-	} else {
-		r.mu.RLock()
-		history := append([]tuiRequest(nil), r.history...)
-		r.mu.RUnlock()
-		updated, changed := markTUIRequestHistoryInactive(history)
-		if changed {
-			r.recordHistoryUpdate(updated)
-		}
-		status.History = updated
+	live, recentSSH, err := r.mergedLiveTraffic(status)
+	if err != nil {
+		return failTUIServiceStatus(status, tuiServiceErrorOperation, err.Error())
 	}
+	r.mu.RLock()
+	previous := append([]tuiRequest(nil), r.history...)
+	r.mu.RUnlock()
+	now := time.Now()
+	updated := rememberClosedSSHHistory(
+		updateTUIRequestHistory(previous, live, now),
+		recentSSH,
+		now,
+	)
+	r.recordHistoryUpdate(updated)
+	status.History = append([]tuiRequest(nil), updated...)
 	return status
 }
 
 func (r *tuiServiceRuntime) connectionsStatus(requestID string) tuiServiceStatus {
 	status := r.snapshot(requestID)
-	if !status.Running {
-		return status
-	}
-	connections, err := loadTUIActiveConnections(r.coreController)
+	live, _, err := r.mergedLiveTraffic(status)
 	if err != nil {
 		return failTUIServiceStatus(status, tuiServiceErrorOperation, err.Error())
 	}
-	status.Connections = filterTUIConnections(
-		connections,
-		uint32(os.Getuid()),
-		status.TunState == "on" && status.TunScope == tuiTunScopeSystem,
-	)
+	status.Connections = live
 	return status
 }
 
+func (r *tuiServiceRuntime) mergedLiveTraffic(
+	status tuiServiceStatus,
+) (live, recentSSH []tuiConnection, err error) {
+	sshLive, sshRecent := loadCLISSHRelayConnections()
+	if !status.Running {
+		return sshLive, sshRecent, nil
+	}
+	connections, err := loadTUIActiveConnections(r.coreController)
+	if err != nil {
+		return sshLive, sshRecent, err
+	}
+	connections = tagTUIConnectionsSource(
+		filterTUIConnections(
+			connections,
+			uint32(os.Getuid()),
+			status.TunState == "on" && status.TunScope == tuiTunScopeSystem,
+		),
+		tuiTrafficSourceProxy,
+	)
+	return mergeTUITrafficConnections(connections, sshLive), sshRecent, nil
+}
+
 func closeTUIVisibleConnections(controller controllerClient, uid uint32, systemTun bool, id string) error {
+	return closeTUIVisibleConnectionsForSource(controller, uid, systemTun, id, tuiTrafficSourceMixed)
+}
+
+func closeTUIVisibleConnectionsForSource(
+	controller controllerClient,
+	uid uint32,
+	systemTun bool,
+	id,
+	source string,
+) error {
+	id = strings.TrimSpace(id)
+	source = normalizeTrafficSource(source)
+	if isSSHConnectionID(id) {
+		return closeCLISSHRelayFlow(id)
+	}
+	var failures []error
+	if id == "" && trafficSourceMatches(source, tuiTrafficSourceSSH) {
+		if err := closeAllCLISSHRelayFlows(); err != nil &&
+			!strings.Contains(err.Error(), "no SSH tunnel is connected") {
+			failures = append(failures, err)
+		}
+	}
+	if id != "" || trafficSourceMatches(source, tuiTrafficSourceProxy) {
+		if err := closeTUIProxyConnections(controller, uid, systemTun, id); err != nil {
+			if id != "" {
+				return err
+			}
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func closeTUIProxyConnections(
+	controller controllerClient,
+	uid uint32,
+	systemTun bool,
+	id string,
+) error {
 	if systemTun {
 		if id == "" {
 			return controller.closeAllConnections()

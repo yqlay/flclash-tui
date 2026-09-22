@@ -847,6 +847,8 @@ func tuiKeyFromTea(message tea.KeyMsg) (tuiKey, bool) {
 		return tuiKeySearch, true
 	case "f":
 		return tuiKeyFilter, true
+	case "o":
+		return tuiKeySourceFilter, true
 	case "r":
 		return tuiKeyRefresh, true
 	case "R":

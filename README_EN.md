@@ -82,7 +82,7 @@ After `flc codex` connects:
   <img src="readme-assets/photo-4.png" alt="flc codex connected successfully" width="920">
 </p>
 
-The Dashboard traffic graph updates, and **Connections** shows the proxied sessions:
+The Dashboard traffic graph updates, and **Connections** lists both proxied and SSH reverse-proxy sessions (`f` filters proxy / ssh):
 
 <p align="center">
   <img src="readme-assets/photo-5.png" alt="Connections page showing proxied sessions" width="920">

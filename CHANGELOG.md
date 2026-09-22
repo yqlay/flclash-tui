@@ -1,3 +1,13 @@
+## FlClash TUI v0.5.29
+
+- Merge SSH reverse-proxy flows into Connections and History with `proxy` / `ssh` labels. Filter mixed, proxy, or ssh (`f` on Connections, `o` on History, CLI `--source`). Close and clear honor that filter. SSH flows still appear when Core is stopped.
+- Reuse a live OpenSSH ControlMaster from `ssh connect`, `flc ssh`, and TUI Connect without inspecting the profile Identity first; an already-ready tunnel skips the key check. Attach and failed-delete restore never start a second login.
+- Treat ControlMaster check timeouts as unknown instead of tearing down a live tunnel. Keep attached runtime state when `-O cancel` fails. Honor cancellation in TUI SSH delay/speed SOCKS dials.
+- Keep silent-mode `mixed-port: 0` as off instead of showing the private FLC port. Give select/start/stop/TUN/FLC mutations the Core reload timeout.
+- Leave silent mode with a saved user TUN while Core is stopped without requiring a TUN file descriptor.
+- Report installed Geo aliases such as `Country.mmdb` in `flclash geo status`. Do not unlink Backend control sockets from `flclash exit` while Backend is still running.
+- Split oversized CLI files and extract subscription, paths, protocol, hubapi, and update packages. Send a versioned GitHub User-Agent from TUI update checks.
+
 ## FlClash TUI v0.5.28
 
 - Add CLI and TUI capture of an existing OpenSSH ControlMaster without a second login; only explicit user operations discover external masters. Recognize OpenSSH's `ControlMaster false` output correctly.

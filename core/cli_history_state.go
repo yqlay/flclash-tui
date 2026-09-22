@@ -140,14 +140,26 @@ func (r *tuiServiceRuntime) persistHistory(force bool) error {
 }
 
 func (r *tuiServiceRuntime) clearPersistentHistory() (bool, error) {
+	return r.clearPersistentHistoryForSource(tuiTrafficSourceMixed)
+}
+
+func (r *tuiServiceRuntime) clearPersistentHistoryForSource(source string) (bool, error) {
+	source = normalizeTrafficSource(source)
 	r.historyUpdateMu.Lock()
 	defer r.historyUpdateMu.Unlock()
 	r.mu.Lock()
 	previous := append([]tuiRequest(nil), r.history...)
-	changed := len(previous) > 0
-	r.history = nil
+	next := filterRequestsBySource(previous, inverseTrafficSource(source))
+	if source == tuiTrafficSourceMixed {
+		next = nil
+	}
+	changed := len(next) != len(previous)
+	r.history = next
 	r.historyVersion++
 	r.mu.Unlock()
+	if !changed {
+		return false, nil
+	}
 	if err := r.persistHistory(true); err != nil {
 		r.mu.Lock()
 		r.history = previous
@@ -155,7 +167,18 @@ func (r *tuiServiceRuntime) clearPersistentHistory() (bool, error) {
 		r.mu.Unlock()
 		return false, errors.New("persist cleared History: " + err.Error())
 	}
-	return changed, nil
+	return true, nil
+}
+
+func inverseTrafficSource(source string) string {
+	switch normalizeTrafficSource(source) {
+	case tuiTrafficSourceProxy:
+		return tuiTrafficSourceSSH
+	case tuiTrafficSourceSSH:
+		return tuiTrafficSourceProxy
+	default:
+		return tuiTrafficSourceMixed
+	}
 }
 
 func (r *tuiServiceRuntime) recordHistoryUpdate(entries []tuiRequest) {

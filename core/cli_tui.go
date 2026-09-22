@@ -277,6 +277,7 @@ type tuiSnapshot struct {
 	HistoryDetailOpen      bool
 	ConnectionsQuery       string
 	ConnectionsDetailOpen  bool
+	TrafficSource          string
 	LogsQuery              string
 	LogsLevel              string
 	LogDetailOpen          bool

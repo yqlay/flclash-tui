@@ -80,6 +80,8 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		}
 	case tuiKeyFilter:
 		switch m.snapshot.Page {
+		case tuiPageConnections:
+			m.cycleTrafficSource()
 		case tuiPageRequests:
 			filters := []string{"all", "active", "completed"}
 			current := findTUIString(filters, tuiDefaultValue(m.snapshot.HistoryFilter, "all"))
@@ -95,6 +97,10 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			m.snapshot.LogDetailOpen = false
 			m.snapshot.Status = "Log level filter: " + m.snapshot.LogsLevel
 		}
+	case tuiKeySourceFilter:
+		if m.snapshot.Page == tuiPageRequests || m.snapshot.Page == tuiPageConnections {
+			m.cycleTrafficSource()
+		}
 	case tuiKeyCloseConnections:
 		if m.snapshot.Page == tuiPageSSH {
 			if m.snapshot.FocusSidebar || m.snapshot.SSHDashboardFocus {
@@ -108,7 +114,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			return nil
 		} else if m.snapshot.Page == tuiPageRequests {
 			if !m.dangerConfirmed {
-				m.beginDangerConfirm("Clear shared History?", "Delete all persisted active and completed History entries from the Backend.", key)
+				m.beginDangerConfirm("Clear shared History?", trafficClearConfirmMessage(m.snapshot.TrafficSource, "history"), key)
 				return nil
 			}
 			if m.service != nil {
@@ -116,7 +122,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 					if !prepareTUIBackendRevision(state, m.service) {
 						return
 					}
-					status, err := m.service.clearHistory(state.backendRevision)
+					status, err := m.service.clearHistoryForSource(m.snapshot.TrafficSource, state.backendRevision)
 					if err != nil {
 						state.snapshot.Status = "Clear History failed: " + err.Error()
 						return
@@ -162,7 +168,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			m.snapshot.Status = "Logs cleared"
 		} else if m.snapshot.Page == tuiPageConnections {
 			if !m.dangerConfirmed {
-				m.beginDangerConfirm("Close all connections?", "Immediately close every active connection visible to this managed Core.", key)
+				m.beginDangerConfirm("Close all connections?", trafficClearConfirmMessage(m.snapshot.TrafficSource, "connections"), key)
 				return nil
 			}
 			return m.startOperation(func(state *tuiOperationState) {
@@ -172,12 +178,12 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 						return
 					}
 					var status tuiServiceStatus
-					status, err = m.service.closeAllConnectionsManaged(state.backendRevision)
+					status, err = m.service.closeAllConnectionsManagedForSource(m.snapshot.TrafficSource, state.backendRevision)
 					if err == nil {
 						state.backendRevision = status.Revision
 					}
 				} else {
-					err = closeTUIVisibleConnections(m.client, uint32(os.Getuid()), state.snapshot.Settings.TunEnabled && state.snapshot.Settings.TunScope == tuiTunScopeSystem, "")
+					err = closeTUIVisibleConnectionsForSource(m.client, uint32(os.Getuid()), state.snapshot.Settings.TunEnabled && state.snapshot.Settings.TunScope == tuiTunScopeSystem, "", m.snapshot.TrafficSource)
 				}
 				if err != nil {
 					state.snapshot.Status = "Close connections failed: " + err.Error()
@@ -227,12 +233,12 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 						return
 					}
 					var status tuiServiceStatus
-					status, err = m.service.closeConnectionManaged(connectionID, state.backendRevision)
+					status, err = m.service.closeConnectionManagedForSource(connectionID, m.snapshot.TrafficSource, state.backendRevision)
 					if err == nil {
 						state.backendRevision = status.Revision
 					}
 				} else {
-					err = closeTUIVisibleConnections(m.client, uint32(os.Getuid()), state.snapshot.Settings.TunEnabled && state.snapshot.Settings.TunScope == tuiTunScopeSystem, connectionID)
+					err = closeTUIVisibleConnectionsForSource(m.client, uint32(os.Getuid()), state.snapshot.Settings.TunEnabled && state.snapshot.Settings.TunScope == tuiTunScopeSystem, connectionID, m.snapshot.TrafficSource)
 				}
 				if err != nil {
 					state.snapshot.Status = "Close connection failed: " + err.Error()

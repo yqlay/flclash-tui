@@ -111,12 +111,7 @@ func (c *tuiServiceClient) sendRequest(
 	if err := json.NewDecoder(bufio.NewReader(connection)).Decode(&status); err != nil {
 		return tuiServiceStatus{}, err
 	}
-	if status.ConfiguredProxyPort == 0 {
-		status.ConfiguredProxyPort = status.ProxyPort
-	}
-	if status.ActiveProxyPort == 0 && status.Running {
-		status.ActiveProxyPort = status.ProxyPort
-	}
+	applyTUIServiceStatusCompatibility(&status)
 	if !status.OK {
 		if status.Error == "" {
 			status.Error = "Backend rejected the request"
@@ -130,10 +125,22 @@ func (c *tuiServiceClient) sendRequest(
 	return status, nil
 }
 
+func applyTUIServiceStatusCompatibility(status *tuiServiceStatus) {
+	if status.ConfiguredProxyPort == 0 &&
+		status.Mode != tuiSilentMode &&
+		!status.FLCEnabled {
+		status.ConfiguredProxyPort = status.ProxyPort
+	}
+	if status.ActiveProxyPort == 0 && status.Running {
+		status.ActiveProxyPort = status.ProxyPort
+	}
+}
+
 func tuiServiceActionUsesReloadTimeout(action string) bool {
 	switch action {
 	case "reload", "apply_settings", "set_mode", "set_flc_outbound",
-		"put_profile", "restore_profile":
+		"put_profile", "restore_profile",
+		"select_proxy", "start", "stop", "set_tun", "flc_proxy":
 		return true
 	default:
 		return false
@@ -341,9 +348,18 @@ func (c *tuiServiceClient) closeConnectionManaged(
 	id string,
 	revision uint64,
 ) (tuiServiceStatus, error) {
+	return c.closeConnectionManagedForSource(id, tuiTrafficSourceMixed, revision)
+}
+
+func (c *tuiServiceClient) closeConnectionManagedForSource(
+	id,
+	source string,
+	revision uint64,
+) (tuiServiceStatus, error) {
 	return c.requestPayload(tuiServiceRequest{
 		Action:           "close_connection",
 		ConnectionID:     id,
+		Source:           normalizeTrafficSource(source),
 		ExpectedRevision: &revision,
 	})
 }
@@ -351,8 +367,16 @@ func (c *tuiServiceClient) closeConnectionManaged(
 func (c *tuiServiceClient) closeAllConnectionsManaged(
 	revision uint64,
 ) (tuiServiceStatus, error) {
+	return c.closeAllConnectionsManagedForSource(tuiTrafficSourceMixed, revision)
+}
+
+func (c *tuiServiceClient) closeAllConnectionsManagedForSource(
+	source string,
+	revision uint64,
+) (tuiServiceStatus, error) {
 	return c.requestPayload(tuiServiceRequest{
 		Action:           "close_all_connections",
+		Source:           normalizeTrafficSource(source),
 		ExpectedRevision: &revision,
 	})
 }
@@ -414,8 +438,16 @@ func (c *tuiServiceClient) clearLogs(revision uint64) (tuiServiceStatus, error) 
 func (c *tuiServiceClient) clearHistory(
 	revision uint64,
 ) (tuiServiceStatus, error) {
+	return c.clearHistoryForSource(tuiTrafficSourceMixed, revision)
+}
+
+func (c *tuiServiceClient) clearHistoryForSource(
+	source string,
+	revision uint64,
+) (tuiServiceStatus, error) {
 	return c.requestPayload(tuiServiceRequest{
 		Action:           "clear_history",
+		Source:           normalizeTrafficSource(source),
 		ExpectedRevision: &revision,
 	})
 }

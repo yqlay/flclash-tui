@@ -865,9 +865,23 @@ func loadCLISSHLastError() (cliSSHLastError, error) {
 	return lastError, nil
 }
 
-func cliSSHMasterAlive(sshPath string, state cliSSHTunnelState) bool {
+type cliSSHMasterStatus byte
+
+const (
+	cliSSHMasterDead cliSSHMasterStatus = iota
+	cliSSHMasterAliveStatus
+	cliSSHMasterUnknown
+)
+
+func inspectCLISSHMaster(sshPath string, state cliSSHTunnelState) cliSSHMasterStatus {
 	if state.ControlPath == "" {
-		return false
+		return cliSSHMasterDead
+	}
+	if _, err := os.Lstat(state.ControlPath); err != nil {
+		if os.IsNotExist(err) {
+			return cliSSHMasterDead
+		}
+		return cliSSHMasterUnknown
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -877,8 +891,20 @@ func cliSSHMasterAlive(sshPath string, state cliSSHTunnelState) bool {
 		cliSSHControlOperationArguments(state, "check")...,
 	)
 	check.WaitDelay = time.Second
-	return runCLISSHProbe(check) == nil
+	err := runCLISSHProbe(check)
+	if err == nil {
+		return cliSSHMasterAliveStatus
+	}
+	if ctx.Err() != nil {
+		return cliSSHMasterUnknown
+	}
+	return cliSSHMasterDead
 }
+
+func cliSSHMasterAlive(sshPath string, state cliSSHTunnelState) bool {
+	return inspectCLISSHMaster(sshPath, state) != cliSSHMasterDead
+}
+
 func saveCLISSHTunnelState(state cliSSHTunnelState) error {
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -924,15 +950,19 @@ func activeCLIPersistentSSHTunnel() (cliSSHTunnelState, bool, error) {
 		return state, false,
 			errors.New("OpenSSH client `ssh` is required to inspect the SSH tunnel")
 	}
-	if cliSSHMasterAlive(sshPath, state) {
+	switch inspectCLISSHMaster(sshPath, state) {
+	case cliSSHMasterDead:
+		_ = stopCLISSHRelay(state)
+		if !cliSSHTunnelOwnsMaster(state) {
+			_ = cancelCLISSHDynamicForward(sshPath, state)
+		} else if state.ControlPath != "" {
+			_ = os.Remove(state.ControlPath)
+		}
+		_ = os.Remove(path)
+		return cliSSHTunnelState{}, false, nil
+	default:
 		return state, true, nil
 	}
-	_ = stopCLISSHRelay(state)
-	if cliSSHTunnelOwnsMaster(state) {
-		_ = os.Remove(state.ControlPath)
-	}
-	_ = os.Remove(path)
-	return cliSSHTunnelState{}, false, nil
 }
 
 func stopCLIStateTunnel(state cliSSHTunnelState) error {
