@@ -184,6 +184,8 @@ type tuiSSHCaptureResultMsg struct {
 	names      []string
 	options    []string
 	selected   int
+	candidates []cliSSHCaptureCandidate
+	hint       string
 }
 
 type tuiSSHRelayStatsMsg struct {
@@ -315,6 +317,7 @@ type tuiModel struct {
 	sshCaptureGeneration     uint64
 	sshCaptureNames          []string
 	sshCaptureOptions        []string
+	sshCaptureCandidates     []cliSSHCaptureCandidate
 	sshCaptureSelected       int
 	sshLastStats             cliSSHRelayStats
 	sshLastStatsAt           time.Time
@@ -659,9 +662,14 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sshCaptureNames = message.names
 		m.sshCaptureOptions = message.options
+		m.sshCaptureCandidates = message.candidates
 		m.sshCaptureSelected = message.selected
 		if len(message.options) == 0 {
-			m.sshCaptureOptions = []string{"No live ControlMaster matches a FlClash SSH profile"}
+			hint := message.hint
+			if hint == "" {
+				hint = formatCLICaptureEmptyHint()
+			}
+			m.sshCaptureOptions = []string{hint}
 		}
 		return m, nil
 	case tuiSSHRelayStatsMsg:

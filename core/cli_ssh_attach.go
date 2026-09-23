@@ -20,7 +20,7 @@ const cliSSHAttachedKind = "attached"
 var attachCLISSHTunnelForOperation = attachCLISSHTunnel
 
 func cliSSHTunnelOwnsMaster(state cliSSHTunnelState) bool {
-	return state.Kind != cliSSHAttachedKind
+	return !cliSSHTunnelIsAttached(state.Kind)
 }
 
 func findCLILiveSSHMaster(profile cliSSHProfile) (string, bool) {
@@ -269,6 +269,10 @@ func stopCLIAttachedTunnel(state cliSSHTunnelState) error {
 }
 
 func restoreCLIPreviousSSHTunnel(old cliSSHTunnelState, oldProfile cliSSHProfile) error {
+	if old.Kind == cliSSHAttachedSOCKSKind {
+		_, err := attachCLISSHSocksTunnel(oldProfile, old.UpstreamPort)
+		return err
+	}
 	if cliSSHTunnelOwnsMaster(old) {
 		_, err := startCLIPersistentSSHTunnelForOperation(oldProfile)
 		return err
@@ -319,17 +323,36 @@ func attachCLISSHProfile(name string) (cliSSHTunnelState, bool, error) {
 	}
 	controlPath, ok := findCLILiveSSHMaster(profile)
 	if !ok {
+		if port, socksOK := findCLILiveSSHSocks(profile); socksOK {
+			return attachCLISSHSocksLocked(profile, old, oldActive, port)
+		}
 		err := fmt.Errorf(
-			"no OpenSSH ControlMaster for %s; ordinary ssh sessions cannot be captured",
+			"no OpenSSH ControlMaster or ssh -D SOCKS for %s; ordinary ssh sessions cannot be captured",
 			formatCLISSHDestination(profile.Username, profile.Host),
 		)
+		if captureHasRemoteSSHProcess() {
+			err = fmt.Errorf(
+				"%w; VS Code/Cursor is connected without multiplexing — add ControlMaster auto and ControlPath ~/.ssh/cm-%%C to ~/.ssh/config, reconnect, then capture",
+				err,
+			)
+		}
 		_ = saveCLISSHLastError(profile.Name, err.Error())
 		return cliSSHTunnelState{}, false, err
 	}
+	return attachCLISSHMasterLocked(profile, old, oldActive, controlPath)
+}
+
+func attachCLISSHMasterLocked(
+	profile cliSSHProfile,
+	old cliSSHTunnelState,
+	oldActive bool,
+	controlPath string,
+) (cliSSHTunnelState, bool, error) {
 	if err := validateCLISSHProfile(normalizeCLISSHProfile(profile)); err != nil {
 		return cliSSHTunnelState{}, false, err
 	}
 	var oldProfile cliSSHProfile
+	var err error
 	if oldActive {
 		oldProfile, err = loadCLISSHProfile(old.Name)
 		if err != nil {
@@ -356,29 +379,171 @@ func attachCLISSHProfile(name string) (cliSSHTunnelState, bool, error) {
 	return state, false, nil
 }
 
-func listCLISSHAttachCandidates() ([]string, error) {
-	config, err := loadCLISSHConfig()
-	if err != nil {
-		return nil, err
+func attachCLISSHSocksLocked(
+	profile cliSSHProfile,
+	old cliSSHTunnelState,
+	oldActive bool,
+	socksPort int,
+) (cliSSHTunnelState, bool, error) {
+	if err := validateCLISSHProfile(normalizeCLISSHProfile(profile)); err != nil {
+		return cliSSHTunnelState{}, false, err
 	}
-	lines := make([]string, 0, len(config.Profiles))
-	for _, profile := range config.Profiles {
-		profile = normalizeCLISSHProfile(profile)
-		if profile.Username == "" {
-			continue
+	var oldProfile cliSSHProfile
+	var err error
+	if oldActive {
+		oldProfile, err = loadCLISSHProfile(old.Name)
+		if err != nil {
+			return cliSSHTunnelState{}, false, fmt.Errorf("cannot restore current SSH profile: %w", err)
 		}
-		path, ok := findCLILiveSSHMaster(profile)
-		if !ok {
-			continue
+		if err := stopCLIStateTunnelForOperation(old); err != nil {
+			_ = saveCLISSHLastError(old.Name, err.Error())
+			return cliSSHTunnelState{}, false,
+				fmt.Errorf("stop previous SSH tunnel %q: %w", old.Name, err)
 		}
-		lines = append(lines, fmt.Sprintf(
-			"%-16s %-28s %s",
-			profile.Name,
-			formatCLISSHDestination(profile.Username, profile.Host),
-			path,
-		))
+	}
+	state, err := attachCLISSHSocksTunnel(profile, socksPort)
+	if err != nil {
+		_ = saveCLISSHLastError(profile.Name, err.Error())
+		if oldActive {
+			if restoreErr := restoreCLIPreviousSSHTunnel(old, oldProfile); restoreErr != nil {
+				return cliSSHTunnelState{}, false, fmt.Errorf("capture SSH: %v; restore previous tunnel %q: %w", err, old.Name, restoreErr)
+			}
+			return cliSSHTunnelState{}, false, fmt.Errorf("capture SSH: %w; previous tunnel %q restored", err, old.Name)
+		}
+		return cliSSHTunnelState{}, false, err
+	}
+	_ = clearCLISSHLastError(profile.Name)
+	return state, false, nil
+}
+
+func attachCLISSHSocksTunnel(profile cliSSHProfile, socksPort int) (cliSSHTunnelState, error) {
+	profile = normalizeCLISSHProfile(profile)
+	if err := validateCLISSHProfile(profile); err != nil {
+		return cliSSHTunnelState{}, err
+	}
+	if err := probeCLISSHSOCKS(socksPort, time.Second); err != nil {
+		return cliSSHTunnelState{}, fmt.Errorf("SSH SOCKS5 on 127.0.0.1:%d is unavailable: %w", socksPort, err)
+	}
+	runtimeDirectory, err := ensureCLISSHRuntimeDirectory()
+	if err != nil {
+		return cliSSHTunnelState{}, err
+	}
+	configuredPort := configuredCLISSHLocalPort(profile, cliSSHAttachedKind)
+	fixedPort := configuredPort > 0
+	port := configuredPort
+	if !fixedPort {
+		port, err = allocateCLISSHPort()
+		if err != nil {
+			return cliSSHTunnelState{}, err
+		}
+	} else if err := waitCLISSHPortAvailable(port, time.Second); err != nil {
+		return cliSSHTunnelState{}, err
+	}
+	if port == socksPort {
+		if fixedPort {
+			return cliSSHTunnelState{}, fmt.Errorf("local SOCKS5 port %d is already the captured listener", port)
+		}
+		port, err = allocateCLISSHPort()
+		if err != nil {
+			return cliSSHTunnelState{}, err
+		}
+	}
+	state := cliSSHTunnelState{
+		Name:         profile.Name,
+		Destination:  formatCLISSHDestination(profile.Username, profile.Host),
+		Port:         port,
+		UpstreamPort: socksPort,
+		Kind:         cliSSHAttachedSOCKSKind,
+		StartedAt:    time.Now(),
+		StatePath: filepath.Join(
+			runtimeDirectory,
+			fmt.Sprintf("%s-%d-%d.json", cliSSHAttachedSOCKSKind, os.Getpid(), time.Now().UnixNano()),
+		),
+	}
+	if err := saveCLISSHTunnelState(state); err != nil {
+		return state, err
+	}
+	if relayErr := startCLISSHRelayForOperation(&state); relayErr != nil {
+		_ = stopCLISSHAttachedSOCKS(state)
+		return state, fmt.Errorf("start SSH traffic meter: %w", relayErr)
+	}
+	if err := saveCLISSHTunnelState(state); err != nil {
+		_ = stopCLISSHAttachedSOCKS(state)
+		return state, err
+	}
+	if !cliSSHTunnelReady(state) {
+		_ = stopCLISSHAttachedSOCKS(state)
+		return state, fmt.Errorf("SSH SOCKS capture %q did not become ready", profile.Name)
+	}
+	return persistCLISSHTunnelState(state)
+}
+
+func stopCLISSHAttachedSOCKS(state cliSSHTunnelState) error {
+	var cleanupErrors []error
+	if err := stopCLISSHRelay(state); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("stop SSH traffic meter: %w", err))
+	}
+	if state.StatePath != "" {
+		if err := os.Remove(state.StatePath); err != nil && !os.IsNotExist(err) {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove SSH runtime state: %w", err))
+		}
+	}
+	return errors.Join(cleanupErrors...)
+}
+
+func listCLISSHAttachCandidates() ([]string, error) {
+	candidates := discoverCLICaptureCandidates()
+	lines := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		lines = append(lines, candidate.Label)
 	}
 	return lines, nil
+}
+
+func findCLILiveSSHSocks(profile cliSSHProfile) (int, bool) {
+	profile = normalizeCLISSHProfile(profile)
+	for _, candidate := range discoverLiveSSHSocksCandidates() {
+		if sshCaptureProfileMatches(profile, candidate) {
+			return candidate.SocksPort, true
+		}
+	}
+	return 0, false
+}
+
+func attachCLISSHProfileAtPath(name, controlPath string) (cliSSHTunnelState, bool, error) {
+	lock, err := lockCLISSHTunnelOperation()
+	if err != nil {
+		return cliSSHTunnelState{}, false, err
+	}
+	defer lock.release()
+	profile, err := loadCLISSHProfile(name)
+	if err != nil {
+		return cliSSHTunnelState{}, false, err
+	}
+	old, oldActive, err := activeCLIPersistentSSHTunnelForOperation()
+	if err != nil {
+		return cliSSHTunnelState{}, false, err
+	}
+	if oldActive && strings.EqualFold(old.Name, profile.Name) && cliSSHTunnelReady(old) {
+		return old, true, nil
+	}
+	return attachCLISSHMasterLocked(profile, old, oldActive, controlPath)
+}
+
+func attachCLISSHSocksProfile(profile cliSSHProfile, socksPort int) (cliSSHTunnelState, bool, error) {
+	lock, err := lockCLISSHTunnelOperation()
+	if err != nil {
+		return cliSSHTunnelState{}, false, err
+	}
+	defer lock.release()
+	old, oldActive, err := activeCLIPersistentSSHTunnelForOperation()
+	if err != nil {
+		return cliSSHTunnelState{}, false, err
+	}
+	if oldActive && strings.EqualFold(old.Name, profile.Name) && cliSSHTunnelReady(old) {
+		return old, true, nil
+	}
+	return attachCLISSHSocksLocked(profile, old, oldActive, socksPort)
 }
 
 func cliSSHAttachCommand(args []string) error {
@@ -392,7 +557,7 @@ func cliSSHAttachCommand(args []string) error {
 			return err
 		}
 		if len(lines) == 0 {
-			fmt.Println("No OpenSSH ControlMaster matches a FlClash SSH profile")
+			fmt.Println(formatCLICaptureEmptyHint())
 			return nil
 		}
 		for _, line := range lines {

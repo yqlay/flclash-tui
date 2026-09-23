@@ -612,7 +612,7 @@ func (m *tuiModel) moveSelection(delta int) tea.Cmd {
 			m.snapshot.SelectedSSH = position - 1
 			if m.snapshot.SelectedSSH == tuiSSHCaptureRow {
 				m.resetSelectedSSHMetrics()
-				m.snapshot.Status = "Enter captures a live ControlMaster without a new SSH login"
+				m.snapshot.Status = "Enter captures a live ControlMaster or ssh -D SOCKS without a new SSH login"
 				return nil
 			}
 			if m.selectedSSHName() != previousName {

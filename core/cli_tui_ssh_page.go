@@ -47,7 +47,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 				prefix := "connected"
 				if alreadyConnected {
 					prefix = "already connected"
-				} else if state.Kind == cliSSHAttachedKind {
+				} else if cliSSHTunnelIsAttached(state.Kind) {
 					prefix = "attached"
 				}
 				message.status = fmt.Sprintf(
@@ -111,6 +111,7 @@ func (m *tuiModel) beginSSHCapture() tea.Cmd {
 	generation := m.sshCaptureGeneration
 	m.sshCaptureOpen = true
 	m.sshCaptureNames = nil
+	m.sshCaptureCandidates = nil
 	m.sshCaptureOptions = []string{"Checking existing SSH connections… · Esc cancel"}
 	m.sshCaptureSelected = 0
 	return func() tea.Msg {
@@ -121,37 +122,35 @@ func (m *tuiModel) beginSSHCapture() tea.Cmd {
 }
 
 func discoverTUISSHCapture(profiles []tuiSSHProfile, current string) tuiSSHCaptureResultMsg {
-	names := make([]string, 0, len(profiles))
-	options := make([]string, 0, len(profiles))
-	selected := 0
+	converted := make([]cliSSHProfile, 0, len(profiles))
 	for _, profile := range profiles {
-		if profile.NeedsUsername || (profile.Connected && profile.Ready) {
-			continue
-		}
-		candidate := normalizeCLISSHProfile(cliSSHProfile{
+		converted = append(converted, normalizeCLISSHProfile(cliSSHProfile{
 			Name:     profile.Name,
 			Username: profile.Username,
 			Host:     profile.Host,
 			Port:     profile.Port,
 			Jump:     profile.Jump,
 			Options:  append([]string(nil), profile.Options...),
-		})
-		path, ok := findCLILiveSSHMaster(candidate)
-		if !ok {
-			continue
-		}
-		if current != "" && strings.EqualFold(profile.Name, current) {
+		}))
+	}
+	candidates := discoverCLICaptureCandidatesWithProfiles(converted)
+	names := make([]string, 0, len(candidates))
+	options := make([]string, 0, len(candidates))
+	selected := 0
+	for _, candidate := range candidates {
+		if current != "" && strings.EqualFold(candidate.Name, current) {
 			selected = len(names)
 		}
-		label := fmt.Sprintf("%-16s %s", profile.Name, profile.Destination)
-		if profile.Jump != "" {
-			label += " · via " + profile.Jump
-		}
-		label += " · " + path
-		names = append(names, profile.Name)
-		options = append(options, label)
+		names = append(names, candidate.Name)
+		options = append(options, candidate.Label)
 	}
-	return tuiSSHCaptureResultMsg{names: names, options: options, selected: selected}
+	return tuiSSHCaptureResultMsg{
+		names:      names,
+		options:    options,
+		selected:   selected,
+		candidates: candidates,
+		hint:       formatCLICaptureEmptyHint(),
+	}
 }
 
 func (m *tuiModel) handleSSHCapture(message tea.KeyMsg) tea.Cmd {
@@ -177,20 +176,37 @@ func (m *tuiModel) handleSSHCapture(message tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		if m.sshCaptureSelected < 0 ||
-			m.sshCaptureSelected >= len(m.sshCaptureNames) {
+			m.sshCaptureSelected >= len(m.sshCaptureCandidates) {
 			m.sshCaptureOpen = false
-			m.snapshot.Status = "No live ControlMaster to capture"
+			m.snapshot.Status = formatCLICaptureEmptyHint()
 			return nil
 		}
-		name := m.sshCaptureNames[m.sshCaptureSelected]
+		candidate := m.sshCaptureCandidates[m.sshCaptureSelected]
 		m.sshCaptureOpen = false
-		for index, profile := range m.snapshot.SSHProfiles {
-			if strings.EqualFold(profile.Name, name) {
-				m.snapshot.SelectedSSH = index
-				break
+		m.busy = true
+		m.snapshot.Status = "SSH capture " + candidate.Name + "..."
+		return func() tea.Msg {
+			state, already, err := captureCLISSHCandidate(candidate)
+			message := tuiSSHCommandResultMsg{
+				action:       "attach",
+				selectedName: candidate.Name,
+				err:          err,
 			}
+			if err == nil {
+				prefix := "attached"
+				if already {
+					prefix = "already connected"
+				}
+				message.selectedName = state.Name
+				message.status = fmt.Sprintf(
+					"SSH %s %s · SOCKS5 127.0.0.1:%d",
+					state.Name,
+					prefix,
+					state.Port,
+				)
+			}
+			return message
 		}
-		return m.runSelectedSSHAction("attach")
 	case tuiKeyBack:
 		m.sshCaptureOpen = false
 		m.snapshot.Status = "SSH capture cancelled"

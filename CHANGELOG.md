@@ -1,3 +1,10 @@
+## FlClash TUI v0.5.30
+
+- Capture more live SSH forms without a second login: process `ssh -S`/`-M`/`ControlPath`, `ssh -G` (including VS Code `-F` configs), disk sockets under `~/.ssh/sockets`, `~/.ssh/cm`, and `/tmp/ssh-*`, and existing `ssh -D` / VS Code Remote-SSH SOCKS on 127.0.0.1 or `::1`.
+- Reuse that ControlMaster or SOCKS from `ssh connect` and `flc ssh`; skip Identity inspection when the session is already live. Detach cancels a ControlMaster forward or stops only the local relay, and leaves VS Code / user SSH running.
+- Parse clustered SSH flags, flags after the destination, combined `-S`/`-J`/`-F`, and `-o Key Value`. Fill User/Port/Jump from `ssh -G`. Match capture candidates with an empty username on host+port.
+- Skip FlClash's own runtime sockets and SOCKS ports, ssh-agent sockets, and private keys. Treat IPv4-mapped loopback and unspecified listens as local. Ordinary interactive `ssh` without ControlMaster or `-D` still cannot be captured.
+
 ## FlClash TUI v0.5.29
 
 - Merge SSH reverse-proxy flows into Connections and History with `proxy` / `ssh` labels. Filter mixed, proxy, or ssh (`f` on Connections, `o` on History, CLI `--source`). Close and clear honor that filter. SSH flows still appear when Core is stopped.

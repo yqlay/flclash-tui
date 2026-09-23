@@ -191,7 +191,7 @@ SSH (independent of Mihomo; do not import Backend from SSH):
 - `cli_ssh.go`: profile types and management commands
 - `cli_ssh_profile.go`: config CRUD and validation
 - `cli_ssh_tunnel.go`: OpenSSH control/forward/askpass
-- `cli_ssh_attach.go`, `cli_ssh_import.go`, `cli_ssh_relay.go`
+- `cli_ssh_attach.go`, `cli_ssh_import.go`, `cli_ssh_relay.go`, `cli_ssh_discover.go`
 - `cli_traffic_source.go`: proxy/ssh labels and Connections/History merge
 
 TUI:

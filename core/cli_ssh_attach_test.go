@@ -741,7 +741,7 @@ func TestTUISSHRendersCaptureRow(t *testing.T) {
 	plain := stripTUIANSI(output.String())
 	for _, expected := range []string{
 		"Capture existing SSH",
-		"Enter probes live ControlMaster",
+		"Enter probes ControlMaster and ssh -D / VS Code SOCKS",
 		"Probe runs only when you ask",
 	} {
 		if !strings.Contains(plain, expected) {
@@ -947,6 +947,92 @@ func TestConnectReusesLiveMasterWithoutIdentity(t *testing.T) {
 	}
 	if already || state.Kind != cliSSHAttachedKind {
 		t.Fatalf("connected=%t kind=%q", already, state.Kind)
+	}
+}
+
+func TestConnectReusesLiveSOCKSWithoutIdentity(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	binDirectory := t.TempDir()
+	sshPath := filepath.Join(binDirectory, "ssh")
+	logPath := filepath.Join(t.TempDir(), "ssh.log")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> \"" + logPath + "\"\n" +
+		"case \" $* \" in\n" +
+		"  *' -f '*|*' -N '*|*' -M '*) exit 99 ;;\n" +
+		"  *' -G '*) printf 'controlmaster no\\ncontrolpath none\\n' ;;\n" +
+		"  *) exit 1 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	upstream := listenCLITestTCP(t)
+	defer upstream.Close()
+	go acceptCLITestSOCKS(upstream)
+	port := upstream.Addr().(*net.TCPAddr).Port
+	self := os.Getpid()
+	previousListen := listProcessLoopbackListenPorts
+	previousCmd := readProcessCommandLine
+	t.Cleanup(func() {
+		listProcessLoopbackListenPorts = previousListen
+		readProcessCommandLine = previousCmd
+	})
+	readProcessCommandLine = func(pid int) []string {
+		if pid == self {
+			return []string{"ssh", "-D", "0", "deploy@gateway.example.com"}
+		}
+		return nil
+	}
+	listProcessLoopbackListenPorts = func(pid int) []int {
+		if pid == self {
+			return []int{port}
+		}
+		return nil
+	}
+	runtimeRoot := t.TempDir()
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = runtimeRoot
+	previousRelay := startCLISSHRelayForOperation
+	startCLISSHRelayForOperation = func(state *cliSSHTunnelState) error {
+		return startTestSSHRelay(t, state)
+	}
+	t.Cleanup(func() {
+		cliRuntimeDirectoryOverride = previousRuntime
+		startCLISSHRelayForOperation = previousRelay
+	})
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:     "home",
+		Username: "deploy",
+		Host:     "gateway.example.com",
+		Port:     22,
+		Identity: filepath.Join(t.TempDir(), "missing-id"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, already, err := connectCLISSHProfile("home")
+	if err != nil {
+		t.Fatalf("connect existing SOCKS: %v", err)
+	}
+	if already || state.Kind != cliSSHAttachedSOCKSKind {
+		t.Fatalf("connected=%t kind=%q", already, state.Kind)
+	}
+	if state.UpstreamPort != port {
+		t.Fatalf("captured SOCKS port = %d", state.UpstreamPort)
+	}
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{" -f ", " -N ", " -M "} {
+		if strings.Contains(" "+string(logged)+" ", forbidden) {
+			t.Fatalf("connect started a new SSH login:%s\nlog:\n%s", forbidden, logged)
+		}
+	}
+	if err := stopCLIStateTunnel(state); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if probeCLISSHSOCKS(port, time.Second) != nil {
+		t.Fatal("detach stopped the captured ssh -D listener")
 	}
 }
 

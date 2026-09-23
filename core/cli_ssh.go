@@ -304,7 +304,7 @@ func printSSHManagementUsage(w io.Writer) {
 	fmt.Fprintln(w, "  flclash ssh probe --json  # read-only endpoint check for flc ssh -d")
 	fmt.Fprintln(w, "`ssh add` with no arguments and `ssh edit NAME` open an interactive prompt.")
 	fmt.Fprintln(w, "`ssh connect` and `flc ssh COMMAND` use the default profile, or the only profile, when NAME is omitted.")
-	fmt.Fprintln(w, "`ssh connect` reuses a live OpenSSH ControlMaster for that host when one exists; `ssh attach` only captures, never starts a new login.")
+	fmt.Fprintln(w, "`ssh connect` reuses a live OpenSSH ControlMaster or ssh -D SOCKS for that host when one exists; `ssh attach` only captures, never starts a new login.")
 	fmt.Fprintln(w, "A broken persistent tunnel is rebuilt automatically before `flc ssh COMMAND` runs.")
 }
 
@@ -791,7 +791,7 @@ func cliSSHConnectCommand(args []string) error {
 		fmt.Printf("SSH %s already connected · SOCKS5 127.0.0.1:%d\n", state.Name, state.Port)
 		return nil
 	}
-	if state.Kind == cliSSHAttachedKind {
+	if cliSSHTunnelIsAttached(state.Kind) {
 		fmt.Printf("SSH %s attached · SOCKS5 127.0.0.1:%d\n", state.Name, state.Port)
 		return nil
 	}

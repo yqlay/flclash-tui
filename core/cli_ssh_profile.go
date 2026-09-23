@@ -447,10 +447,12 @@ func connectCLISSHProfileWithCredentials(
 		}
 	}
 	if _, ok := findCLILiveSSHMaster(profile); !ok {
-		profile, err = prepareCLISSHProfileCredentials(profile, credentials)
-		if err != nil {
-			_ = saveCLISSHLastError(profile.Name, err.Error())
-			return cliSSHTunnelState{}, false, err
+		if _, socksOK := findCLILiveSSHSocks(profile); !socksOK {
+			profile, err = prepareCLISSHProfileCredentials(profile, credentials)
+			if err != nil {
+				_ = saveCLISSHLastError(profile.Name, err.Error())
+				return cliSSHTunnelState{}, false, err
+			}
 		}
 	}
 	if oldActive && strings.EqualFold(old.Name, profile.Name) {
@@ -1085,7 +1087,7 @@ func loadCLISSHProfileViews() ([]cliSSHProfileView, error) {
 		}
 		if connected && strings.EqualFold(active.Name, profile.Name) {
 			view.Connected = true
-			view.Attached = active.Kind == cliSSHAttachedKind
+			view.Attached = cliSSHTunnelIsAttached(active.Kind)
 			view.Ready = cliSSHTunnelReady(active)
 			view.SocksPort = active.Port
 			view.StartedAt = active.StartedAt

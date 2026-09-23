@@ -470,6 +470,17 @@ func startCLIPersistentSSHTunnel(profile cliSSHProfile) (cliSSHTunnelState, erro
 		}
 		return state, nil
 	}
+	if port, ok := findCLILiveSSHSocks(profile); ok {
+		state, err := attachCLISSHSocksTunnel(profile, port)
+		if err != nil {
+			return cliSSHTunnelState{}, fmt.Errorf(
+				"reuse existing SSH SOCKS %q: %w",
+				profile.Name,
+				err,
+			)
+		}
+		return state, nil
+	}
 	state, err := startCLISSHTunnel(profile, "persistent")
 	if err != nil {
 		return cliSSHTunnelState{}, err
@@ -478,7 +489,7 @@ func startCLIPersistentSSHTunnel(profile cliSSHProfile) (cliSSHTunnelState, erro
 }
 
 func configuredCLISSHLocalPort(profile cliSSHProfile, kind string) int {
-	if kind != "persistent" && kind != cliSSHAttachedKind {
+	if kind != "persistent" && !cliSSHTunnelIsAttached(kind) {
 		return 0
 	}
 	return profile.LocalPort
@@ -741,6 +752,9 @@ func lockCLISSHTunnelOperation() (*cliFileLock, error) {
 }
 
 func cliSSHTunnelAlive(sshPath string, state cliSSHTunnelState) bool {
+	if state.Kind == cliSSHAttachedSOCKSKind {
+		return cliSSHTunnelReady(state)
+	}
 	if state.Port < 1 || state.ControlPath == "" {
 		return false
 	}
@@ -752,7 +766,7 @@ func cliSSHTunnelAlive(sshPath string, state cliSSHTunnelState) bool {
 
 func cliSSHTunnelReady(state cliSSHTunnelState) bool {
 	if state.RelayControl != "" || state.RelayPID > 0 ||
-		(state.UpstreamPort > 0 && (state.Kind == "persistent" || state.Kind == cliSSHAttachedKind)) {
+		(state.UpstreamPort > 0 && (state.Kind == "persistent" || cliSSHTunnelIsAttached(state.Kind))) {
 		return cliSSHSOCKSReady(cliSSHUpstreamPort(state)) && cliSSHRelayReady(state)
 	}
 	return cliSSHSOCKSReady(state.Port)
@@ -762,25 +776,42 @@ func cliSSHSOCKSReady(port int) bool {
 	if port < 1 || port > 65535 {
 		return false
 	}
-	connection, err := net.DialTimeout(
-		"tcp",
-		net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
-		250*time.Millisecond,
-	)
-	if err != nil {
-		return false
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		connection, err := net.DialTimeout(
+			"tcp",
+			net.JoinHostPort(host, strconv.Itoa(port)),
+			250*time.Millisecond,
+		)
+		if err == nil {
+			_ = connection.Close()
+			return true
+		}
 	}
-	_ = connection.Close()
-	return true
+	return false
 }
 
 func probeCLISSHSOCKS(port int, timeout time.Duration) error {
 	if port < 1 || port > 65535 {
 		return errors.New("SSH SOCKS5 port is invalid")
 	}
+	var last error
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		if err := probeCLISSHSOCKSHost(host, port, timeout); err == nil {
+			return nil
+		} else {
+			last = err
+		}
+	}
+	if last == nil {
+		last = errors.New("SSH SOCKS5 port is not accepting connections")
+	}
+	return last
+}
+
+func probeCLISSHSOCKSHost(host string, port int, timeout time.Duration) error {
 	connection, err := net.DialTimeout(
 		"tcp",
-		net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		net.JoinHostPort(host, strconv.Itoa(port)),
 		timeout,
 	)
 	if err != nil {
@@ -945,6 +976,14 @@ func activeCLIPersistentSSHTunnel() (cliSSHTunnelState, bool, error) {
 	if err != nil {
 		return state, false, err
 	}
+	if state.Kind == cliSSHAttachedSOCKSKind {
+		if cliSSHSOCKSReady(cliSSHUpstreamPort(state)) {
+			return state, true, nil
+		}
+		_ = stopCLISSHRelay(state)
+		_ = os.Remove(path)
+		return cliSSHTunnelState{}, false, nil
+	}
 	sshPath, err := exec.LookPath("ssh")
 	if err != nil {
 		return state, false,
@@ -966,6 +1005,9 @@ func activeCLIPersistentSSHTunnel() (cliSSHTunnelState, bool, error) {
 }
 
 func stopCLIStateTunnel(state cliSSHTunnelState) error {
+	if state.Kind == cliSSHAttachedSOCKSKind {
+		return stopCLISSHAttachedSOCKS(state)
+	}
 	if !cliSSHTunnelOwnsMaster(state) {
 		return stopCLIAttachedTunnel(state)
 	}
