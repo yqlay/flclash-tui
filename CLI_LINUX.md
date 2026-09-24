@@ -222,18 +222,24 @@ resolution. If that host already has a live OpenSSH ControlMaster (for example
 `ControlMaster auto` in `~/.ssh/config`), connect reuses it: FlClash only adds a
 dynamic SOCKS forward and the local traffic relay. `flclash ssh attach [NAME]`
 does the same capture and never starts a second login; `--list` probes matching
-masters and existing `ssh -D` / VS Code Remote-SSH SOCKS listeners. The TUI
-Capture row and `a` also probe only when you ask; idle refresh and `ssh list`
+masters and existing `ssh -D` / VS Code Remote-SSH SOCKS listeners, as well
+as inbound reverse SOCKS5 proxies (`ssh -R <port>`) opened on this host by an
+SSH client. The TUI Capture row and `a` probe only when you ask; idle refresh and `ssh list`
 do not. Detach (`ssh disconnect` or `flclash exit`) cancels a ControlMaster
-forward or stops only the local relay for a captured `-D` SOCKS, and leaves the
+forward or stops only the local relay for a captured SOCKS (`-D` or `-R`), and leaves the
 user's SSH or VS Code session running. A plain interactive `ssh user@host`
-without ControlMaster or `-D` cannot be captured. Capture also recognizes live
+without ControlMaster, `-D`, or `-R` cannot be captured. If an SSH client connects to this
+host without reverse forwarding, reconnecting with `ssh -R 10808 user@this-host` allows
+Capture to immediately detect and route traffic through that client. Capture also recognizes live
 ControlMaster sockets from process `ssh -S`/`-M`/`ControlPath`, from `ssh -G`
 (including VS Code `-F` temp configs), and from `~/.ssh/sockets`, `~/.ssh/cm`,
 and `/tmp/ssh-*` (not ssh-agent sockets or private keys). Default VS Code
 Remote-SSH exposes a local SOCKS (`-D 0` on 127.0.0.1 or `::1`); Capture can
-attach to that. `ssh connect` and `flc ssh` reuse that live ControlMaster or
-SOCKS instead of starting a second login. If VS Code is connected with neither
+attach to that. On WSL2 with mirrored localhost, Capture also sees Windows
+`ssh.exe -D` from VS Code Remote-SSH (the client is not a Linux `/proc` ssh).
+It does not treat mihomo/Clash mixed-port as an SSH SOCKS. `ssh connect` and
+`flc ssh` reuse that live ControlMaster or SOCKS instead of starting a second
+login. If VS Code is connected with neither
 multiplexing nor `-D`, add `ControlMaster auto` and `ControlPath ~/.ssh/cm-%C`
 to `~/.ssh/config`, reconnect, then capture again. `-u NAME` creates a
 separate temporary tunnel for that command and

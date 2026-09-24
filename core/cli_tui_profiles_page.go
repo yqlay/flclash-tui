@@ -108,7 +108,7 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 		if visualIndex == 0 {
 			tuiRow(
 				b,
-				"Capture existing SSH     Enter probes ControlMaster and ssh -D / VS Code SOCKS",
+				"Capture existing SSH     Enter probes ControlMaster, ssh -D / VS Code, or ssh -R reverse SOCKS",
 				width,
 				snapshot.SelectedSSH == tuiSSHCaptureRow && listFocused,
 				tuiCyan,
@@ -205,8 +205,8 @@ func drawTUISSHDashboard(
 			width,
 		)
 		tuiRow(b, "Probe runs only when you ask. Idle TUI refresh does not scan SSH.", width, false, tuiCyan)
-		tuiRow(b, "Captures OpenSSH ControlMaster or an existing ssh -D / VS Code Remote-SSH SOCKS.", width, false, tuiDim)
-		tuiRow(b, "Ordinary interactive ssh without multiplexing or -D cannot be captured.", width, false, tuiDim)
+		tuiRow(b, "Finds ssh clients on this machine (ControlMaster or ssh -D), or inbound ssh -R reverse SOCKS.", width, false, tuiDim)
+		tuiRow(b, "A plain session on another host will not appear — connect that profile below or use ssh -R.", width, false, tuiDim)
 		tuiEndPanel(b, width)
 		return
 	}

@@ -396,6 +396,20 @@ func deleteCLISSHProfile(name string) error {
 	)
 }
 
+func deleteCLISSHProfileConfigOnly(name string) error {
+	return updateCLISSHConfigForOperation(func(config *cliSSHConfig) error {
+		index, found := findCLISSHProfile(config.Profiles, name)
+		if !found {
+			return nil
+		}
+		config.Profiles = append(config.Profiles[:index], config.Profiles[index+1:]...)
+		if strings.EqualFold(config.Default, name) {
+			config.Default = ""
+		}
+		return nil
+	})
+}
+
 var (
 	activeCLIPersistentSSHTunnelForOperation = activeCLIPersistentSSHTunnel
 	startCLIPersistentSSHTunnelForOperation  = startCLIPersistentSSHTunnel

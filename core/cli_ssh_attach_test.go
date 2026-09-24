@@ -527,6 +527,9 @@ func startTestSSHRelay(t *testing.T, state *cliSSHTunnelState) error {
 
 func TestTUISSHAttachKeyOpensCapturePicker(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	previousWSL := cliRunningOnWSL
+	cliRunningOnWSL = func() bool { return false }
+	t.Cleanup(func() { cliRunningOnWSL = previousWSL })
 	binDirectory := t.TempDir()
 	sshPath := filepath.Join(binDirectory, "ssh")
 	controlPath := filepath.Join(t.TempDir(), "cm.sock")
@@ -741,8 +744,9 @@ func TestTUISSHRendersCaptureRow(t *testing.T) {
 	plain := stripTUIANSI(output.String())
 	for _, expected := range []string{
 		"Capture existing SSH",
-		"Enter probes ControlMaster and ssh -D / VS Code SOCKS",
+		"Enter probes ControlMaster, ssh -D / VS Code, or ssh -R reverse SOCKS",
 		"Probe runs only when you ask",
+		"another host will not appear",
 	} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("SSH page missing %q:\n%s", expected, plain)

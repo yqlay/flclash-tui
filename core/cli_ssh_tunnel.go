@@ -982,6 +982,9 @@ func activeCLIPersistentSSHTunnel() (cliSSHTunnelState, bool, error) {
 		}
 		_ = stopCLISSHRelay(state)
 		_ = os.Remove(path)
+		if state.AutoCreated && state.Name != "" {
+			_ = deleteCLISSHProfileConfigOnly(state.Name)
+		}
 		return cliSSHTunnelState{}, false, nil
 	}
 	sshPath, err := exec.LookPath("ssh")

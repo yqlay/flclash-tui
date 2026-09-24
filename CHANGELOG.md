@@ -1,3 +1,12 @@
+## FlClash TUI v0.5.31
+
+- Support auto-detecting and capturing inbound SSH reverse SOCKS5 proxies (`ssh -R <port> user@this-host`): scans loopback listen ports via `/proc/net/tcp` and `/proc/net/tcp6`, validates via SOCKS5 handshake, matches remote client IPs from sshd connections, and displays candidates in TUI Capture and `flclash ssh attach`.
+- Ephemeral profile lifecycle for captured reverse SOCKS: auto-creates synthetic `sshd-reverse-<port>` profile upon attach, and automatically deletes it from config and runtime state on detach, while protecting user-created profiles from deletion.
+- Crash recovery resilience: on startup, clean up stale runtime state and delete auto-created ephemeral profiles if the reverse SOCKS listener died during an unexpected termination or system crash.
+- Transparent candidate labels: display `user@(client IP unknown)` when the remote client IP cannot be determined, avoiding misleading `user@127.0.0.1` labels.
+- Detach safety: defer auto-created profile deletion until traffic relay shutdown completes successfully, preventing orphaned relays from losing tracking state.
+- Concurrency and lock safety: thread-safe caching for loopback port ownership on Linux/WSL, and independent config lock hierarchy for profile deletion during tunnel operations.
+
 ## FlClash TUI v0.5.30
 
 - Capture more live SSH forms without a second login: process `ssh -S`/`-M`/`ControlPath`, `ssh -G` (including VS Code `-F` configs), disk sockets under `~/.ssh/sockets`, `~/.ssh/cm`, and `/tmp/ssh-*`, and existing `ssh -D` / VS Code Remote-SSH SOCKS on 127.0.0.1 or `::1`.

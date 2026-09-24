@@ -108,7 +108,7 @@ func (m *tuiModel) View() string {
 		snapshot.SelectionTitle = "Capture existing SSH"
 		snapshot.SelectionOptions = append([]string(nil), m.sshCaptureOptions...)
 		snapshot.SelectedOption = m.sshCaptureSelected
-		snapshot.SelectionHint = "Reuses a live OpenSSH ControlMaster or ssh -D / VS Code SOCKS. Does not start a second login. Ordinary interactive ssh cannot be captured."
+		snapshot.SelectionHint = "Reuses a live ssh client on this machine (ControlMaster or ssh -D), or inbound ssh -R reverse SOCKS. Sessions on another host without -R are invisible — connect a profile instead."
 		snapshot.Status = "Capture existing SSH · ↑↓/ws choose · Enter attach · Esc cancel"
 	} else if m.modeSelectionOpen {
 		snapshot.SelectionTitle = "Select outbound mode"

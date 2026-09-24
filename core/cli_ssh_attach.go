@@ -384,6 +384,7 @@ func attachCLISSHSocksLocked(
 	old cliSSHTunnelState,
 	oldActive bool,
 	socksPort int,
+	autoCreated ...bool,
 ) (cliSSHTunnelState, bool, error) {
 	if err := validateCLISSHProfile(normalizeCLISSHProfile(profile)); err != nil {
 		return cliSSHTunnelState{}, false, err
@@ -401,7 +402,7 @@ func attachCLISSHSocksLocked(
 				fmt.Errorf("stop previous SSH tunnel %q: %w", old.Name, err)
 		}
 	}
-	state, err := attachCLISSHSocksTunnel(profile, socksPort)
+	state, err := attachCLISSHSocksTunnel(profile, socksPort, autoCreated...)
 	if err != nil {
 		_ = saveCLISSHLastError(profile.Name, err.Error())
 		if oldActive {
@@ -416,7 +417,7 @@ func attachCLISSHSocksLocked(
 	return state, false, nil
 }
 
-func attachCLISSHSocksTunnel(profile cliSSHProfile, socksPort int) (cliSSHTunnelState, error) {
+func attachCLISSHSocksTunnel(profile cliSSHProfile, socksPort int, autoCreated ...bool) (cliSSHTunnelState, error) {
 	profile = normalizeCLISSHProfile(profile)
 	if err := validateCLISSHProfile(profile); err != nil {
 		return cliSSHTunnelState{}, err
@@ -448,12 +449,14 @@ func attachCLISSHSocksTunnel(profile cliSSHProfile, socksPort int) (cliSSHTunnel
 			return cliSSHTunnelState{}, err
 		}
 	}
+	isAutoCreated := len(autoCreated) > 0 && autoCreated[0]
 	state := cliSSHTunnelState{
 		Name:         profile.Name,
 		Destination:  formatCLISSHDestination(profile.Username, profile.Host),
 		Port:         port,
 		UpstreamPort: socksPort,
 		Kind:         cliSSHAttachedSOCKSKind,
+		AutoCreated:  isAutoCreated,
 		StartedAt:    time.Now(),
 		StatePath: filepath.Join(
 			runtimeDirectory,
@@ -480,12 +483,18 @@ func attachCLISSHSocksTunnel(profile cliSSHProfile, socksPort int) (cliSSHTunnel
 
 func stopCLISSHAttachedSOCKS(state cliSSHTunnelState) error {
 	var cleanupErrors []error
-	if err := stopCLISSHRelay(state); err != nil {
-		cleanupErrors = append(cleanupErrors, fmt.Errorf("stop SSH traffic meter: %w", err))
+	relayErr := stopCLISSHRelay(state)
+	if relayErr != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("stop SSH traffic meter: %w", relayErr))
 	}
 	if state.StatePath != "" {
 		if err := os.Remove(state.StatePath); err != nil && !os.IsNotExist(err) {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove SSH runtime state: %w", err))
+		}
+	}
+	if state.AutoCreated && state.Name != "" && relayErr == nil {
+		if err := deleteCLISSHProfileConfigOnly(state.Name); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("delete auto-created SSH profile: %w", err))
 		}
 	}
 	return errors.Join(cleanupErrors...)
@@ -504,6 +513,11 @@ func findCLILiveSSHSocks(profile cliSSHProfile) (int, bool) {
 	profile = normalizeCLISSHProfile(profile)
 	for _, candidate := range discoverLiveSSHSocksCandidates() {
 		if sshCaptureProfileMatches(profile, candidate) {
+			return candidate.SocksPort, true
+		}
+	}
+	for _, candidate := range discoverReverseSocksCandidates() {
+		if strings.EqualFold(profile.Name, candidate.Name) {
 			return candidate.SocksPort, true
 		}
 	}
@@ -530,7 +544,7 @@ func attachCLISSHProfileAtPath(name, controlPath string) (cliSSHTunnelState, boo
 	return attachCLISSHMasterLocked(profile, old, oldActive, controlPath)
 }
 
-func attachCLISSHSocksProfile(profile cliSSHProfile, socksPort int) (cliSSHTunnelState, bool, error) {
+func attachCLISSHSocksProfile(profile cliSSHProfile, socksPort int, autoCreated ...bool) (cliSSHTunnelState, bool, error) {
 	lock, err := lockCLISSHTunnelOperation()
 	if err != nil {
 		return cliSSHTunnelState{}, false, err
@@ -543,7 +557,7 @@ func attachCLISSHSocksProfile(profile cliSSHProfile, socksPort int) (cliSSHTunne
 	if oldActive && strings.EqualFold(old.Name, profile.Name) && cliSSHTunnelReady(old) {
 		return old, true, nil
 	}
-	return attachCLISSHSocksLocked(profile, old, oldActive, socksPort)
+	return attachCLISSHSocksLocked(profile, old, oldActive, socksPort, autoCreated...)
 }
 
 func cliSSHAttachCommand(args []string) error {

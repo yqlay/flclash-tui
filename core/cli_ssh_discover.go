@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	cliSSHAttachedSOCKSKind = "attached-socks"
-	cliSSHCaptureMasterKind = "master"
-	cliSSHCaptureSOCKSKind  = "socks"
+	cliSSHAttachedSOCKSKind       = "attached-socks"
+	cliSSHCaptureMasterKind       = "master"
+	cliSSHCaptureSOCKSKind        = "socks"
+	cliSSHCaptureReverseSOCKSKind = "reverse-socks"
 )
 
 type cliSSHCaptureCandidate struct {
@@ -55,6 +56,7 @@ type sshGResolved struct {
 	Jump          string
 	ControlSocket string
 	Master        bool
+	HostName      string
 	DynamicPorts  []int
 }
 
@@ -64,6 +66,13 @@ var listProcessLoopbackListenPorts = listProcessLoopbackListenPortsImpl
 var readProcessCommandLine = readProcessCommandLineImpl
 var readProcessComm = readProcessCommImpl
 var readProcessParentComm = readProcessParentCommImpl
+var cliRunningOnWSL = runningOnWSLImpl
+var listWindowsSSHSnapshot = listWindowsSSHSnapshotImpl
+var linuxLoopbackListenOwners = linuxLoopbackListenOwnersImpl
+var collectLoopbackListenPorts = collectLoopbackListenPortsImpl
+var hasSSHDProcess = hasSSHDProcessImpl
+var captureHasInboundSSHConnection = captureHasInboundSSHConnectionImpl
+var findAnyInboundSSHClientIP = findAnyInboundSSHClientIPImpl
 
 func cliSSHTunnelIsAttached(kind string) bool {
 	return kind == cliSSHAttachedKind || kind == cliSSHAttachedSOCKSKind
@@ -75,6 +84,7 @@ func discoverCLICaptureCandidates() []cliSSHCaptureCandidate {
 }
 
 func discoverCLICaptureCandidatesWithProfiles(profiles []cliSSHProfile) []cliSSHCaptureCandidate {
+	resetCachedLoopbackListenOwners()
 	seen := map[string]bool{}
 	candidates := make([]cliSSHCaptureCandidate, 0)
 	add := func(candidate cliSSHCaptureCandidate) {
@@ -130,6 +140,12 @@ func discoverCLICaptureCandidatesWithProfiles(profiles []cliSSHProfile) []cliSSH
 		add(candidate)
 	}
 	for _, candidate := range discoverLiveSSHSocksCandidates() {
+		add(candidate)
+	}
+	for _, candidate := range discoverWindowsSSHSocksCandidates() {
+		add(candidate)
+	}
+	for _, candidate := range discoverReverseSocksCandidates() {
 		add(candidate)
 	}
 	return candidates
@@ -253,7 +269,8 @@ func captureSOCKSCandidatesFromSSHProcess(pid int, args []string) []cliSSHCaptur
 	source := captureSourceFromCommand(pid, parsed)
 	candidates := make([]cliSSHCaptureCandidate, 0, len(ports))
 	for _, port := range uniquePositivePorts(ports) {
-		if isFlClashManagedSOCKSPort(port) || probeCLISSHSOCKS(port, 200*time.Millisecond) != nil {
+		if isFlClashManagedSOCKSPort(port) || isProxyEngineListenPort(port) ||
+			probeCLISSHSOCKS(port, 200*time.Millisecond) != nil {
 			continue
 		}
 		candidates = append(candidates, cliSSHCaptureCandidate{
@@ -473,6 +490,9 @@ func enrichSSHParsedCommand(parsed cliSSHParsedCommand) cliSSHParsedCommand {
 	if parsed.Jump == "" {
 		parsed.Jump = resolved.Jump
 	}
+	if parsed.ConfigFile != "" && strings.TrimSpace(resolved.HostName) != "" {
+		parsed.Host = strings.TrimSpace(resolved.HostName)
+	}
 	if resolved.Master {
 		parsed.Master = true
 	}
@@ -550,6 +570,8 @@ func resolveSSHGConfig(parsed cliSSHParsedCommand) (sshGResolved, bool) {
 			}
 		case "dynamicforward":
 			resolved.DynamicPorts = append(resolved.DynamicPorts, parseSSHDynamicPort(value))
+		case "hostname":
+			resolved.HostName = value
 		}
 	}
 	sshGResolveCache.Store(key, resolved)
@@ -782,9 +804,14 @@ func splitSSHDestination(value string) (string, string) {
 	return "", strings.Trim(value, "[]")
 }
 
+func sshClientBaseName(path string) string {
+	path = strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
+	return strings.ToLower(filepath.Base(path))
+}
+
 func isOpenSSHClientName(path string) bool {
-	base := strings.ToLower(filepath.Base(path))
-	return base == "ssh" || base == "ssh.bin"
+	base := sshClientBaseName(path)
+	return base == "ssh" || base == "ssh.bin" || base == "ssh.exe"
 }
 
 func captureSourceFromCommand(pid int, parsed cliSSHParsedCommand) string {
@@ -831,6 +858,8 @@ func captureCLISSHNameHint(candidate cliSSHCaptureCandidate) string {
 		return firstNonEmpty(sanitizeCLISSHImportedName("windsurf-"+host), "windsurf")
 	case "jetbrains":
 		return firstNonEmpty(sanitizeCLISSHImportedName("jetbrains-"+host), "jetbrains")
+	case "sshd":
+		return firstNonEmpty(sanitizeCLISSHImportedName("sshd-"+host), "sshd-reverse")
 	default:
 		return firstNonEmpty(host, "ssh")
 	}
@@ -838,6 +867,20 @@ func captureCLISSHNameHint(candidate cliSSHCaptureCandidate) string {
 
 func formatCLICaptureCandidate(candidate cliSSHCaptureCandidate) string {
 	dest := formatCLISSHDestination(candidate.Username, candidate.Host)
+	if candidate.Kind == cliSSHCaptureReverseSOCKSKind {
+		displayHost := candidate.Host
+		if displayHost == "127.0.0.1" || displayHost == "" {
+			displayHost = "(client IP unknown)"
+		}
+		dest = formatCLISSHDestination(candidate.Username, displayHost)
+		return fmt.Sprintf(
+			"%-16s %-28s SOCKS ←R 127.0.0.1:%d · %s",
+			candidate.Name,
+			dest,
+			candidate.SocksPort,
+			candidate.Source,
+		)
+	}
 	if candidate.Kind == cliSSHCaptureSOCKSKind {
 		return fmt.Sprintf(
 			"%-16s %-28s SOCKS 127.0.0.1:%d · %s",
@@ -856,10 +899,30 @@ func formatCLICaptureCandidate(candidate cliSSHCaptureCandidate) string {
 }
 
 func formatCLICaptureEmptyHint() string {
+	if cliRunningOnWSL() && lastWindowsSSHSnapshot.ProcessCount > 0 && !lastWindowsSSHSnapshot.HadSOCKS {
+		return "Windows ssh.exe is running but has no reachable -D SOCKS. Your ssh config sets ControlMaster no, so mux capture cannot work. Reconnect VS Code Remote-SSH (it uses ssh.exe -D) or Enter a profile below to open a WSL-side tunnel."
+	}
+	if cliRunningOnWSL() && captureHasRemoteWSLProcess() {
+		return "VS Code in WSL is Remote-WSL; Remote-SSH's ssh.exe runs on Windows with -D. Keep those sessions open and capture again, or Enter a profile below to open a WSL-side tunnel."
+	}
 	if captureHasRemoteSSHProcess() {
 		return "VS Code/Cursor SSH is running but has no ControlMaster or -D SOCKS. Add ControlMaster auto and ControlPath ~/.ssh/cm-%C to ~/.ssh/config, reconnect, then capture again."
 	}
-	return "No live ControlMaster or ssh -D SOCKS matches. Ordinary ssh without multiplexing cannot be captured."
+	if captureHasInboundSSHConnection() {
+		return "An inbound SSH connection is active (sshd), but no reverse SOCKS5 proxy was found. Reconnect from client with: ssh -R 10808 user@this-host"
+	}
+	if captureHasConfiguredSSHProfiles() {
+		return "Capture only sees ssh clients on this FlClash machine (or sshd RemoteForward SOCKS). A session on another host without -R will not appear. Select an SSH profile below and press Enter to connect from here."
+	}
+	return "No live ControlMaster, ssh -D SOCKS, or sshd RemoteForward matches. Ordinary ssh without multiplexing or -R SOCKS cannot be captured."
+}
+
+func captureHasConfiguredSSHProfiles() bool {
+	config, err := loadCLISSHConfig()
+	if err != nil {
+		return false
+	}
+	return len(config.Profiles) > 0
 }
 
 func captureHasRemoteSSHProcess() bool {
@@ -888,35 +951,54 @@ func captureHasRemoteSSHProcess() bool {
 	return false
 }
 
-func ensureCLISSHProfileForCapture(candidate cliSSHCaptureCandidate) (cliSSHProfile, error) {
+func ensureCLISSHProfileForCapture(candidate cliSSHCaptureCandidate) (cliSSHProfile, bool, error) {
 	config, err := loadCLISSHConfig()
 	if err != nil {
-		return cliSSHProfile{}, err
+		return cliSSHProfile{}, false, err
 	}
-	for _, profile := range config.Profiles {
-		profile = normalizeCLISSHProfile(profile)
-		if sshCaptureProfileMatches(profile, candidate) {
-			return profile, nil
+	if candidate.Kind == cliSSHCaptureReverseSOCKSKind {
+		for _, profile := range config.Profiles {
+			profile = normalizeCLISSHProfile(profile)
+			if strings.EqualFold(profile.Name, candidate.Name) {
+				return profile, false, nil
+			}
+		}
+	} else {
+		for _, profile := range config.Profiles {
+			profile = normalizeCLISSHProfile(profile)
+			if sshCaptureProfileMatches(profile, candidate) {
+				return profile, false, nil
+			}
 		}
 	}
 	name := uniqueCLISSHProfileName(firstNonEmpty(candidate.Name, captureCLISSHNameHint(candidate)))
-	parsed := enrichSSHParsedCommand(cliSSHParsedCommand{
-		User: candidate.Username,
-		Host: candidate.Host,
-		Port: candidate.Port,
-		Jump: candidate.Jump,
-	})
+	var parsed cliSSHParsedCommand
+	if candidate.Kind != cliSSHCaptureReverseSOCKSKind {
+		parsed = enrichSSHParsedCommand(cliSSHParsedCommand{
+			User: candidate.Username,
+			Host: candidate.Host,
+			Port: candidate.Port,
+			Jump: candidate.Jump,
+		})
+	} else {
+		parsed = cliSSHParsedCommand{
+			User: candidate.Username,
+			Host: candidate.Host,
+			Port: candidate.Port,
+			Jump: candidate.Jump,
+		}
+	}
 	profile := normalizeCLISSHProfile(cliSSHProfile{
 		Name:     name,
 		Username: firstNonEmpty(parsed.User, candidate.Username, currentUserName()),
-		Host:     candidate.Host,
+		Host:     firstNonEmpty(parsed.Host, candidate.Host, "127.0.0.1"),
 		Port:     normalizeCLISSHCapturePort(parsed.Port),
 		Jump:     firstNonEmpty(parsed.Jump, candidate.Jump),
 	})
 	if err := addCLISSHProfile(profile); err != nil {
-		return cliSSHProfile{}, err
+		return cliSSHProfile{}, false, err
 	}
-	return profile, nil
+	return profile, true, nil
 }
 
 func sshCaptureProfileMatches(profile cliSSHProfile, candidate cliSSHCaptureCandidate) bool {
@@ -962,13 +1044,14 @@ func uniqueCLISSHProfileName(base string) string {
 }
 
 func captureCLISSHCandidate(candidate cliSSHCaptureCandidate) (cliSSHTunnelState, bool, error) {
-	profile, err := ensureCLISSHProfileForCapture(candidate)
+	profile, wasCreated, err := ensureCLISSHProfileForCapture(candidate)
 	if err != nil {
 		return cliSSHTunnelState{}, false, err
 	}
 	switch candidate.Kind {
-	case cliSSHCaptureSOCKSKind:
-		state, already, attachErr := attachCLISSHSocksProfile(profile, candidate.SocksPort)
+	case cliSSHCaptureSOCKSKind, cliSSHCaptureReverseSOCKSKind:
+		autoCreated := candidate.Kind == cliSSHCaptureReverseSOCKSKind && wasCreated
+		state, already, attachErr := attachCLISSHSocksProfile(profile, candidate.SocksPort, autoCreated)
 		return state, already, attachErr
 	default:
 		if candidate.ControlPath != "" {
@@ -1170,4 +1253,226 @@ func procNetListenAddressOK(host string) bool {
 		return false
 	}
 	return ip.IsLoopback() || ip.IsUnspecified()
+}
+
+func discoverReverseSocksCandidates() []cliSSHCaptureCandidate {
+	if !hasSSHDProcess() {
+		return nil
+	}
+	allPorts := collectLoopbackListenPorts()
+	if len(allPorts) == 0 {
+		return nil
+	}
+	owners := linuxLoopbackListenOwners()
+	if owners == nil {
+		owners = map[int]string{}
+	}
+
+	sshdInodes := map[uint64]int{}
+	sshdClientIPs := map[int]string{}
+	entries, err := os.ReadDir("/proc")
+	if err == nil {
+		for _, entry := range entries {
+			pid, convErr := strconv.Atoi(entry.Name())
+			if convErr != nil || pid <= 0 {
+				continue
+			}
+			comm := readProcessComm(pid)
+			if !strings.EqualFold(comm, "sshd") && !strings.HasPrefix(comm, "sshd") {
+				continue
+			}
+			inodes := processSocketInodes(pid)
+			for inode := range inodes {
+				sshdInodes[inode] = pid
+			}
+			if len(inodes) > 0 {
+				if clientIP := findSSHDEstablishedClientIP(inodes); clientIP != "" {
+					sshdClientIPs[pid] = clientIP
+				}
+			}
+		}
+	}
+
+	seenPorts := map[int]bool{}
+	candidates := make([]cliSSHCaptureCandidate, 0)
+	for _, p := range allPorts {
+		port := p.port
+		if port < 1 || port > 65535 || seenPorts[port] {
+			continue
+		}
+		seenPorts[port] = true
+
+		if isFlClashManagedSOCKSPort(port) || isProxyEngineComm(owners[port]) {
+			continue
+		}
+		if owner, exists := owners[port]; exists && owner != "" && !strings.EqualFold(owner, "sshd") {
+			continue
+		}
+		if probeCLISSHSOCKS(port, 200*time.Millisecond) != nil {
+			continue
+		}
+
+		host := "127.0.0.1"
+		if pid, ok := sshdInodes[p.inode]; ok && sshdClientIPs[pid] != "" {
+			host = sshdClientIPs[pid]
+		} else if clientIP := findAnyInboundSSHClientIP(); clientIP != "" {
+			host = clientIP
+		}
+		username := firstNonEmpty(currentUserName(), "ssh")
+		candidates = append(candidates, cliSSHCaptureCandidate{
+			Name:      fmt.Sprintf("sshd-reverse-%d", port),
+			Username:  username,
+			Host:      host,
+			Port:      22,
+			Kind:      cliSSHCaptureReverseSOCKSKind,
+			SocksPort: port,
+			Source:    "sshd",
+		})
+	}
+	return candidates
+}
+
+func collectLoopbackListenPortsImpl() []procListenPort {
+	ports := append(
+		listenPortsWithInodes("/proc/net/tcp", 4),
+		listenPortsWithInodes("/proc/net/tcp6", 6)...,
+	)
+	return ports
+}
+
+func hasSSHDProcessImpl() bool {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		pid, convErr := strconv.Atoi(entry.Name())
+		if convErr != nil || pid <= 0 {
+			continue
+		}
+		comm := readProcessComm(pid)
+		if strings.EqualFold(comm, "sshd") || strings.HasPrefix(comm, "sshd") {
+			return true
+		}
+	}
+	return false
+}
+
+func captureHasInboundSSHConnectionImpl() bool {
+	if !hasSSHDProcess() {
+		return false
+	}
+	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		file, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(file)
+		if !scanner.Scan() {
+			_ = file.Close()
+			continue
+		}
+		for scanner.Scan() {
+			fields := strings.Fields(scanner.Text())
+			if len(fields) < 10 || fields[3] != "01" {
+				continue
+			}
+			_, portText, ok := strings.Cut(fields[1], ":")
+			if ok && strings.EqualFold(portText, "0016") {
+				_ = file.Close()
+				return true
+			}
+		}
+		_ = file.Close()
+	}
+	return false
+}
+
+func findAnyInboundSSHClientIPImpl() string {
+	for _, item := range []struct {
+		path   string
+		family int
+	}{
+		{"/proc/net/tcp", 4},
+		{"/proc/net/tcp6", 6},
+	} {
+		file, err := os.Open(item.path)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(file)
+		if !scanner.Scan() {
+			_ = file.Close()
+			continue
+		}
+		for scanner.Scan() {
+			fields := strings.Fields(scanner.Text())
+			if len(fields) < 10 || fields[3] != "01" {
+				continue
+			}
+			_, portText, ok := strings.Cut(fields[1], ":")
+			if !ok || !strings.EqualFold(portText, "0016") {
+				continue
+			}
+			remoteHost, _, ok := parseProcNetAddress(fields[2], item.family)
+			if !ok {
+				continue
+			}
+			ip := net.ParseIP(remoteHost)
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+				continue
+			}
+			_ = file.Close()
+			return remoteHost
+		}
+		_ = file.Close()
+	}
+	return ""
+}
+
+func findSSHDEstablishedClientIP(inodes map[uint64]bool) string {
+	for _, item := range []struct {
+		path   string
+		family int
+	}{
+		{"/proc/net/tcp", 4},
+		{"/proc/net/tcp6", 6},
+	} {
+		if ip := establishedClientIPFromProcNet(item.path, inodes, item.family); ip != "" {
+			return ip
+		}
+	}
+	return ""
+}
+
+func establishedClientIPFromProcNet(path string, inodes map[uint64]bool, family int) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() {
+		return ""
+	}
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 10 || fields[3] != "01" {
+			continue
+		}
+		inode, err := strconv.ParseUint(fields[9], 10, 64)
+		if err != nil || !inodes[inode] {
+			continue
+		}
+		remoteHost, _, ok := parseProcNetAddress(fields[2], family)
+		if !ok {
+			continue
+		}
+		ip := net.ParseIP(remoteHost)
+		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+			continue
+		}
+		return remoteHost
+	}
+	return ""
 }

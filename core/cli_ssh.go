@@ -65,6 +65,7 @@ type cliSSHTunnelState struct {
 	RelayControl string    `json:"relay_control,omitempty"`
 	RelayPID     int       `json:"relay_pid,omitempty"`
 	Kind         string    `json:"kind"`
+	AutoCreated  bool      `json:"auto_created,omitempty"`
 	StartedAt    time.Time `json:"started_at"`
 	StatePath    string    `json:"-"`
 }
