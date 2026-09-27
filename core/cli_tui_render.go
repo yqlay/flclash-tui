@@ -91,6 +91,8 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 	}
 	if snapshot.Page == tuiPageDashboard && bodyHeight < 33 {
 		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  q exit TUI  ^C full exit"
+	} else if snapshot.Page == tuiPageSSH {
+		footer = "  Tab list/details  Enter connect/disconnect  a Capture  n add/refresh IPs  ? help  q exit TUI  ^C full exit"
 	}
 	b.WriteString(tuiNotificationFooter(snapshot, footer, width))
 	return b.String()
@@ -112,7 +114,7 @@ func renderTUICompact(
 	} else if snapshot.Page == tuiPageSSH {
 		focus = "SSH PROFILES"
 		if snapshot.SSHDashboardFocus {
-			focus = "SSH DASHBOARD"
+			focus = "SSH DETAILS"
 		}
 	}
 	header := fmt.Sprintf(
@@ -183,7 +185,7 @@ func renderTUICompact(
 	} else if snapshot.Page == tuiPageDashboard {
 		footer = "  ↑↓/ws select · Enter Core/flc · PgUp/PgDn · q exit TUI · ^C full exit"
 	} else if snapshot.Page == tuiPageSSH {
-		footer = "  Tab list/Dashboard · Enter connect · a capture · n add · q exit TUI · ^C full exit"
+		footer = "  Tab list/detail · Enter connect/action · a capture · n add/refresh · q exit TUI · ^C full exit"
 	}
 	b.WriteString(tuiNotificationFooter(snapshot, footer, width))
 	return b.String()

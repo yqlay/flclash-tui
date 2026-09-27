@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	tuiServiceProtocolVersion = 5
+	tuiServiceProtocolVersion = 6
 	tuiServiceSocketFilename  = ".flclash-cli-service.sock"
 	tuiCoreSocketFilename     = ".flclash-cli-core.sock"
 	tuiServiceLogFilename     = "flclash-cli-service.log"
@@ -234,7 +234,12 @@ func (c *tuiServiceClient) putProfile(
 	createOnly bool,
 	subscriptionURL *string,
 	revision uint64,
+	subscriptionInfo ...*tuiSubscriptionInfo,
 ) (tuiServiceStatus, error) {
+	var info *tuiSubscriptionInfo
+	if len(subscriptionInfo) > 0 {
+		info = subscriptionInfo[0]
+	}
 	return c.requestPayload(tuiServiceRequest{
 		Action:           "put_profile",
 		ConfigPath:       path,
@@ -242,6 +247,7 @@ func (c *tuiServiceClient) putProfile(
 		ExpectedSHA256:   expectedSHA256,
 		CreateOnly:       createOnly,
 		SubscriptionURL:  subscriptionURL,
+		SubscriptionInfo: info,
 		ExpectedRevision: &revision,
 	})
 }

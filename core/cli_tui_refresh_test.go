@@ -183,6 +183,36 @@ func TestTUIRefreshReplacesTransientRefreshErrorsAfterRecovery(t *testing.T) {
 	}
 }
 
+func TestTUIInvalidConnectionsResponseClearsStaleProxyRows(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/proxies":
+			_, _ = io.WriteString(w, `{"proxies":{}}`)
+		case "/connections":
+			_, _ = io.WriteString(w, `{invalid`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	snapshot := tuiSnapshot{
+		Status:             "SSH tunnel connected",
+		Connections:        []tuiConnection{{ID: "stale-proxy", Source: tuiTrafficSourceProxy}},
+		SelectedConnection: 0,
+		UpdatedAt:          time.Now(),
+	}
+	client := controllerClient{options: controllerOptions{address: server.URL}, client: server.Client()}
+	refreshTUISnapshot(&snapshot, client)
+	for _, connection := range snapshot.Connections {
+		if connection.ID == "stale-proxy" {
+			t.Fatalf("invalid controller response left stale proxy connection: %+v", snapshot.Connections)
+		}
+	}
+	if snapshot.Status != "SSH tunnel connected" {
+		t.Fatalf("refresh erased operation status: %q", snapshot.Status)
+	}
+}
+
 func TestTUIRefreshClearsStaleTransientStatusBeforeCollectingNewData(t *testing.T) {
 	for _, status := range []string{
 		"Controller unavailable: dial failed",
@@ -1627,6 +1657,57 @@ func TestTUIDashboardRendersAdaptiveLiveTrafficChart(t *testing.T) {
 	if !strings.Contains(output, tuiTrafficChartUpload+"↑ ") ||
 		!strings.Contains(output, tuiTrafficChartDownload+"↓ ") {
 		t.Fatalf("Dashboard traffic legend is missing series colors: %q", output)
+	}
+}
+
+func TestTUIDashboardTrafficChartFillsRemainingHeight(t *testing.T) {
+	for _, managed := range []bool{false, true} {
+		for _, height := range []int{33, 40, 60} {
+			snapshot := populatedTUISnapshot(tuiPageDashboard)
+			snapshot.ManagedService = managed
+			var output strings.Builder
+			drawTUIDashboard(
+				&output,
+				snapshot,
+				cliPaths{ConfigPath: "/tmp/config.yaml"},
+				100,
+				height,
+			)
+			lines := strings.Split(strings.TrimSuffix(stripTUIANSI(output.String()), "\n"), "\n")
+			if len(lines) != height {
+				t.Fatalf("managed=%t height=%d: Dashboard uses %d rows", managed, height, len(lines))
+			}
+			chartTitle, overviewTitle := -1, -1
+			for index, line := range lines {
+				if strings.Contains(line, "Live traffic") {
+					chartTitle = index
+				}
+				if strings.Contains(line, "Overview  ·") {
+					overviewTitle = index
+				}
+			}
+			fixedRows := 30
+			if managed {
+				fixedRows++
+			}
+			if chartTitle < 0 || overviewTitle-chartTitle-3 != height-fixedRows {
+				t.Fatalf("managed=%t height=%d: chart title=%d overview title=%d, want %d plot rows", managed, height, chartTitle, overviewTitle, height-fixedRows)
+			}
+		}
+	}
+}
+
+func TestTUICompactDashboardTrafficChartUsesSpareHeight(t *testing.T) {
+	snapshot := populatedTUISnapshot(tuiPageDashboard)
+	for _, height := range []int{32, 40, 60} {
+		rows := tuiCompactDashboardRows(snapshot, cliPaths{ConfigPath: "/tmp/config.yaml"}, 50, height)
+		if len(rows) != height-3 {
+			t.Fatalf("height=%d: compact Dashboard has %d content rows, want %d", height, len(rows), height-3)
+		}
+		view := stripTUIANSI(renderTUICompactDashboard(snapshot, cliPaths{ConfigPath: "/tmp/config.yaml"}, 50, height))
+		if !strings.Contains(view, "Live traffic") || !strings.Contains(view, "Config") {
+			t.Fatalf("height=%d: expanded chart hid Dashboard sections:\n%s", height, view)
+		}
 	}
 }
 

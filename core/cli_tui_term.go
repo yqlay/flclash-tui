@@ -363,7 +363,7 @@ func handleTUIFocusNavigation(snapshot *tuiSnapshot, key tuiKey) bool {
 			switch {
 			case snapshot.FocusSidebar:
 				snapshot.FocusSidebar = false
-				snapshot.SSHDashboardFocus = previous
+				snapshot.SSHDashboardFocus = previous && snapshot.SSHDetailName != ""
 			case snapshot.SSHDashboardFocus:
 				if previous {
 					snapshot.SSHDashboardFocus = false
@@ -376,8 +376,11 @@ func handleTUIFocusNavigation(snapshot *tuiSnapshot, key tuiKey) bool {
 				if previous {
 					snapshot.FocusSidebar = true
 					snapshot.SelectedMenu = int(snapshot.Page)
-				} else {
+				} else if snapshot.SSHDetailName != "" {
 					snapshot.SSHDashboardFocus = true
+				} else {
+					snapshot.FocusSidebar = true
+					snapshot.SelectedMenu = int(snapshot.Page)
 				}
 			}
 			return true

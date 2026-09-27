@@ -124,6 +124,8 @@ Authenticated loopback traffic from the private silent-mode FLC listener is incl
 
 `profile import` and `profile import-file` accept Mihomo/Clash YAML, raw URI lists, standard or URL-safe Base64-wrapped YAML/URI lists, SIP008 JSON, supported sing-box/Xray JSON outbounds, and common Surge/Quantumult X/Loon proxy lines. Local files may use any extension and are converted into a copied `.yaml` profile without modifying the source; duplicate file names gain `-2`, `-3`, and so on, while duplicate node names are renamed deterministically. Every converted node is validated by Mihomo, and an unsupported or malformed node rejects the whole import instead of being silently dropped. Internal `.flclash-silent-runtime-*` and `.flclash-managed-runtime-*` YAML files are never shown as Profiles.
 
+For URL subscriptions, Profiles also stores the provider's `subscription-userinfo` response header when present. Selecting a linked profile shows upload/download usage, quota, remaining traffic, expiry, and when the metadata was last fetched; `flclash profile list --json` exposes the same data. Import and `U`/`profile update` refresh it, including clearing old values when the provider omits the header. Local YAML files do not carry account limits or expiry, so those values are never inferred from the rules.
+
 TUN scope is explicit:
 
 ```bash
@@ -221,11 +223,9 @@ running the command. `flclash ssh connect` without a name uses the same
 resolution. If that host already has a live OpenSSH ControlMaster (for example
 `ControlMaster auto` in `~/.ssh/config`), connect reuses it: FlClash only adds a
 dynamic SOCKS forward and the local traffic relay. `flclash ssh attach [NAME]`
-does the same capture and never starts a second login; `--list` probes matching
-masters and existing `ssh -D` / VS Code Remote-SSH SOCKS listeners, as well
-as inbound reverse SOCKS5 proxies (`ssh -R <port>`) opened on this host by an
-SSH client. The TUI Capture row and `a` probe only when you ask; idle refresh and `ssh list`
-do not. Detach (`ssh disconnect` or `flclash exit`) cancels a ControlMaster
+does the same capture and never starts a second login; `--list` and the TUI
+Capture row only see SOCKS already listening on this FlClash machine (`ssh -D` /
+ControlMaster here, or inbound `ssh -R`). Idle refresh and `ssh list` do not scan. Detach (`ssh disconnect` or `flclash exit`) cancels a ControlMaster
 forward or stops only the local relay for a captured SOCKS (`-D` or `-R`), and leaves the
 user's SSH or VS Code session running. A plain interactive `ssh user@host`
 without ControlMaster, `-D`, or `-R` cannot be captured. If an SSH client connects to this
@@ -274,19 +274,23 @@ WSL-mounted private keys commonly appear as mode `0777`, which OpenSSH refuses.
 Copy such a key from `/mnt/c/...` into `~/.ssh/` and set mode `0600`; FlClash
 detects open permissions before attempting authentication and reports this fix.
 
-The SSH TUI page performs every management action without suspending or leaving
-the full-screen interface. Its main view keeps a bordered profile list above
-the selected profile's Dashboard. Tab cycles focus through sidebar, profile
-list, and Dashboard; Shift+Tab reverses it. In the profile list, Enter connects
-a disconnected or broken profile, while Enter on a healthy profile focuses its
-Dashboard without disconnecting it. Press `n` to add, `e` to edit, `u` to set
-or clear the default profile, or `x` to delete the selected profile. A `*`
-marks the default profile used by `flc ssh` and `flclash ssh connect`. In the Dashboard, Up/Down selects Tunnel, Public
-IP, SSH route, or Cloudflare download; Enter runs the selected action. `n`, `d`,
-and `v` directly refresh the exit IP, run the five-sample route delay test, or
-run the download speed test. The Dashboard also shows relay-only
-live/cumulative traffic, active connections, and uptime. Esc moves Dashboard
-focus back to the profile list, then back to the sidebar. In the form, use
+The SSH TUI keeps a compact profile list above one detail view. The detail is
+empty on entry; Up/Down moves only the list highlight, and Enter opens the
+highlighted profile. Once opened, the detail stays on that profile until
+another profile is opened with Enter. It shows the
+tunnel's local SOCKS5 listener, the SSH host's `Proxy Inet IP`, the public
+`Proxy IP` seen through the SSH SOCKS5 path, live upload/download speed, and
+an expanding relay-traffic graph. Disconnected profiles hide the network
+metrics. Opening a profile refreshes only local relay statistics; pressing
+`n` in the detail view explicitly checks the two proxy IPs. The remote inet
+IP requires a FlClash probe on the SSH host; captured SOCKS5 tunnels do not
+provide it. Tab cycles sidebar, list, and detail focus;
+Shift+Tab reverses it. In the list, Enter connects a disconnected profile or
+focuses the detail of a connected one without disconnecting. `n` adds, `e`
+edits, `u` toggles default, and `x` deletes. A `*` marks the default profile.
+With detail focused, Enter connects or disconnects the tunnel. Esc returns focus to the list,
+then to the sidebar. Captured `-D` exits at the SSH server; captured `-R`
+exits at the SSH client, and the TUI labels the direction. In the form, use
 `Up/Down` or `Tab` to select a row and
 `Enter` to edit or confirm it. Key-passphrase and SSH-password replacements are
 entered twice and stay masked; `c` stages removal of the selected secret.
@@ -309,7 +313,7 @@ Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availa
 
 ```text
 1 Dashboard     Core/System proxy/TUN/Mode/Proxy port/network/memory/30-sample traffic chart
-2 SSH            profile list and selected tunnel Dashboard shown together
+2 SSH           profile list + tunnel, proxy IPs, live speed, and traffic graph
 3 Proxies       groups/nodes/Providers, selection, delay and speed tests
 4 Profiles      import URL/local profile, activate, update, rename, edit, delete non-active
 5 History        shared persistent flows, summaries, search/filter, details
@@ -323,7 +327,7 @@ Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availa
 ←/→, Tab       switch navigation/content      ↑↓ or w/s    move
 Enter           open/apply selected row        Esc           back
 r / R           refresh / reload config         ?             help
-[/]             Groups/Providers                PgUp/PgDn     Dashboard scroll
+[/]             Proxies views                   PgUp/PgDn     Dashboard scroll
 d / v           page-scoped delay / speed       n             network/import
 / / f           search / page-scoped filter
 Ctrl+N          notification history/details

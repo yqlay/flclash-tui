@@ -204,6 +204,41 @@ func TestTUIProfilesExposeSubscriptionImportAsSelectableRow(t *testing.T) {
 	}
 }
 
+func TestTUIProfilesShowSubscriptionQuotaAndExpiry(t *testing.T) {
+	info := parseTUISubscriptionInfo("upload=1024; download=2048; total=10240; expire=1893456000")
+	snapshot := tuiSnapshot{
+		Page: tuiPageProfiles, SelectedRow: 0,
+		Profiles: []tuiProfile{{
+			Name: "school.yaml", Path: "/tmp/school.yaml",
+			SubscriptionURL:  "https://secret.example/subscription-token",
+			SubscriptionInfo: info,
+		}},
+	}
+	for _, height := range []int{12, 18, 24} {
+		var output strings.Builder
+		drawTUIProfiles(&output, snapshot, 110, height)
+		plain := stripTUIANSI(output.String())
+		for _, expected := range []string{"Used", "3.0 KB", "Quota", "10.0 KB", "7.0 KB left", "Expires", "2030-01-01"} {
+			if !strings.Contains(plain, expected) {
+				t.Fatalf("height %d missing %q:\n%s", height, expected, plain)
+			}
+		}
+		if strings.Contains(plain, "subscription-token") {
+			t.Fatal("Profiles leaked subscription URL token")
+		}
+		lines := strings.Split(strings.TrimSuffix(plain, "\n"), "\n")
+		if len(lines) > height {
+			t.Fatalf("Profiles height %d overflowed with %d lines", height, len(lines))
+		}
+	}
+	snapshot.Profiles[0].SubscriptionInfo = nil
+	var output strings.Builder
+	drawTUIProfiles(&output, snapshot, 110, 18)
+	if !strings.Contains(output.String(), "not provided by subscription server") {
+		t.Fatalf("missing header was presented as zero usage: %s", output.String())
+	}
+}
+
 func TestTUIProfilesHideManagedRuntimeFiles(t *testing.T) {
 	directory := t.TempDir()
 	configPath := filepath.Join(directory, "config.yaml")

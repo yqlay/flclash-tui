@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,8 +16,7 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 	}
 	if message.String() == "v" &&
 		(m.snapshot.Page == tuiPageDashboard ||
-			m.snapshot.Page == tuiPageProxies ||
-			m.snapshot.Page == tuiPageSSH && m.snapshot.SSHDashboardFocus) {
+			m.snapshot.Page == tuiPageProxies) {
 		key = tuiKeySpeedTest
 	}
 	if key == tuiKeyNotifications {
@@ -39,11 +39,12 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 	previousPage := m.snapshot.Page
 	if handleTUIFocusNavigation(&m.snapshot, key) {
 		var cmds []tea.Cmd
-		if previousPage != tuiPageSSH && m.snapshot.Page == tuiPageSSH {
-			m.resetSelectedSSHMetrics()
-			cmds = append(cmds, m.refreshSelectedSSHDashboard())
-		}
 		if previousPage != m.snapshot.Page {
+			if previousPage == tuiPageSSH || m.snapshot.Page == tuiPageSSH {
+				m.snapshot.SSHDetailName = ""
+				m.snapshot.SSHDashboardFocus = false
+				m.resetSelectedSSHMetrics()
+			}
 			m.refreshInFlight = false
 			cmds = append(cmds, m.syncLiveMonitors()...)
 			cmds = append(cmds, m.startRefresh())
@@ -105,11 +106,14 @@ func (m *tuiModel) View() string {
 	if m.notificationDetailOpen {
 		snapshot.Status = "Notifications · ↑↓ select · PgUp/PgDn scroll · Enter confirm · Esc close"
 	} else if m.sshCaptureOpen {
-		snapshot.SelectionTitle = "Capture existing SSH"
+		snapshot.SelectionTitle = fmt.Sprintf("Capture · %d live", len(m.sshCaptureCandidates))
+		if m.sshCaptureNames == nil {
+			snapshot.SelectionTitle = "Capture"
+		}
 		snapshot.SelectionOptions = append([]string(nil), m.sshCaptureOptions...)
 		snapshot.SelectedOption = m.sshCaptureSelected
-		snapshot.SelectionHint = "Reuses a live ssh client on this machine (ControlMaster or ssh -D), or inbound ssh -R reverse SOCKS. Sessions on another host without -R are invisible — connect a profile instead."
-		snapshot.Status = "Capture existing SSH · ↑↓/ws choose · Enter attach · Esc cancel"
+		snapshot.SelectionHint = ""
+		snapshot.Status = "↑↓ · Enter · Esc"
 	} else if m.modeSelectionOpen {
 		snapshot.SelectionTitle = "Select outbound mode"
 		snapshot.SelectionOptions = append(

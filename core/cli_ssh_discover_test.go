@@ -564,9 +564,14 @@ func TestProxyEngineListenPortIsNotCaptured(t *testing.T) {
 func TestCaptureEmptyHintForRemoteProfiles(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	previousWSL := cliRunningOnWSL
+	previousInbound := captureHasInboundSSHConnection
 	cliRunningOnWSL = func() bool { return false }
+	captureHasInboundSSHConnection = func() bool { return false }
 	lastWindowsSSHSnapshot = windowsSSHSnapshot{}
-	t.Cleanup(func() { cliRunningOnWSL = previousWSL })
+	t.Cleanup(func() {
+		cliRunningOnWSL = previousWSL
+		captureHasInboundSSHConnection = previousInbound
+	})
 	if err := addCLISSHProfile(cliSSHProfile{
 		Name:     "dcn9",
 		Username: "dell",
@@ -576,21 +581,24 @@ func TestCaptureEmptyHintForRemoteProfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	hint := formatCLICaptureEmptyHint()
-	if !strings.Contains(hint, "another host") || !strings.Contains(hint, "profile") {
+	if hint != "Capture 0 live" {
 		t.Fatalf("hint = %q", hint)
 	}
 }
 
 func TestWSLEmptyHintMentionsWindowsSSH(t *testing.T) {
 	previousWSL := cliRunningOnWSL
+	previousInbound := captureHasInboundSSHConnection
 	cliRunningOnWSL = func() bool { return true }
+	captureHasInboundSSHConnection = func() bool { return false }
 	lastWindowsSSHSnapshot = windowsSSHSnapshot{ProcessCount: 2, HadSOCKS: false}
 	t.Cleanup(func() {
 		cliRunningOnWSL = previousWSL
+		captureHasInboundSSHConnection = previousInbound
 		lastWindowsSSHSnapshot = windowsSSHSnapshot{}
 	})
 	hint := formatCLICaptureEmptyHint()
-	if !strings.Contains(hint, "ssh.exe") || !strings.Contains(hint, "ControlMaster no") {
+	if !strings.Contains(hint, "ssh.exe") {
 		t.Fatalf("hint = %q", hint)
 	}
 }
@@ -659,7 +667,7 @@ func TestDiscoverReverseSocksCandidateAndCapture(t *testing.T) {
 	}
 
 	label := formatCLICaptureCandidate(c)
-	if !strings.Contains(label, "←R") || !strings.Contains(label, strconv.Itoa(port)) {
+	if !strings.Contains(label, "INBOUND") || !strings.Contains(label, strconv.Itoa(port)) {
 		t.Fatalf("unexpected label: %q", label)
 	}
 
@@ -679,8 +687,8 @@ func TestDiscoverReverseSocksCandidateAndCapture(t *testing.T) {
 	if state.Kind != cliSSHAttachedSOCKSKind || state.UpstreamPort != port {
 		t.Fatalf("unexpected state after attach: %+v", state)
 	}
-	if !state.AutoCreated {
-		t.Fatal("expected state.AutoCreated to be true")
+	if !state.AutoCreated || !state.Reverse {
+		t.Fatalf("reverse capture metadata lost: %+v", state)
 	}
 	if _, err := loadCLISSHProfile(c.Name); err != nil {
 		t.Fatalf("expected profile %q to be saved before detach: %v", c.Name, err)
@@ -783,8 +791,8 @@ func TestCaptureEmptyHintMentionsReverseSOCKS(t *testing.T) {
 	})
 
 	hint := formatCLICaptureEmptyHint()
-	if !strings.Contains(hint, "ssh -R") || !strings.Contains(hint, "inbound SSH") {
-		t.Fatalf("expected hint to mention ssh -R, got: %q", hint)
+	if !strings.Contains(hint, "inbound SSH") {
+		t.Fatalf("expected inbound SSH status, got: %q", hint)
 	}
 }
 
@@ -1038,8 +1046,8 @@ func TestFormatCLICaptureCandidateClientIP(t *testing.T) {
 		Source:    "sshd",
 	}
 	labelUnknown := formatCLICaptureCandidate(cUnknown)
-	if !strings.Contains(labelUnknown, "(client IP unknown)") {
-		t.Fatalf("expected '(client IP unknown)' in label, got %q", labelUnknown)
+	if !strings.Contains(labelUnknown, "INBOUND") || !strings.Contains(labelUnknown, "via client") {
+		t.Fatalf("expected inbound via client in label, got %q", labelUnknown)
 	}
 	if strings.Contains(labelUnknown, "@127.0.0.1") {
 		t.Fatalf("label should not contain '@127.0.0.1', got %q", labelUnknown)
@@ -1054,8 +1062,8 @@ func TestFormatCLICaptureCandidateClientIP(t *testing.T) {
 		Source:    "sshd",
 	}
 	labelEmpty := formatCLICaptureCandidate(cEmpty)
-	if !strings.Contains(labelEmpty, "(client IP unknown)") {
-		t.Fatalf("expected '(client IP unknown)' in empty host label, got %q", labelEmpty)
+	if !strings.Contains(labelEmpty, "via client") {
+		t.Fatalf("expected 'via client' in empty host label, got %q", labelEmpty)
 	}
 
 	cKnown := cliSSHCaptureCandidate{
@@ -1067,8 +1075,8 @@ func TestFormatCLICaptureCandidateClientIP(t *testing.T) {
 		Source:    "sshd",
 	}
 	labelKnown := formatCLICaptureCandidate(cKnown)
-	if !strings.Contains(labelKnown, "alice@192.168.1.50") {
-		t.Fatalf("expected 'alice@192.168.1.50' in label, got %q", labelKnown)
+	if !strings.Contains(labelKnown, "via alice@192.168.1.50") {
+		t.Fatalf("expected 'via alice@192.168.1.50' in label, got %q", labelKnown)
 	}
 }
 

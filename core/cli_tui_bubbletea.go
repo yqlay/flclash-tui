@@ -189,36 +189,43 @@ type tuiSSHCaptureResultMsg struct {
 }
 
 type tuiSSHRelayStatsMsg struct {
-	name  string
-	stats cliSSHRelayStats
-	at    time.Time
-	err   error
+	name       string
+	generation uint64
+	stats      cliSSHRelayStats
+	at         time.Time
+	err        error
 }
 
 type tuiSSHNetworkResultMsg struct {
-	name   string
-	direct bool
-	info   tuiNetworkInfo
+	name       string
+	generation uint64
+	sequence   uint64
+	direct     bool
+	info       tuiNetworkInfo
 }
 
 type tuiSSHDelayResultMsg struct {
-	name   string
-	direct bool
-	result tuiDelayResult
-	err    error
+	name       string
+	generation uint64
+	direct     bool
+	result     tuiDelayResult
+	err        error
 }
 
 type tuiSSHSpeedResultMsg struct {
-	name   string
-	direct bool
-	result tuiSpeedResult
-	err    error
+	name       string
+	generation uint64
+	direct     bool
+	result     tuiSpeedResult
+	err        error
 }
 
 type tuiSSHDirectProbeResultMsg struct {
-	name  string
-	probe cliSSHRemoteProbe
-	err   error
+	name       string
+	generation uint64
+	sequence   uint64
+	probe      cliSSHRemoteProbe
+	err        error
 }
 
 type tuiInputMode byte
@@ -322,6 +329,8 @@ type tuiModel struct {
 	sshLastStats             cliSSHRelayStats
 	sshLastStatsAt           time.Time
 	sshLastStatsName         string
+	sshDetailGeneration      uint64
+	sshProxyRefreshSequence  uint64
 	profileDeleteOpen        bool
 	profileDeletePath        string
 	profileDeleteName        string
@@ -539,6 +548,12 @@ func (m *tuiModel) syncLiveMonitors() []tea.Cmd {
 }
 
 func (m *tuiModel) changeVisiblePage(page tuiPage) []tea.Cmd {
+	if m.snapshot.Page != page &&
+		(m.snapshot.Page == tuiPageSSH || page == tuiPageSSH) {
+		m.snapshot.SSHDetailName = ""
+		m.snapshot.SSHDashboardFocus = false
+		m.resetSelectedSSHMetrics()
+	}
 	m.snapshot.Page = page
 	return m.syncLiveMonitors()
 }
@@ -660,23 +675,29 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.sshCaptureOpen || message.generation != m.sshCaptureGeneration {
 			return m, nil
 		}
+		applyTUISSHCaptureResult(&m.snapshot, message.candidates)
 		m.sshCaptureNames = message.names
 		m.sshCaptureOptions = message.options
 		m.sshCaptureCandidates = message.candidates
 		m.sshCaptureSelected = message.selected
-		if len(message.options) == 0 {
-			hint := message.hint
-			if hint == "" {
-				hint = formatCLICaptureEmptyHint()
-			}
-			m.sshCaptureOptions = []string{hint}
+		if len(message.candidates) == 0 {
+			m.sshCaptureOpen = false
+			m.snapshot.Status = formatCLICaptureEmptyHint()
+			return m, nil
+		}
+		if len(message.candidates) == 1 {
+			return m, m.attachSSHCaptureCandidate(message.candidates[0])
 		}
 		return m, nil
 	case tuiSSHRelayStatsMsg:
-		if m.selectedSSHName() != message.name {
+		if !m.isCurrentSSHResult(message.name, message.generation) ||
+			(!m.sshLastStatsAt.IsZero() && !message.at.After(m.sshLastStatsAt)) {
 			return m, nil
 		}
 		if message.err != nil {
+			m.sshLastStats = cliSSHRelayStats{}
+			m.sshLastStatsAt = message.at
+			m.sshLastStatsName = ""
 			m.snapshot.SSHTraffic = trafficSnapshot{}
 			m.snapshot.SSHConnections = 0
 			return m, nil
@@ -686,7 +707,11 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			UpTotal:   message.stats.Upload,
 			DownTotal: message.stats.Download,
 		}
-		if m.sshLastStatsName == message.name && elapsed > 0 {
+		if strings.EqualFold(m.sshLastStatsName, message.name) && elapsed > 0 &&
+			message.stats.PID == m.sshLastStats.PID &&
+			message.stats.StartedAt.Equal(m.sshLastStats.StartedAt) &&
+			message.stats.Upload >= m.sshLastStats.Upload &&
+			message.stats.Download >= m.sshLastStats.Download {
 			traffic.Up = maxTUIInt64(0, int64(float64(message.stats.Upload-m.sshLastStats.Upload)/elapsed))
 			traffic.Down = maxTUIInt64(0, int64(float64(message.stats.Download-m.sshLastStats.Download)/elapsed))
 		}
@@ -699,7 +724,8 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.snapshot.SSHTrafficHistory = appendTUITrafficHistory(m.snapshot.SSHTrafficHistory, traffic)
 		return m, nil
 	case tuiSSHNetworkResultMsg:
-		if m.selectedSSHName() == message.name {
+		if m.isCurrentSSHResult(message.name, message.generation) &&
+			message.sequence == m.sshProxyRefreshSequence {
 			if message.direct {
 				m.snapshot.SSHDirectNetwork = message.info
 			} else {
@@ -721,26 +747,24 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tuiSSHDirectProbeResultMsg:
-		if m.selectedSSHName() != message.name {
+		if !m.isCurrentSSHResult(message.name, message.generation) ||
+			message.sequence != m.sshProxyRefreshSequence {
 			return m, nil
 		}
 		if message.err != nil {
 			m.snapshot.SSHDirectProbe = cliSSHRemoteProbe{Reason: message.err.Error()}
-			m.snapshot.SSHDirectNetwork = tuiNetworkInfo{Error: message.err.Error(), CheckedAt: time.Now()}
-			m.snapshot.Status = "SSH direct exit unavailable: " + message.err.Error()
+			m.snapshot.Status = "SSH proxy inet IP unavailable: " + message.err.Error()
 			return m, nil
 		}
 		m.snapshot.SSHDirectProbe = message.probe
-		if !message.probe.DirectAllowed {
-			reason := cliDisplayValue(message.probe.Reason)
-			m.snapshot.SSHDirectNetwork = tuiNetworkInfo{Error: reason, CheckedAt: time.Now()}
-			m.snapshot.Status = "SSH direct exit unavailable: " + reason
-			return m, nil
+		if message.probe.IntranetIP == "" {
+			m.snapshot.Status = "SSH proxy inet IP unavailable: " + cliDisplayValue(message.probe.Reason)
+		} else {
+			m.snapshot.Status = "SSH proxy inet IP refreshed"
 		}
-		m.snapshot.Status = "SSH direct exit verified · testing its network path"
-		return m, m.refreshSelectedSSHNetworkFor(true)
+		return m, nil
 	case tuiSSHDelayResultMsg:
-		if m.selectedSSHName() == message.name {
+		if m.isCurrentSSHResult(message.name, message.generation) {
 			if message.err != nil {
 				if message.direct {
 					m.snapshot.SSHDirectDelay = tuiDelayResult{Error: message.err.Error()}
@@ -761,7 +785,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tuiSSHSpeedResultMsg:
-		if m.selectedSSHName() == message.name {
+		if m.isCurrentSSHResult(message.name, message.generation) {
 			if message.err != nil {
 				if message.direct {
 					m.snapshot.SSHDirectSpeed = tuiSpeedResult{Error: message.err.Error()}
@@ -786,7 +810,28 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.refreshInFlight = false
+		previousSSHIndex := m.sshDetailProfileIndex()
+		var previousSSH tuiSSHProfile
+		if previousSSHIndex >= 0 {
+			previousSSH = m.snapshot.SSHProfiles[previousSSHIndex]
+		}
 		m.snapshot = mergeTUIRefresh(m.snapshot, message.snapshot)
+		sshConnectionChanged := false
+		if previousSSHIndex >= 0 {
+			currentSSHIndex := m.sshDetailProfileIndex()
+			if currentSSHIndex < 0 {
+				sshConnectionChanged = true
+			} else {
+				currentSSH := m.snapshot.SSHProfiles[currentSSHIndex]
+				sshConnectionChanged = previousSSH.Connected != currentSSH.Connected ||
+					previousSSH.Ready != currentSSH.Ready ||
+					previousSSH.SocksPort != currentSSH.SocksPort ||
+					!previousSSH.StartedAt.Equal(currentSSH.StartedAt)
+			}
+		}
+		if sshConnectionChanged {
+			m.resetSelectedSSHMetrics()
+		}
 		if message.serviceStatus != nil {
 			m.backendRevision = message.serviceStatus.Revision
 			m.coreRunning = message.serviceStatus.Running
@@ -820,6 +865,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.ownsCore && !m.coreRunning && m.snapshot.Status == "Connected" {
 			m.snapshot.Status = "Ready; start Core or enable System proxy on Dashboard"
+		}
+		if sshConnectionChanged {
+			return m, m.refreshSelectedSSHDashboard()
 		}
 		return m, nil
 	case tuiOperationResultMsg:
@@ -944,13 +992,22 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.resetSSHForm()
 		}
 		refreshTUISSH(&m.snapshot)
-		if message.selectedName != "" {
+		if message.err == nil && message.action == "attach" {
+			m.snapshot.SSHDetailName = message.selectedName
+			m.snapshot.SSHDashboardFocus = true
+		}
+		if message.err == nil && (message.action == "add" || message.action == "edit" || message.action == "attach") && message.selectedName != "" {
 			for index, profile := range m.snapshot.SSHProfiles {
 				if strings.EqualFold(profile.Name, message.selectedName) {
 					m.snapshot.SelectedSSH = index
 					break
 				}
 			}
+		}
+		if m.snapshot.SSHDetailName != "" && m.sshDetailProfileIndex() < 0 {
+			m.snapshot.SSHDetailName = ""
+			m.snapshot.SSHDashboardFocus = false
+			m.resetSelectedSSHMetrics()
 		}
 		if message.err != nil {
 			m.snapshot.Status = "SSH " + message.action + " failed: " + message.err.Error()
@@ -960,9 +1017,10 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.snapshot.Status = "SSH " + message.action + " complete"
 		}
 		commands := []tea.Cmd{m.startRefresh()}
-		if message.err == nil {
+		if message.err == nil &&
+			strings.EqualFold(m.snapshot.SSHDetailName, message.selectedName) {
 			switch message.action {
-			case "connect":
+			case "connect", "attach":
 				m.resetSelectedSSHMetrics()
 				commands = append(commands, m.refreshSelectedSSHDashboard())
 			case "disconnect":

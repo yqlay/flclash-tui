@@ -86,41 +86,47 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 	)
 	tuiEndPanel(b, width)
 
+	overview := tuiMemoryRows(snapshot)
+	overview = append(overview,
+		fmt.Sprintf(
+			"Network speed ↑ %s/s   ↓ %s/s",
+			formatBytes(snapshot.Traffic.Up),
+			formatBytes(snapshot.Traffic.Down),
+		),
+		fmt.Sprintf(
+			"Traffic total ↑ %s   ↓ %s",
+			formatBytes(snapshot.TotalTraffic.Up),
+			formatBytes(snapshot.TotalTraffic.Down),
+		),
+		fmt.Sprintf(
+			"Activity      %d active · %d history entries",
+			len(snapshot.Connections),
+			len(snapshot.Requests),
+		),
+		"TUI frontends "+formatCLIFrontendSummary(snapshot.Frontends),
+		fmt.Sprintf("Config        %s", paths.ConfigPath),
+	)
 	if height >= 33 {
-		plotHeight := minTUI(maxTUIWidth(height-30, 3), 6)
-		chart := buildTUITrafficChart(
-			snapshot.TrafficHistory,
-			maxTUIWidth(width-4, 1),
-			plotHeight,
-		)
-		tuiTrafficTitle(b, snapshot.Traffic, chart.peak, width)
-		for _, line := range chart.lines {
-			writeTUIAnsiRow(b, line, width)
+		controlRows := len(controls) + 3
+		networkRows := 7
+		overviewRows := len(overview) + 3
+		chartFrameRows := 3
+		plotHeight := height - controlRows - networkRows - overviewRows - chartFrameRows
+		if plotHeight > 0 {
+			chart := buildTUITrafficChart(
+				snapshot.TrafficHistory,
+				maxTUIWidth(width-4, 1),
+				plotHeight,
+			)
+			tuiTrafficTitle(b, snapshot.Traffic, chart.peak, width)
+			for _, line := range chart.lines {
+				writeTUIAnsiRow(b, line, width)
+			}
+			tuiEndPanel(b, width)
 		}
-		tuiEndPanel(b, width)
 	}
 
 	if height >= 17 {
-		overview := tuiMemoryRows(snapshot)
-		overview = append(overview,
-			fmt.Sprintf(
-				"Network speed ↑ %s/s   ↓ %s/s",
-				formatBytes(snapshot.Traffic.Up),
-				formatBytes(snapshot.Traffic.Down),
-			),
-			fmt.Sprintf(
-				"Traffic total ↑ %s   ↓ %s",
-				formatBytes(snapshot.TotalTraffic.Up),
-				formatBytes(snapshot.TotalTraffic.Down),
-			),
-			fmt.Sprintf(
-				"Activity      %d active · %d history entries",
-				len(snapshot.Connections),
-				len(snapshot.Requests),
-			),
-			"TUI frontends "+formatCLIFrontendSummary(snapshot.Frontends),
-			fmt.Sprintf("Config        %s", paths.ConfigPath),
-		)
 		tuiTitle(
 			b,
 			"Overview",
@@ -212,10 +218,13 @@ func tuiCompactDashboardRows(
 				!snapshot.FocusSidebar,
 		})
 	}
+	chartHeight := tuiCompactTrafficChartHeight(height)
+	fixedRows := len(controls) + 1 + 5 + 1 + len(tuiMemoryRows(snapshot)) + 5
+	chartHeight = maxTUIWidth(chartHeight, height-3-fixedRows)
 	chart := buildTUITrafficChart(
 		snapshot.TrafficHistory,
 		maxTUIWidth(width-4, 1),
-		tuiCompactTrafficChartHeight(height),
+		chartHeight,
 	)
 	rows = append(rows, tuiDashboardCompactRow{
 		value: tuiCyan + "── Live traffic" + tuiReset + " · " +

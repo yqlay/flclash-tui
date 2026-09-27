@@ -1102,6 +1102,8 @@ func loadCLISSHProfileViews() ([]cliSSHProfileView, error) {
 		if connected && strings.EqualFold(active.Name, profile.Name) {
 			view.Connected = true
 			view.Attached = cliSSHTunnelIsAttached(active.Kind)
+			view.SocksOnly = active.Kind == cliSSHAttachedSOCKSKind
+			view.Reverse = active.Reverse
 			view.Ready = cliSSHTunnelReady(active)
 			view.SocksPort = active.Port
 			view.StartedAt = active.StartedAt

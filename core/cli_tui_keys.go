@@ -194,12 +194,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		}
 	case tuiKeyCloseConnection:
 		if m.snapshot.Page == tuiPageSSH {
-			if !m.snapshot.FocusSidebar && m.snapshot.SSHDashboardFocus {
-				return m.testSelectedSSHDelayFor(
-					tuiSSHDashboardRowIsDirect(m.snapshot.SelectedSSHDetail),
-				)
-			}
-			m.snapshot.Status = "Focus SSH Dashboard before testing route delay"
+			m.snapshot.Status = "SSH speed is live · press n to refresh proxy IPs"
 			return nil
 		}
 		if m.snapshot.Page == tuiPageDashboard {
@@ -293,7 +288,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeyNewProfile:
 		if m.snapshot.Page == tuiPageSSH {
 			if !m.snapshot.FocusSidebar && m.snapshot.SSHDashboardFocus {
-				return m.refreshSelectedSSHDashboard()
+				return m.refreshSelectedSSHProxyIPs()
 			}
 			if m.snapshot.FocusSidebar {
 				m.snapshot.Status = "Focus SSH profiles before adding a profile"
@@ -363,13 +358,6 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeySpeedTest:
 		if m.snapshot.Page == tuiPageDashboard {
 			return m.testDashboardSpeed()
-		}
-		if m.snapshot.Page == tuiPageSSH &&
-			!m.snapshot.FocusSidebar &&
-			m.snapshot.SSHDashboardFocus {
-			return m.testSelectedSSHSpeedFor(
-				tuiSSHDashboardRowIsDirect(m.snapshot.SelectedSSHDetail),
-			)
 		}
 		if !m.snapshot.FocusSidebar &&
 			m.snapshot.Page == tuiPageProxies &&
@@ -596,28 +584,15 @@ func (m *tuiModel) moveSelection(delta int) tea.Cmd {
 	switch m.snapshot.Page {
 	case tuiPageSSH:
 		if m.snapshot.SSHDashboardFocus {
-			if m.snapshot.SelectedSSH == tuiSSHCaptureRow {
-				m.snapshot.SSHDashboardFocus = false
-				break
-			}
-			m.snapshot.SelectedSSHDetail = wrapTUIIndex(
-				m.snapshot.SelectedSSHDetail,
-				delta,
-				tuiSSHDashboardRowCount,
-			)
+			break
 		} else {
-			previousName := m.selectedSSHName()
 			listLen := len(m.snapshot.SSHProfiles) + 1
 			position := wrapTUIIndex(m.snapshot.SelectedSSH+1, delta, listLen)
 			m.snapshot.SelectedSSH = position - 1
 			if m.snapshot.SelectedSSH == tuiSSHCaptureRow {
-				m.resetSelectedSSHMetrics()
-				m.snapshot.Status = "Enter captures a live ControlMaster or ssh -D SOCKS without a new SSH login"
-				return nil
-			}
-			if m.selectedSSHName() != previousName {
-				m.resetSelectedSSHMetrics()
-				return m.refreshSelectedSSHDashboard()
+				m.snapshot.Status = "Enter Capture"
+			} else {
+				m.snapshot.Status = "Enter to open " + m.selectedSSHName()
 			}
 		}
 	case tuiPageProfiles:

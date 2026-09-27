@@ -201,11 +201,12 @@ func (m *tuiModel) startProfileSubscriptionUpdate(
 			state.snapshot.Status = "Subscription update failed: " + err.Error()
 			return
 		}
-		updated, err := fetchTUISubscription(sourceURL)
+		payload, err := fetchTUISubscriptionDetails(sourceURL)
 		if err != nil {
 			state.snapshot.Status = "Subscription update failed: " + err.Error()
 			return
 		}
+		updated := payload.Data
 		if previousSettings := loadTUIConfiguredSettings(profilePath, true); previousSettings != nil {
 			updated, err = applyTUISettingsToConfig(updated, *previousSettings)
 			if err != nil {
@@ -224,6 +225,7 @@ func (m *tuiModel) startProfileSubscriptionUpdate(
 			false,
 			&sourceURL,
 			state.backendRevision,
+			parseTUISubscriptionInfo(payload.UserInfo),
 		)
 		if err != nil {
 			state.snapshot.Status = "Subscription update failed: " + err.Error()
@@ -453,6 +455,7 @@ func (m *tuiModel) submitInput() tea.Cmd {
 				true,
 				&value,
 				state.backendRevision,
+				parseTUISubscriptionInfo(payload.UserInfo),
 			)
 			if err != nil {
 				state.snapshot.Status = "Add profile failed: " + err.Error()

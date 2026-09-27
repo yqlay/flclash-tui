@@ -136,6 +136,9 @@ func TestTUICaptureIgnoresStaleDiscovery(t *testing.T) {
 
 func TestSSHShutdownDoesNotTreatLastErrorAsTunnel(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = t.TempDir()
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntime })
 	if err := saveCLISSHLastError("school", "connection refused"); err != nil {
 		t.Fatal(err)
 	}
@@ -572,15 +575,19 @@ func TestTUISSHAttachKeyOpensCapturePicker(t *testing.T) {
 	if len(model.sshCaptureNames) != 0 {
 		t.Fatal("capture must not probe synchronously")
 	}
-	model.Update(command())
-	if !model.sshCaptureOpen || len(model.sshCaptureNames) != 1 ||
-		model.sshCaptureNames[0] != "home" {
-		t.Fatalf("capture picker = open %t names %v", model.sshCaptureOpen, model.sshCaptureNames)
+	updated, next := model.Update(command())
+	state, ok := updated.(*tuiModel)
+	if !ok {
+		t.Fatal("expected *tuiModel")
 	}
-	view := model.View()
-	if !strings.Contains(stripTUIANSI(view), "Capture existing SSH") ||
-		!strings.Contains(stripTUIANSI(view), "deploy@gateway.example.com") {
-		t.Fatalf("capture overlay missing:\n%s", view)
+	if state.sshCaptureOpen {
+		t.Fatal("single capture candidate must attach without a picker")
+	}
+	if next == nil || !state.busy {
+		t.Fatal("single capture candidate must start attach")
+	}
+	if !state.snapshot.SSHCaptureKnown || state.snapshot.SSHCaptureFound != 1 {
+		t.Fatalf("capture summary = known %t found %d", state.snapshot.SSHCaptureKnown, state.snapshot.SSHCaptureFound)
 	}
 }
 
@@ -743,14 +750,15 @@ func TestTUISSHRendersCaptureRow(t *testing.T) {
 	drawTUISSH(&output, snapshot, 120, 36)
 	plain := stripTUIANSI(output.String())
 	for _, expected := range []string{
-		"Capture existing SSH",
-		"Enter probes ControlMaster, ssh -D / VS Code, or ssh -R reverse SOCKS",
-		"Probe runs only when you ask",
-		"another host will not appear",
+		"Capture",
+		"THIS machine",
 	} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("SSH page missing %q:\n%s", expected, plain)
 		}
+	}
+	if strings.Contains(plain, "SSH · home") {
+		t.Fatalf("Capture highlight unexpectedly opened profile details:\n%s", plain)
 	}
 }
 
@@ -831,9 +839,9 @@ func TestTUICaptureEnterWhileCheckingDoesNotFailClosed(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.sshCaptureOpen = true
 	model.sshCaptureNames = nil
-	model.sshCaptureOptions = []string{"Checking existing SSH connections… · Esc cancel"}
+	model.sshCaptureOptions = []string{"Scanning…"}
 	model.sshCaptureSelected = 0
-	model.snapshot.Status = "Capture existing SSH · ↑↓/ws choose · Enter attach · Esc cancel"
+	model.snapshot.Status = "↑↓ · Enter · Esc"
 	if command := model.handleSSHCapture(tea.KeyMsg{Type: tea.KeyEnter}); command != nil {
 		t.Fatal("enter during discovery started attach")
 	}

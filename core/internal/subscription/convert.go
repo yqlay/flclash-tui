@@ -33,6 +33,7 @@ type tuiSubscriptionPayload struct {
 	Format   string
 	Nodes    int
 	FileName string
+	UserInfo string
 }
 
 const tuiProfileIDEpochMS = 1704067200000 // 2024-01-01 UTC, same as original FlClash.

@@ -62,7 +62,11 @@ func profileCommand(args []string) error {
 			if profile.SubscriptionURL != "" {
 				kind = "subscription"
 			}
-			fmt.Printf("%s %-32s %s\n", marker, profile.Name, kind)
+			fmt.Printf("%s %-32s %s", marker, profile.Name, kind)
+			if profile.SubscriptionInfo != nil {
+				fmt.Printf(" · %s · %s", tuiSubscriptionCompact(profile.SubscriptionInfo), tuiSubscriptionExpiry(profile.SubscriptionInfo))
+			}
+			fmt.Println()
 		}
 		return nil
 	case "current":
@@ -91,6 +95,7 @@ func profileCommand(args []string) error {
 			true,
 			&positional[0],
 			status.Revision,
+			parseTUISubscriptionInfo(payload.UserInfo),
 		)
 		if err != nil {
 			return err
@@ -158,10 +163,11 @@ func profileCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		updated, err := fetchTUISubscription(sourceURL)
+		payload, err := fetchTUISubscriptionDetails(sourceURL)
 		if err != nil {
 			return err
 		}
+		updated := payload.Data
 		if previousSettings := loadTUIConfiguredSettings(target, true); previousSettings != nil {
 			updated, err = applyTUISettingsToConfig(updated, *previousSettings)
 			if err != nil {
@@ -177,8 +183,9 @@ func profileCommand(args []string) error {
 			updated,
 			tuiBytesSHA256(previous),
 			false,
-			nil,
+			&sourceURL,
 			status.Revision,
+			parseTUISubscriptionInfo(payload.UserInfo),
 		); err != nil {
 			return err
 		}
@@ -266,6 +273,7 @@ func listCLIProfiles(paths cliPaths) ([]tuiProfile, error) {
 		return nil, err
 	}
 	sources := loadTUISubscriptionSources(paths.HomeDir)
+	infos := loadTUISubscriptionInfo(paths.HomeDir)
 	profiles := make([]tuiProfile, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -279,11 +287,16 @@ func listCLIProfiles(paths cliPaths) ([]tuiProfile, error) {
 			continue
 		}
 		path := filepath.Join(paths.HomeDir, entry.Name())
+		var info *tuiSubscriptionInfo
+		if details, found := infos[entry.Name()]; found && sources[entry.Name()] != "" {
+			info = &details
+		}
 		profiles = append(profiles, tuiProfile{
-			Name:            entry.Name(),
-			Path:            path,
-			Current:         filepath.Clean(path) == filepath.Clean(paths.ConfigPath),
-			SubscriptionURL: sources[entry.Name()],
+			Name:             entry.Name(),
+			Path:             path,
+			Current:          filepath.Clean(path) == filepath.Clean(paths.ConfigPath),
+			SubscriptionURL:  sources[entry.Name()],
+			SubscriptionInfo: info,
 		})
 	}
 	sort.Slice(profiles, func(i, j int) bool { return profiles[i].Name < profiles[j].Name })

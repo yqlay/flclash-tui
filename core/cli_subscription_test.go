@@ -323,6 +323,42 @@ func TestFetchTUISubscriptionUsesContentDispositionFileName(t *testing.T) {
 	}
 }
 
+func TestFetchTUISubscriptionRetainsUserInfoHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Subscription-Userinfo", "upload=1024; download=2048; total=10240; expire=1893456000")
+		_, _ = fmt.Fprint(w, defaultTUIConfig)
+	}))
+	defer server.Close()
+
+	payload, err := fetchTUISubscriptionDetails(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := parseTUISubscriptionInfo(payload.UserInfo)
+	if info == nil || info.Upload == nil || *info.Upload != 1024 ||
+		info.Download == nil || *info.Download != 2048 ||
+		info.Total == nil || *info.Total != 10240 ||
+		info.Expire == nil || *info.Expire != 1893456000 {
+		t.Fatalf("subscription user info = %+v", info)
+	}
+}
+
+func TestParseTUISubscriptionInfoIgnoresMalformedAndMissingFields(t *testing.T) {
+	if parseTUISubscriptionInfo("") != nil ||
+		parseTUISubscriptionInfo("upload=-1; total=bad; expire=253402300800") != nil {
+		t.Fatal("invalid subscription metadata was accepted")
+	}
+	info := parseTUISubscriptionInfo(" DOWNLOAD = 42 ; upload=bad; total=0; expire=0; extra=7")
+	if info == nil || info.Download == nil || *info.Download != 42 ||
+		info.Upload != nil || info.Total == nil || *info.Total != 0 ||
+		info.Expire == nil || *info.Expire != 0 {
+		t.Fatalf("partially valid subscription metadata = %+v", info)
+	}
+	if used, known := tuiSubscriptionUsed(info); known || used != 0 {
+		t.Fatalf("unknown upload counted as zero: used=%d known=%t", used, known)
+	}
+}
+
 func TestFetchTUISubscriptionFallsBackToNumericFileName(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, defaultTUIConfig)

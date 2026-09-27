@@ -38,6 +38,12 @@ func (r *tuiServiceRuntime) putProfile(
 			return false, "", err
 		}
 	}
+	if request.SubscriptionInfo != nil && request.SubscriptionURL == nil {
+		return false, "", errors.New("subscription info requires a subscription URL")
+	}
+	if err := validateTUISubscriptionInfo(request.SubscriptionInfo); err != nil {
+		return false, "", err
+	}
 
 	lease, err := acquireTUIProfileLocks(paths.HomeDir, target)
 	if err != nil {
@@ -108,10 +114,17 @@ func (r *tuiServiceRuntime) putProfile(
 		}
 	}
 	if request.SubscriptionURL != nil {
-		if err := rememberTUISubscriptionSource(
+		info := request.SubscriptionInfo
+		if info != nil {
+			copyInfo := *info
+			copyInfo.FetchedAt = time.Now().UTC()
+			info = &copyInfo
+		}
+		if err := rememberTUISubscriptionSourceWithInfo(
 			paths.HomeDir,
 			target,
 			*request.SubscriptionURL,
+			info,
 		); err != nil {
 			return false, "", rollback(fmt.Errorf("save subscription source: %w", err))
 		}
@@ -173,6 +186,7 @@ func (r *tuiServiceRuntime) deleteProfile(path string) (bool, error) {
 	}
 	if err := updateTUIState(paths.HomeDir, func(state *tuiPersistentState) {
 		delete(state.SubscriptionSources, key)
+		delete(state.SubscriptionInfo, key)
 	}); err != nil {
 		if restoreErr := writeTUIProfileAtomically(path, data, info.Mode()); restoreErr != nil {
 			return false, fmt.Errorf("update profile metadata: %v; file rollback failed: %w", err, restoreErr)

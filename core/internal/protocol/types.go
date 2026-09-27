@@ -50,29 +50,38 @@ type TuiSpeedResult struct {
 }
 
 type TuiServiceRequest struct {
-	ProtocolVersion  int          `json:"protocol_version,omitempty"`
-	RequestID        string       `json:"request_id,omitempty"`
-	ExpectedRevision *uint64      `json:"expected_revision,omitempty"`
-	Action           string       `json:"action"`
-	ConfigPath       string       `json:"config_path,omitempty"`
-	ProxyGroup       string       `json:"proxy_group,omitempty"`
-	ProxyName        string       `json:"proxy_name,omitempty"`
-	Mode             string       `json:"mode,omitempty"`
-	MixedPort        int          `json:"mixed_port,omitempty"`
-	TunScope         string       `json:"tun_scope,omitempty"`
-	TestURL          string       `json:"test_url,omitempty"`
-	Settings         *TuiSettings `json:"settings,omitempty"`
-	Enabled          *bool        `json:"enabled,omitempty"`
-	ExpectedSHA256   string       `json:"expected_sha256,omitempty"`
-	ProfileData      []byte       `json:"profile_data,omitempty"`
-	CreateOnly       bool         `json:"create_only,omitempty"`
-	SubscriptionURL  *string      `json:"subscription_url,omitempty"`
-	NewName          string       `json:"new_name,omitempty"`
-	ConnectionID     string       `json:"connection_id,omitempty"`
-	Source           string       `json:"source,omitempty"`
-	AfterRevision    uint64       `json:"after_revision,omitempty"`
-	WatchTimeoutMS   int          `json:"watch_timeout_ms,omitempty"`
-	LogLimit         int          `json:"log_limit,omitempty"`
+	ProtocolVersion  int                  `json:"protocol_version,omitempty"`
+	RequestID        string               `json:"request_id,omitempty"`
+	ExpectedRevision *uint64              `json:"expected_revision,omitempty"`
+	Action           string               `json:"action"`
+	ConfigPath       string               `json:"config_path,omitempty"`
+	ProxyGroup       string               `json:"proxy_group,omitempty"`
+	ProxyName        string               `json:"proxy_name,omitempty"`
+	Mode             string               `json:"mode,omitempty"`
+	MixedPort        int                  `json:"mixed_port,omitempty"`
+	TunScope         string               `json:"tun_scope,omitempty"`
+	TestURL          string               `json:"test_url,omitempty"`
+	Settings         *TuiSettings         `json:"settings,omitempty"`
+	Enabled          *bool                `json:"enabled,omitempty"`
+	ExpectedSHA256   string               `json:"expected_sha256,omitempty"`
+	ProfileData      []byte               `json:"profile_data,omitempty"`
+	CreateOnly       bool                 `json:"create_only,omitempty"`
+	SubscriptionURL  *string              `json:"subscription_url,omitempty"`
+	SubscriptionInfo *TuiSubscriptionInfo `json:"subscription_info,omitempty"`
+	NewName          string               `json:"new_name,omitempty"`
+	ConnectionID     string               `json:"connection_id,omitempty"`
+	Source           string               `json:"source,omitempty"`
+	AfterRevision    uint64               `json:"after_revision,omitempty"`
+	WatchTimeoutMS   int                  `json:"watch_timeout_ms,omitempty"`
+	LogLimit         int                  `json:"log_limit,omitempty"`
+}
+
+type TuiSubscriptionInfo struct {
+	Upload    *int64    `json:"upload,omitempty"`
+	Download  *int64    `json:"download,omitempty"`
+	Total     *int64    `json:"total,omitempty"`
+	Expire    *int64    `json:"expire,omitempty"`
+	FetchedAt time.Time `json:"fetched_at,omitempty"`
 }
 
 type TuiServiceStatus struct {

@@ -233,7 +233,7 @@ func drawTUIHelp(b *strings.Builder, width, height int) {
 		"Dashboard      flc Enter opens Proxies · d latency · v speed · n refresh",
 		"Proxies        Enter nodes · d node RTT (5 samples) · v node speed · Esc groups",
 		"Profiles       Enter activate · U refresh · u/F2 rename · e edit · n import · x delete",
-		"SSH            Tab list/Dashboard · n add · a probe/capture live SSH · e edit · u default · Enter connect",
+		"SSH            Tab list/details · n add or refresh IPs · a Capture · e edit · u default · Enter tunnel",
 		"History        o source mixed/proxy/ssh · f all/active/completed · x clears (honors source)",
 		"Connections    f source mixed/proxy/ssh · d close selected · x close all (honors source)",
 		"Logs           e exports captured logs · x clears captured logs",

@@ -43,17 +43,6 @@ const (
 	tuiPageCount
 )
 
-const (
-	tuiSSHDashboardTunnelRow = iota
-	tuiSSHDashboardDirectExitRow
-	tuiSSHDashboardDirectRTTRow
-	tuiSSHDashboardDirectSpeedRow
-	tuiSSHDashboardManagedIPRow
-	tuiSSHDashboardManagedRTTRow
-	tuiSSHDashboardManagedSpeedRow
-	tuiSSHDashboardRowCount
-)
-
 type tuiNetworkInfo struct {
 	PublicIP   string
 	Country    string
@@ -153,10 +142,11 @@ type tuiProvider struct {
 }
 
 type tuiProfile struct {
-	Name            string
-	Path            string
-	Current         bool
-	SubscriptionURL string
+	Name             string
+	Path             string
+	Current          bool
+	SubscriptionURL  string
+	SubscriptionInfo *tuiSubscriptionInfo
 }
 
 type tuiSSHProfile struct {
@@ -176,6 +166,8 @@ type tuiSSHProfile struct {
 	Options       []string
 	Connected     bool
 	Attached      bool
+	SocksOnly     bool
+	Reverse       bool
 	Attachable    bool
 	Ready         bool
 	SocksPort     int
@@ -259,8 +251,12 @@ type tuiSnapshot struct {
 	Logs                   []string
 	Profiles               []tuiProfile
 	SSHProfiles            []tuiSSHProfile
+	SSHCaptureKnown        bool
+	SSHCaptureFound        int
+	SSHCaptureInbound      int
+	SSHCaptureLocal        int
 	SSHDashboardFocus      bool
-	SelectedSSHDetail      int
+	SSHDetailName          string
 	SSHNetwork             tuiNetworkInfo
 	SSHDelay               tuiDelayResult
 	SSHSpeed               tuiSpeedResult

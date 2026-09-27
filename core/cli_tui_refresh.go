@@ -267,7 +267,7 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	updated.ProxyView = current.ProxyView
 	updated.ProxyNodeFocus = current.ProxyNodeFocus
 	updated.SSHDashboardFocus = current.SSHDashboardFocus
-	updated.SelectedSSHDetail = current.SelectedSSHDetail
+	updated.SSHDetailName = current.SSHDetailName
 	updated.ManagedService = current.ManagedService
 	updated.FocusSidebar = current.FocusSidebar
 	updated.ShowHelp = current.ShowHelp
@@ -394,6 +394,11 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 				len(updated.SSHProfiles),
 			)
 		}
+	}
+	if updated.SSHDetailName != "" &&
+		findTUISSHProfile(updated.SSHProfiles, updated.SSHDetailName) < 0 {
+		updated.SSHDetailName = ""
+		updated.SSHDashboardFocus = false
 	}
 	return updated
 }

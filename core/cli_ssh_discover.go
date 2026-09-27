@@ -868,53 +868,26 @@ func captureCLISSHNameHint(candidate cliSSHCaptureCandidate) string {
 func formatCLICaptureCandidate(candidate cliSSHCaptureCandidate) string {
 	dest := formatCLISSHDestination(candidate.Username, candidate.Host)
 	if candidate.Kind == cliSSHCaptureReverseSOCKSKind {
-		displayHost := candidate.Host
-		if displayHost == "127.0.0.1" || displayHost == "" {
-			displayHost = "(client IP unknown)"
+		via := "client"
+		if candidate.Host != "" && candidate.Host != "127.0.0.1" && candidate.Host != "::1" {
+			via = formatCLISSHDestination(candidate.Username, candidate.Host)
 		}
-		dest = formatCLISSHDestination(candidate.Username, displayHost)
-		return fmt.Sprintf(
-			"%-16s %-28s SOCKS ←R 127.0.0.1:%d · %s",
-			candidate.Name,
-			dest,
-			candidate.SocksPort,
-			candidate.Source,
-		)
+		return fmt.Sprintf("%-8s :%-5d  via %s", "INBOUND", candidate.SocksPort, via)
 	}
 	if candidate.Kind == cliSSHCaptureSOCKSKind {
-		return fmt.Sprintf(
-			"%-16s %-28s SOCKS 127.0.0.1:%d · %s",
-			candidate.Name,
-			dest,
-			candidate.SocksPort,
-			candidate.Source,
-		)
+		return fmt.Sprintf("%-8s :%-5d  via %s", "LOCAL", candidate.SocksPort, dest)
 	}
-	return fmt.Sprintf(
-		"%-16s %-28s ControlMaster %s",
-		candidate.Name,
-		dest,
-		candidate.ControlPath,
-	)
+	return fmt.Sprintf("%-8s mux      via %s", "MUX", dest)
 }
 
 func formatCLICaptureEmptyHint() string {
-	if cliRunningOnWSL() && lastWindowsSSHSnapshot.ProcessCount > 0 && !lastWindowsSSHSnapshot.HadSOCKS {
-		return "Windows ssh.exe is running but has no reachable -D SOCKS. Your ssh config sets ControlMaster no, so mux capture cannot work. Reconnect VS Code Remote-SSH (it uses ssh.exe -D) or Enter a profile below to open a WSL-side tunnel."
-	}
-	if cliRunningOnWSL() && captureHasRemoteWSLProcess() {
-		return "VS Code in WSL is Remote-WSL; Remote-SSH's ssh.exe runs on Windows with -D. Keep those sessions open and capture again, or Enter a profile below to open a WSL-side tunnel."
-	}
-	if captureHasRemoteSSHProcess() {
-		return "VS Code/Cursor SSH is running but has no ControlMaster or -D SOCKS. Add ControlMaster auto and ControlPath ~/.ssh/cm-%C to ~/.ssh/config, reconnect, then capture again."
-	}
 	if captureHasInboundSSHConnection() {
-		return "An inbound SSH connection is active (sshd), but no reverse SOCKS5 proxy was found. Reconnect from client with: ssh -R 10808 user@this-host"
+		return "Capture 0 live · inbound SSH"
 	}
-	if captureHasConfiguredSSHProfiles() {
-		return "Capture only sees ssh clients on this FlClash machine (or sshd RemoteForward SOCKS). A session on another host without -R will not appear. Select an SSH profile below and press Enter to connect from here."
+	if cliRunningOnWSL() && lastWindowsSSHSnapshot.ProcessCount > 0 && !lastWindowsSSHSnapshot.HadSOCKS {
+		return "Capture 0 live · ssh.exe"
 	}
-	return "No live ControlMaster, ssh -D SOCKS, or sshd RemoteForward matches. Ordinary ssh without multiplexing or -R SOCKS cannot be captured."
+	return "Capture 0 live"
 }
 
 func captureHasConfiguredSSHProfiles() bool {
@@ -1051,7 +1024,7 @@ func captureCLISSHCandidate(candidate cliSSHCaptureCandidate) (cliSSHTunnelState
 	switch candidate.Kind {
 	case cliSSHCaptureSOCKSKind, cliSSHCaptureReverseSOCKSKind:
 		autoCreated := candidate.Kind == cliSSHCaptureReverseSOCKSKind && wasCreated
-		state, already, attachErr := attachCLISSHSocksProfile(profile, candidate.SocksPort, autoCreated)
+		state, already, attachErr := attachCLISSHSocksProfile(profile, candidate.SocksPort, autoCreated, candidate.Kind == cliSSHCaptureReverseSOCKSKind)
 		return state, already, attachErr
 	default:
 		if candidate.ControlPath != "" {

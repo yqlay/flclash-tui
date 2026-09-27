@@ -96,15 +96,18 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			syncStoppedTUISettings(state)
 		})
 	case tuiPageSSH:
-		if m.snapshot.SelectedSSH == tuiSSHCaptureRow {
+		if !m.snapshot.SSHDashboardFocus && m.snapshot.SelectedSSH == tuiSSHCaptureRow {
 			return m.beginSSHCapture()
 		}
-		if m.snapshot.SelectedSSH < 0 ||
-			m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
+		index := m.snapshot.SelectedSSH
+		if m.snapshot.SSHDashboardFocus {
+			index = m.sshDetailProfileIndex()
+		}
+		if index < 0 || index >= len(m.snapshot.SSHProfiles) {
 			m.snapshot.Status = "Press n to add an SSH profile, or a to capture live SSH"
 			return nil
 		}
-		profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
+		profile := m.snapshot.SSHProfiles[index]
 		if profile.NeedsUsername {
 			m.beginSSHForm(true)
 			if m.sshFormOpen {
@@ -114,31 +117,21 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			return nil
 		}
 		if !m.snapshot.SSHDashboardFocus {
+			if !strings.EqualFold(m.snapshot.SSHDetailName, profile.Name) {
+				m.resetSelectedSSHMetrics()
+			}
+			m.snapshot.SSHDetailName = profile.Name
+			m.snapshot.SSHDashboardFocus = true
 			if profile.Connected && profile.Ready {
-				m.snapshot.SSHDashboardFocus = true
-				m.snapshot.Status = "SSH Dashboard focused · Enter controls selected row"
+				m.snapshot.Status = "SSH " + profile.Name + " opened · Enter controls tunnel · n refreshes IPs"
 				return m.refreshSelectedSSHDashboard()
 			}
 			return m.runSelectedSSHAction("connect")
 		}
-		switch m.snapshot.SelectedSSHDetail {
-		case tuiSSHDashboardTunnelRow:
-			if profile.Connected && profile.Ready {
-				return m.runSelectedSSHAction("disconnect")
-			}
-			return m.runSelectedSSHAction("connect")
-		case tuiSSHDashboardDirectExitRow,
-			tuiSSHDashboardManagedIPRow:
-			return m.refreshSelectedSSHDashboard()
-		case tuiSSHDashboardDirectRTTRow:
-			return m.testSelectedSSHDelayFor(true)
-		case tuiSSHDashboardDirectSpeedRow:
-			return m.testSelectedSSHSpeedFor(true)
-		case tuiSSHDashboardManagedRTTRow:
-			return m.testSelectedSSHDelayFor(false)
-		case tuiSSHDashboardManagedSpeedRow:
-			return m.testSelectedSSHSpeedFor(false)
+		if profile.Connected && profile.Ready {
+			return m.runSelectedSSHAction("disconnect")
 		}
+		return m.runSelectedSSHAction("connect")
 	case tuiPageRequests:
 		if len(matchedTUIRequestIndexes(m.snapshot)) == 0 {
 			m.snapshot.Status = "No matching History entry"

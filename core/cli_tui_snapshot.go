@@ -175,8 +175,10 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 				selectedConnectionID,
 				selectedRequestID,
 			)
-		} else if snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Loading..." {
-			snapshot.Status = "Connections refresh failed: invalid controller response"
+		} else {
+			if snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Loading..." {
+				snapshot.Status = "Connections refresh failed: invalid controller response"
+			}
 			applyTUISSHConnections(snapshot, nil, selectedConnectionID, selectedRequestID)
 		}
 	} else {
@@ -342,6 +344,7 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 	}
 	profiles := make([]tuiProfile, 0, len(entries)+1)
 	subscriptionSources := loadTUISubscriptionSources(paths.HomeDir)
+	subscriptionInfos := loadTUISubscriptionInfo(paths.HomeDir)
 	currentFound := false
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -358,29 +361,39 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 		current := filepath.Clean(path) == filepath.Clean(paths.ConfigPath)
 		currentFound = currentFound || current
 		subscriptionURL := ""
+		var subscriptionInfo *tuiSubscriptionInfo
 		if stateKey, err := tuiProfileStateKey(paths.HomeDir, path); err == nil {
 			subscriptionURL = subscriptionSources[stateKey]
+			if info, found := subscriptionInfos[stateKey]; found && subscriptionURL != "" {
+				subscriptionInfo = &info
+			}
 		}
 		profiles = append(profiles, tuiProfile{
-			Name:            entry.Name(),
-			Path:            path,
-			Current:         current,
-			SubscriptionURL: subscriptionURL,
+			Name:             entry.Name(),
+			Path:             path,
+			Current:          current,
+			SubscriptionURL:  subscriptionURL,
+			SubscriptionInfo: subscriptionInfo,
 		})
 	}
 	if !currentFound {
 		subscriptionURL := ""
+		var subscriptionInfo *tuiSubscriptionInfo
 		if stateKey, err := tuiProfileStateKey(
 			paths.HomeDir,
 			paths.ConfigPath,
 		); err == nil {
 			subscriptionURL = subscriptionSources[stateKey]
+			if info, found := subscriptionInfos[stateKey]; found && subscriptionURL != "" {
+				subscriptionInfo = &info
+			}
 		}
 		profiles = append(profiles, tuiProfile{
-			Name:            filepath.Base(paths.ConfigPath),
-			Path:            paths.ConfigPath,
-			Current:         true,
-			SubscriptionURL: subscriptionURL,
+			Name:             filepath.Base(paths.ConfigPath),
+			Path:             paths.ConfigPath,
+			Current:          true,
+			SubscriptionURL:  subscriptionURL,
+			SubscriptionInfo: subscriptionInfo,
 		})
 	}
 	sort.Slice(profiles, func(i, j int) bool { return profiles[i].Name < profiles[j].Name })
@@ -433,6 +446,8 @@ func refreshTUISSH(snapshot *tuiSnapshot) {
 			LastError:     view.LastError,
 			Connected:     view.Connected,
 			Attached:      view.Attached,
+			SocksOnly:     view.SocksOnly,
+			Reverse:       view.Reverse,
 			Attachable:    view.Attachable,
 			Ready:         view.Ready,
 			SocksPort:     view.SocksPort,

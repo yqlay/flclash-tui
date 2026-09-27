@@ -66,6 +66,7 @@ type cliSSHTunnelState struct {
 	RelayPID     int       `json:"relay_pid,omitempty"`
 	Kind         string    `json:"kind"`
 	AutoCreated  bool      `json:"auto_created,omitempty"`
+	Reverse      bool      `json:"reverse,omitempty"`
 	StartedAt    time.Time `json:"started_at"`
 	StatePath    string    `json:"-"`
 }
@@ -86,6 +87,8 @@ type cliSSHProfileView struct {
 	Default       bool      `json:"default,omitempty"`
 	Connected     bool      `json:"connected"`
 	Attached      bool      `json:"attached,omitempty"`
+	SocksOnly     bool      `json:"socks_only,omitempty"`
+	Reverse       bool      `json:"reverse,omitempty"`
 	Attachable    bool      `json:"attachable,omitempty"`
 	Ready         bool      `json:"ready"`
 	SocksPort     int       `json:"socks_port,omitempty"`
@@ -305,7 +308,7 @@ func printSSHManagementUsage(w io.Writer) {
 	fmt.Fprintln(w, "  flclash ssh probe --json  # read-only endpoint check for flc ssh -d")
 	fmt.Fprintln(w, "`ssh add` with no arguments and `ssh edit NAME` open an interactive prompt.")
 	fmt.Fprintln(w, "`ssh connect` and `flc ssh COMMAND` use the default profile, or the only profile, when NAME is omitted.")
-	fmt.Fprintln(w, "`ssh connect` reuses a live OpenSSH ControlMaster or ssh -D SOCKS for that host when one exists; `ssh attach` only captures, never starts a new login.")
+	fmt.Fprintln(w, "`ssh attach` captures a SOCKS already on this machine (`ssh -D` / ControlMaster, or inbound `ssh -R`). `ssh connect` starts or reuses a tunnel to a saved host.")
 	fmt.Fprintln(w, "A broken persistent tunnel is rebuilt automatically before `flc ssh COMMAND` runs.")
 }
 

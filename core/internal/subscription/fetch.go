@@ -52,6 +52,7 @@ func FetchDetails(value string) (Payload, error) {
 	payload.FileName = NewFileName(
 		response.Header.Get("Content-Disposition"),
 	)
+	payload.UserInfo = response.Header.Get("Subscription-Userinfo")
 	return payload, nil
 }
 

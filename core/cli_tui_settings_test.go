@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -714,6 +715,8 @@ func TestTUIOperationResultKeepsLiveTrafficUpdates(t *testing.T) {
 }
 
 func TestBackendImportsSubscriptionWithoutStartingCore(t *testing.T) {
+	var userInfo atomic.Value
+	userInfo.Store("upload=1024; download=2048; total=10240; expire=1893456000")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.UserAgent() != tuiSubscriptionUserAgent {
 			http.Error(w, "forbidden", http.StatusForbidden)
@@ -722,6 +725,9 @@ func TestBackendImportsSubscriptionWithoutStartingCore(t *testing.T) {
 		if !strings.Contains(request.Header.Get("Accept"), "application/yaml") {
 			http.Error(w, "missing YAML accept header", http.StatusNotAcceptable)
 			return
+		}
+		if value := userInfo.Load().(string); value != "" {
+			w.Header().Set("Subscription-Userinfo", value)
 		}
 		_, _ = io.WriteString(w, `mixed-port: 17891
 mode: rule
@@ -747,7 +753,7 @@ rules:
 		nil,
 		nil,
 	)
-	data, err := fetchTUISubscription(server.URL)
+	payload, err := fetchTUISubscriptionDetails(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,9 +766,10 @@ rules:
 		ExpectedRevision: &revision,
 		Action:           "put_profile",
 		ConfigPath:       path,
-		ProfileData:      data,
+		ProfileData:      payload.Data,
 		CreateOnly:       true,
 		SubscriptionURL:  &sourceURL,
+		SubscriptionInfo: parseTUISubscriptionInfo(payload.UserInfo),
 	})
 	if !status.OK {
 		t.Fatalf("import response = %+v", status)
@@ -776,6 +783,37 @@ rules:
 	linkedURL, err := loadTUISubscriptionSource(directory, path)
 	if err != nil || linkedURL != server.URL {
 		t.Fatalf("subscription source = %q, %v", linkedURL, err)
+	}
+	info := loadTUISubscriptionInfo(directory)["profile-imported.yaml"]
+	if info.Total == nil || *info.Total != 10240 || info.FetchedAt.IsZero() {
+		t.Fatalf("saved subscription info = %+v", info)
+	}
+	profiles, err := listCLIProfiles(cliPaths{HomeDir: directory, ConfigPath: path})
+	if err != nil || len(profiles) != 1 || profiles[0].SubscriptionInfo == nil {
+		t.Fatalf("CLI profiles lost subscription info: %+v, %v", profiles, err)
+	}
+
+	userInfo.Store("")
+	payload, err = fetchTUISubscriptionDetails(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision = status.Revision
+	status = runtime.handle(tuiServiceRequest{
+		ProtocolVersion:  tuiServiceProtocolVersion,
+		RequestID:        "refresh-no-userinfo",
+		ExpectedRevision: &revision,
+		Action:           "put_profile",
+		ConfigPath:       path,
+		ProfileData:      payload.Data,
+		ExpectedSHA256:   tuiBytesSHA256(payload.Data),
+		SubscriptionURL:  &sourceURL,
+	})
+	if !status.OK {
+		t.Fatalf("refresh without user info = %+v", status)
+	}
+	if _, found := loadTUISubscriptionInfo(directory)["profile-imported.yaml"]; found {
+		t.Fatal("refresh without metadata retained stale usage and expiry")
 	}
 }
 
@@ -1407,7 +1445,8 @@ func TestTUIProfileRenameMovesSavedSubscriptionSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	const sourceURL = "https://example.test/subscription"
-	if err := rememberTUISubscriptionSource(directory, sourcePath, sourceURL); err != nil {
+	info := parseTUISubscriptionInfo("upload=1024; download=2048; total=10240; expire=1893456000")
+	if err := rememberTUISubscriptionSourceWithInfo(directory, sourcePath, sourceURL, info); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1418,6 +1457,11 @@ func TestTUIProfileRenameMovesSavedSubscriptionSource(t *testing.T) {
 	sources := loadTUISubscriptionSources(directory)
 	if sources["old.yaml"] != "" || sources["new.yaml"] != sourceURL {
 		t.Fatalf("renamed subscription sources = %+v", sources)
+	}
+	infos := loadTUISubscriptionInfo(directory)
+	if _, found := infos["old.yaml"]; found || infos["new.yaml"].Total == nil ||
+		*infos["new.yaml"].Total != 10240 {
+		t.Fatalf("renamed subscription info = %+v", infos)
 	}
 	if filepath.Base(newPath) != "new.yaml" {
 		t.Fatalf("renamed path = %q", newPath)

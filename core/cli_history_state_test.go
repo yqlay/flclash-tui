@@ -250,6 +250,9 @@ func TestTUIHistoryRefreshAndClearAreSerialized(t *testing.T) {
 }
 
 func TestTUIHistoryMarksEntriesCompleteWhenCoreStops(t *testing.T) {
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = t.TempDir()
+	t.Cleanup(func() { cliRuntimeDirectoryOverride = previousRuntime })
 	runtime := newTestTUIServiceRuntime(t)
 	runtime.mu.Lock()
 	runtime.history = []tuiRequest{{

@@ -177,10 +177,11 @@ func TestTUIServiceRuntimeDeletesProfileAndLinkedMetadata(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := rememberTUISubscriptionSource(
+	if err := rememberTUISubscriptionSourceWithInfo(
 		directory,
 		targetPath,
 		"https://secret.example/subscription-token",
+		parseTUISubscriptionInfo("upload=1024; download=2048; total=10240"),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -208,6 +209,9 @@ func TestTUIServiceRuntimeDeletesProfileAndLinkedMetadata(t *testing.T) {
 	if _, err := loadTUISubscriptionSource(directory, targetPath); err == nil ||
 		!strings.Contains(err.Error(), "not linked") {
 		t.Fatalf("deleted Profile metadata remains: %v", err)
+	}
+	if _, found := loadTUISubscriptionInfo(directory)["school.yaml"]; found {
+		t.Fatal("deleted Profile subscription usage remains")
 	}
 
 	revision = status.Revision

@@ -427,10 +427,11 @@ func TestStopAllCLISSHTunnelsRemovesStaleAskpassSecrets(t *testing.T) {
 	}
 }
 
-func TestTUISSHPageRendersMaskedAuthentication(t *testing.T) {
+func TestTUISSHPageKeepsAuthenticationOutOfMetrics(t *testing.T) {
 	snapshot := tuiSnapshot{
-		Page:         tuiPageSSH,
-		SelectedMenu: int(tuiPageSSH),
+		Page:          tuiPageSSH,
+		SelectedMenu:  int(tuiPageSSH),
+		SSHDetailName: "school",
 		SSHProfiles: []tuiSSHProfile{{
 			Name:          "school",
 			Destination:   "student@example.edu",
@@ -454,17 +455,21 @@ func TestTUISSHPageRendersMaskedAuthentication(t *testing.T) {
 		30,
 	))
 	for _, expected := range []string{
-		"SSH profiles · 1 configured",
-		"SSH Dashboard · school",
+		"SSH profiles · 1",
+		"SSH · school",
 		"school",
 		"CONNECTED",
-		"key + passphrase **** → password **** fallback/MFA",
 		"SOCKS5 127.0.0.1:45678",
-		"configured 1080",
+		"Proxy Inet IP",
+		"Proxy IP",
+		"Speed",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("SSH page does not contain %q:\n%s", expected, output)
 		}
+	}
+	if strings.Contains(output, "id_ed25519") || strings.Contains(output, "passphrase") || strings.Contains(output, "password ****") {
+		t.Fatalf("SSH metrics leaked authentication details:\n%s", output)
 	}
 }
 
@@ -495,46 +500,164 @@ func TestTUISSHPageDistinguishesBrokenSOCKSListener(t *testing.T) {
 	}
 }
 
-func TestTUISSHDashboardShowsExitTestsAndRelayTraffic(t *testing.T) {
-	output := stripTUIANSI(renderTUIAtSize(
-		tuiSnapshot{
-			Page:              tuiPageSSH,
-			SSHDashboardFocus: true,
-			SSHConnections:    2,
-			SSHTraffic:        trafficSnapshot{Up: 1024, Down: 2048},
-			SSHTotalTraffic:   trafficSnapshot{Up: 4096, Down: 8192},
-			SSHTrafficHistory: []trafficSnapshot{{Up: 1024, Down: 2048}},
-			SSHNetwork:        tuiNetworkInfo{PublicIP: "203.0.113.8", Country: "SG"},
-			SSHProfiles: []tuiSSHProfile{{
-				Name:        "school",
-				Destination: "student@example.edu",
-				Port:        22,
-				Connected:   true,
-				Ready:       true,
-				SocksPort:   1080,
-				StartedAt:   time.Now().Add(-time.Minute),
-			}},
-		},
-		cliPaths{},
-		"private Unix socket",
-		true,
-		false,
-		180,
-		40,
-	))
+func TestTUISSHDashboardShowsProxyMetricsAndRelayTraffic(t *testing.T) {
+	snapshot := tuiSnapshot{
+		Page:              tuiPageSSH,
+		SSHDashboardFocus: true,
+		SSHDetailName:     "school",
+		SSHConnections:    2,
+		SSHTraffic:        trafficSnapshot{Up: 1024, Down: 2048},
+		SSHTotalTraffic:   trafficSnapshot{Up: 4096, Down: 8192},
+		SSHTrafficHistory: []trafficSnapshot{{Up: 1024, Down: 2048}},
+		SSHNetwork:        tuiNetworkInfo{PublicIP: "203.0.113.8", Country: "SG"},
+		SSHDirectProbe:    cliSSHRemoteProbe{IntranetIP: "192.168.1.20 (eth0)"},
+		SSHProfiles: []tuiSSHProfile{{
+			Name:        "school",
+			Destination: "student@example.edu",
+			Port:        22,
+			Connected:   true,
+			Ready:       true,
+			SocksPort:   1080,
+			StartedAt:   time.Now().Add(-time.Minute),
+		}},
+	}
+	output := stripTUIANSI(renderTUIAtSize(snapshot, cliPaths{}, "private Unix socket", true, false, 180, 40))
 	for _, expected := range []string{
-		"SSH profiles · 1 configured",
-		"SSH Dashboard · school",
-		"SOCKS5 127.0.0.1:1080",
+		"SSH profiles · 1",
+		"SSH · school",
+		"127.0.0.1:1080",
+		"Proxy Inet IP",
+		"192.168.1.20 (eth0)",
+		"Proxy IP",
 		"203.0.113.8  [SG]",
-		"Managed CF DL",
-		"Live traffic",
-		"2 active",
-		"only traffic through this SSH SOCKS5 port",
+		"SOCKS5 127.0.0.1:1080",
+		"Speed",
+		"↓ 2.0 KB/s · ↑ 1.0 KB/s",
+		"Traffic history",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("SSH Dashboard does not contain %q:\n%s", expected, output)
 		}
+	}
+	if strings.Contains(output, "Direct CF DL") || strings.Contains(output, "Proxy CF DL") || strings.Contains(output, "Relay totals") {
+		t.Fatalf("SSH detail contains obsolete diagnostic rows:\n%s", output)
+	}
+}
+
+func TestTUISSHDetailsChartUsesRemainingHeight(t *testing.T) {
+	snapshot := tuiSnapshot{
+		Page:          tuiPageSSH,
+		SSHDetailName: "school",
+		SSHProfiles: []tuiSSHProfile{{
+			Name: "school", Destination: "student@example.edu", Port: 22,
+			Connected: true, Ready: true, SocksPort: 1080,
+		}},
+	}
+	previousChartHeight := 0
+	for _, height := range []int{18, 24, 30, 40} {
+		var output strings.Builder
+		drawTUISSH(&output, snapshot, 100, height)
+		lines := strings.Split(strings.TrimSuffix(stripTUIANSI(output.String()), "\n"), "\n")
+		if len(lines) > height {
+			t.Fatalf("SSH page overflows height %d: %d lines", height, len(lines))
+		}
+		chartTitle := -1
+		for index, line := range lines {
+			if strings.Contains(line, "Traffic history") {
+				chartTitle = index
+				break
+			}
+		}
+		if chartTitle < 0 {
+			t.Fatalf("height %d lost chart: %s", height, output.String())
+		}
+		chartHeight := len(lines) - chartTitle - 2
+		if chartHeight < 1 || chartHeight < previousChartHeight {
+			t.Fatalf("height %d chart lines = %d, previous %d", height, chartHeight, previousChartHeight)
+		}
+		previousChartHeight = chartHeight
+	}
+	if previousChartHeight <= 6 {
+		t.Fatalf("40-row terminal chart remained capped at %d lines", previousChartHeight)
+	}
+}
+
+func TestTUISSHOnlyChecksProxyIPsOnRequest(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.FocusSidebar = false
+	model.snapshot.SSHDetailName = "school"
+	model.snapshot.SSHProfiles = []tuiSSHProfile{{
+		Name: "school", Connected: true, Ready: true, SocksPort: 1080,
+	}}
+	if model.refreshSelectedSSHDashboard() == nil {
+		t.Fatal("Overview did not schedule local relay statistics")
+	}
+	if model.snapshot.SSHNetwork.Loading || model.snapshot.SSHDirectNetwork.Loading {
+		t.Fatal("Overview started an external network check")
+	}
+	model.snapshot.SSHDashboardFocus = true
+	if model.handleKey(tuiKeyNewProfile) == nil {
+		t.Fatal("n in SSH details did not schedule proxy IP checks")
+	}
+	if !model.snapshot.SSHNetwork.Loading {
+		t.Fatal("n did not start proxy IP check")
+	}
+	if model.handleKey(tuiKeyViewNext) != nil {
+		t.Fatal("SSH page still handles a view-switch shortcut")
+	}
+}
+
+func TestTUISSHReverseCaptureLabelsExitAndHidesUnavailableDirectRoute(t *testing.T) {
+	snapshot := tuiSnapshot{
+		Page:          tuiPageSSH,
+		SSHDetailName: "inbound",
+		SSHProfiles: []tuiSSHProfile{{
+			Name: "inbound", Connected: true, Ready: true, Attached: true,
+			SocksOnly: true, Reverse: true, SocksPort: 1080,
+		}},
+	}
+	var output strings.Builder
+	drawTUISSH(&output, snapshot, 100, 30)
+	if !strings.Contains(output.String(), "SSH client (-R)") {
+		t.Fatalf("SSH detail did not label reverse exit: %s", output.String())
+	}
+	plain := stripTUIANSI(output.String())
+	for _, expected := range []string{"SSH client", "captured SOCKS5", "Proxy Inet IP", "Proxy IP"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("reverse SSH detail missing %q: %s", expected, plain)
+		}
+	}
+	if strings.Contains(plain, "Direct exit") || strings.Contains(plain, "Direct CF DL") {
+		t.Fatalf("captured SOCKS5 pretended to offer remote direct route: %s", plain)
+	}
+}
+
+func TestTUISSHDetailsFitShortTerminals(t *testing.T) {
+	snapshot := tuiSnapshot{
+		Page:          tuiPageSSH,
+		SSHDetailName: "school",
+		SSHProfiles: []tuiSSHProfile{{
+			Name: "school", Destination: "student@example.edu", Port: 22,
+			Connected: true, Ready: true, SocksPort: 1080,
+		}},
+	}
+	for _, height := range []int{14, 18, 24, 30, 40} {
+		var output strings.Builder
+		drawTUISSH(&output, snapshot, 100, height)
+		plain := stripTUIANSI(output.String())
+		lines := strings.Split(strings.TrimSuffix(plain, "\n"), "\n")
+		if len(lines) > height || !strings.Contains(plain, "Speed") {
+			t.Fatalf("SSH detail height %d: %d lines, speed visible %t", height, len(lines), strings.Contains(plain, "Speed"))
+		}
+	}
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot = snapshot
+	model.snapshot.SSHDashboardFocus = true
+	model.snapshot.SSHProfiles[0].SocksOnly = true
+	_ = model.moveSelection(1)
+	if !model.snapshot.SSHDashboardFocus {
+		t.Fatal("SSH detail lost focus when moving within single-action card")
 	}
 }
 
@@ -553,8 +676,8 @@ func TestTUIEnterReconnectsBrokenSSHProfileFromProfileBox(t *testing.T) {
 	if command == nil || model.snapshot.Status != "SSH connect school..." {
 		t.Fatalf("broken SSH profile action = command:%t status:%q", command != nil, model.snapshot.Status)
 	}
-	if model.snapshot.SSHDashboardFocus {
-		t.Fatal("broken SSH profile moved focus before reconnecting")
+	if !model.snapshot.SSHDashboardFocus || model.snapshot.SSHDetailName != "school" {
+		t.Fatal("broken SSH profile did not open details before reconnecting")
 	}
 }
 
@@ -580,13 +703,14 @@ func TestTUIEnterFocusesDashboardForHealthySSHProfile(t *testing.T) {
 	}
 }
 
-func TestTUISSHProfileSelectionResetsMetricsAndRefreshesReadyProfile(t *testing.T) {
+func TestTUISSHProfileSelectionOnlyMovesListFocus(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.snapshot.Page = tuiPageSSH
 	model.snapshot.SSHProfiles = []tuiSSHProfile{
 		{Name: "first"},
 		{Name: "second", Connected: true, Ready: true, SocksPort: 1080},
 	}
+	model.snapshot.SSHDetailName = "first"
 	model.snapshot.SSHNetwork = tuiNetworkInfo{PublicIP: "203.0.113.1"}
 	model.snapshot.SSHDelay = tuiDelayResult{MedianMillis: 25}
 	model.snapshot.SSHTrafficHistory = []trafficSnapshot{{Up: 10, Down: 20}}
@@ -595,13 +719,159 @@ func TestTUISSHProfileSelectionResetsMetricsAndRefreshesReadyProfile(t *testing.
 	if model.snapshot.SelectedSSH != 1 {
 		t.Fatalf("selected SSH profile = %d, want 1", model.snapshot.SelectedSSH)
 	}
-	if model.snapshot.SSHNetwork.PublicIP != "" ||
-		model.snapshot.SSHDelay.MedianMillis != 0 ||
-		len(model.snapshot.SSHTrafficHistory) != 0 {
-		t.Fatalf("SSH metrics survived profile switch: %+v", model.snapshot)
+	if model.snapshot.SSHDetailName != "first" ||
+		model.snapshot.SSHNetwork.PublicIP != "203.0.113.1" ||
+		model.snapshot.SSHDelay.MedianMillis != 25 ||
+		len(model.snapshot.SSHTrafficHistory) != 1 {
+		t.Fatalf("SSH detail followed list focus: %+v", model.snapshot)
 	}
-	if command == nil {
-		t.Fatal("ready SSH profile switch did not schedule Dashboard refresh")
+	if command != nil {
+		t.Fatal("moving SSH list focus scheduled a dashboard refresh")
+	}
+}
+
+func TestTUISSHDetailsOpenOnlyOnEnter(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.width, model.height = 120, 36
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.SSHProfiles = []tuiSSHProfile{
+		{Name: "first", Connected: true, Ready: true, SocksPort: 1080},
+		{Name: "second", Connected: true, Ready: true, SocksPort: 2080},
+	}
+	if plain := stripTUIANSI(model.View()); strings.Contains(plain, "SSH · first") || strings.Contains(plain, "SSH · second") {
+		t.Fatalf("details appeared before Enter:\n%s", plain)
+	}
+	if command := model.moveSelection(1); command != nil || model.snapshot.SelectedSSH != 1 {
+		t.Fatalf("list focus move started work: selected=%d command=%v", model.snapshot.SelectedSSH, command)
+	}
+	if model.snapshot.SSHDetailName != "" {
+		t.Fatalf("list focus opened details: %q", model.snapshot.SSHDetailName)
+	}
+	_ = model.selectCurrent()
+	if model.snapshot.SSHDetailName != "second" || !model.snapshot.SSHDashboardFocus {
+		t.Fatalf("Enter did not open second profile: %+v", model.snapshot)
+	}
+	model.snapshot.SSHNetwork = tuiNetworkInfo{PublicIP: "203.0.113.2"}
+	model.snapshot.SSHTraffic = trafficSnapshot{Down: 2048}
+	model.snapshot.SSHDashboardFocus = false
+	if command := model.moveSelection(-1); command != nil || model.snapshot.SelectedSSH != 0 {
+		t.Fatalf("list focus move started work: selected=%d command=%v", model.snapshot.SelectedSSH, command)
+	}
+	if model.snapshot.SSHDetailName != "second" || model.snapshot.SSHNetwork.PublicIP != "203.0.113.2" {
+		t.Fatalf("moving list highlight switched details: %+v", model.snapshot)
+	}
+	plain := stripTUIANSI(model.View())
+	if !strings.Contains(plain, "SSH · second") || !strings.Contains(plain, "203.0.113.2") {
+		t.Fatalf("pinned details disappeared after list navigation:\n%s", plain)
+	}
+	_ = model.selectCurrent()
+	if model.snapshot.SSHDetailName != "first" || model.snapshot.SSHNetwork.PublicIP != "" || model.snapshot.SSHTraffic.Down != 0 {
+		t.Fatalf("Enter did not switch and clear stale metrics: %+v", model.snapshot)
+	}
+	_, _ = model.Update(tuiSSHNetworkResultMsg{name: "second", info: tuiNetworkInfo{PublicIP: "203.0.113.2"}})
+	if model.snapshot.SSHNetwork.PublicIP != "" {
+		t.Fatal("late result from previous SSH detail contaminated current profile")
+	}
+}
+
+func TestTUISSHAsyncResultsDoNotCrossDetailGenerations(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.SSHDetailName = "school"
+	oldGeneration := model.sshDetailGeneration
+	model.resetSelectedSSHMetrics()
+	currentGeneration := model.sshDetailGeneration
+	model.snapshot.SSHNetwork = tuiNetworkInfo{PublicIP: "203.0.113.1"}
+	model.snapshot.SSHDelay = tuiDelayResult{MedianMillis: 10}
+	model.snapshot.SSHSpeed = tuiSpeedResult{BytesPerSecond: 100}
+	model.snapshot.SSHDirectProbe = cliSSHRemoteProbe{IntranetIP: "192.0.2.1"}
+	model.snapshot.SSHTraffic = trafficSnapshot{Down: 25}
+
+	_, _ = model.Update(tuiSSHNetworkResultMsg{name: "school", generation: oldGeneration, info: tuiNetworkInfo{PublicIP: "203.0.113.2"}})
+	_, _ = model.Update(tuiSSHDelayResultMsg{name: "school", generation: oldGeneration, result: tuiDelayResult{MedianMillis: 20}})
+	_, _ = model.Update(tuiSSHSpeedResultMsg{name: "school", generation: oldGeneration, result: tuiSpeedResult{BytesPerSecond: 200}})
+	_, _ = model.Update(tuiSSHDirectProbeResultMsg{name: "school", generation: oldGeneration, probe: cliSSHRemoteProbe{IntranetIP: "192.0.2.2"}})
+	_, _ = model.Update(tuiSSHRelayStatsMsg{name: "school", generation: oldGeneration, at: time.Now(), stats: cliSSHRelayStats{Download: 200}})
+	if model.snapshot.SSHNetwork.PublicIP != "203.0.113.1" ||
+		model.snapshot.SSHDelay.MedianMillis != 10 ||
+		model.snapshot.SSHSpeed.BytesPerSecond != 100 ||
+		model.snapshot.SSHDirectProbe.IntranetIP != "192.0.2.1" ||
+		model.snapshot.SSHTraffic.Down != 25 {
+		t.Fatalf("stale SSH results changed current dashboard: %+v", model.snapshot)
+	}
+
+	_, _ = model.Update(tuiSSHNetworkResultMsg{name: "school", generation: currentGeneration, info: tuiNetworkInfo{PublicIP: "203.0.113.3"}})
+	if model.snapshot.SSHNetwork.PublicIP != "203.0.113.3" {
+		t.Fatal("current SSH result was ignored")
+	}
+}
+
+func TestTUISSHProxyRefreshIgnoresPreviousRequest(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.SSHDetailName = "school"
+	model.snapshot.SSHNetwork = tuiNetworkInfo{PublicIP: "203.0.113.1"}
+	model.snapshot.SSHDirectProbe = cliSSHRemoteProbe{IntranetIP: "192.0.2.1"}
+	generation := model.sshDetailGeneration
+	model.sshProxyRefreshSequence = 2
+	_, _ = model.Update(tuiSSHNetworkResultMsg{name: "school", generation: generation, sequence: 1, info: tuiNetworkInfo{PublicIP: "203.0.113.2"}})
+	_, _ = model.Update(tuiSSHDirectProbeResultMsg{name: "school", generation: generation, sequence: 1, probe: cliSSHRemoteProbe{IntranetIP: "192.0.2.2"}})
+	if model.snapshot.SSHNetwork.PublicIP != "203.0.113.1" || model.snapshot.SSHDirectProbe.IntranetIP != "192.0.2.1" {
+		t.Fatalf("old SSH refresh overwrote current IPs: network=%+v probe=%+v", model.snapshot.SSHNetwork, model.snapshot.SSHDirectProbe)
+	}
+	_, _ = model.Update(tuiSSHNetworkResultMsg{name: "school", generation: generation, sequence: 2, info: tuiNetworkInfo{PublicIP: "203.0.113.3"}})
+	if model.snapshot.SSHNetwork.PublicIP != "203.0.113.3" {
+		t.Fatal("latest SSH proxy refresh was ignored")
+	}
+}
+
+func TestTUISSHRefreshClearsMetricsAfterExternalTunnelChange(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.SSHDetailName = "school"
+	model.snapshot.SSHProfiles = []tuiSSHProfile{{
+		Name: "school", Connected: true, Ready: true, SocksPort: 1080,
+		StartedAt: time.Unix(100, 0),
+	}}
+	model.snapshot.SSHNetwork = tuiNetworkInfo{PublicIP: "203.0.113.1"}
+	model.snapshot.SSHTraffic = trafficSnapshot{Down: 42}
+	oldGeneration := model.sshDetailGeneration
+	refreshed := model.snapshot
+	refreshed.SSHProfiles = []tuiSSHProfile{{Name: "school"}}
+	_, _ = model.Update(tuiRefreshResultMsg{sequence: model.refreshSequence, snapshot: refreshed})
+	if model.snapshot.SSHNetwork.PublicIP != "" || model.snapshot.SSHTraffic.Down != 0 ||
+		model.sshDetailGeneration == oldGeneration {
+		t.Fatalf("external SSH disconnect retained old dashboard state: %+v", model.snapshot)
+	}
+	_, _ = model.Update(tuiSSHNetworkResultMsg{name: "school", generation: oldGeneration, info: tuiNetworkInfo{PublicIP: "203.0.113.2"}})
+	if model.snapshot.SSHNetwork.PublicIP != "" {
+		t.Fatal("result from disconnected tunnel restored stale SSH IP")
+	}
+}
+
+func TestTUISSHRelayStatsIgnoreOutOfOrderAndCounterReset(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.SSHDetailName = "school"
+	start := time.Now()
+	generation := model.sshDetailGeneration
+	_, _ = model.Update(tuiSSHRelayStatsMsg{name: "school", generation: generation, at: start, stats: cliSSHRelayStats{Upload: 100, Download: 200}})
+	_, _ = model.Update(tuiSSHRelayStatsMsg{name: "school", generation: generation, at: start.Add(time.Second), stats: cliSSHRelayStats{Upload: 150, Download: 280}})
+	if model.snapshot.SSHTraffic.Up != 50 || model.snapshot.SSHTraffic.Down != 80 {
+		t.Fatalf("unexpected SSH rates: %+v", model.snapshot.SSHTraffic)
+	}
+	historySize := len(model.snapshot.SSHTrafficHistory)
+	_, _ = model.Update(tuiSSHRelayStatsMsg{name: "school", generation: generation, at: start.Add(500 * time.Millisecond), stats: cliSSHRelayStats{Upload: 110, Download: 210}})
+	if model.snapshot.SSHTraffic.UpTotal != 150 || len(model.snapshot.SSHTrafficHistory) != historySize {
+		t.Fatalf("out-of-order SSH stats overwrote latest sample: %+v", model.snapshot.SSHTraffic)
+	}
+	_, _ = model.Update(tuiSSHRelayStatsMsg{name: "school", generation: generation, at: start.Add(2 * time.Second), stats: cliSSHRelayStats{Upload: 5, Download: 8}})
+	if model.snapshot.SSHTraffic.Up != 0 || model.snapshot.SSHTraffic.Down != 0 || model.snapshot.SSHTraffic.UpTotal != 5 {
+		t.Fatalf("counter reset produced incorrect SSH rates: %+v", model.snapshot.SSHTraffic)
+	}
+	_, _ = model.Update(tuiSSHRelayStatsMsg{name: "school", generation: generation, at: start.Add(3 * time.Second), stats: cliSSHRelayStats{PID: 42, Upload: 500, Download: 800}})
+	if model.snapshot.SSHTraffic.Up != 0 || model.snapshot.SSHTraffic.Down != 0 || model.snapshot.SSHTraffic.UpTotal != 500 {
+		t.Fatalf("replacement SSH relay produced incorrect rates: %+v", model.snapshot.SSHTraffic)
 	}
 }
 
@@ -637,13 +907,15 @@ func TestTUISSHCompactPageKeepsProfilesAndDashboardVisible(t *testing.T) {
 		12,
 	))
 	for _, expected := range []string{
-		"SSH profiles · 1 configured",
-		"SSH Dashboard · school",
-		"Traffic",
+		"SSH profiles · 1",
+		"DISCONNECTED",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("compact SSH page does not contain %q:\n%s", expected, output)
 		}
+	}
+	if strings.Contains(output, "SSH · school") {
+		t.Fatalf("unopened SSH profile showed details:\n%s", output)
 	}
 }
 
@@ -1587,15 +1859,17 @@ func TestFLCSSHDirectTemporaryTunnelCleansUpAfterRejectedProbe(t *testing.T) {
 	}
 }
 
-func TestTUISSHDirectDashboardLabelsBlockedRemoteTun(t *testing.T) {
+func TestTUISSHDetailDoesNotExposeDirectRoute(t *testing.T) {
 	output := stripTUIANSI(renderTUIAtSize(
 		tuiSnapshot{
 			Page:              tuiPageSSH,
 			SSHDashboardFocus: true,
+			SSHDetailName:     "school",
 			SSHDirectProbe: cliSSHRemoteProbe{
 				ProtocolVersion: cliSSHRemoteProbeVersion,
 				Available:       true,
 				TunEnabled:      true,
+				IntranetIP:      "192.168.1.20 (eth0)",
 				Reason:          "FlClash transparent TUN is enabled",
 			},
 			SSHProfiles: []tuiSSHProfile{{
@@ -1605,20 +1879,25 @@ func TestTUISSHDirectDashboardLabelsBlockedRemoteTun(t *testing.T) {
 		},
 		cliPaths{}, "private Unix socket", true, false, 180, 40,
 	))
-	for _, expected := range []string{
-		"B managed IP", "B direct exit", "BLOCKED · FlClash transparent TUN is enabled", "Direct CF DL",
-	} {
+	for _, expected := range []string{"Proxy Inet IP", "192.168.1.20 (eth0)", "Proxy IP", "Speed"} {
 		if !strings.Contains(output, expected) {
-			t.Fatalf("SSH direct Dashboard does not contain %q:\n%s", expected, output)
+			t.Fatalf("SSH detail does not contain %q:\n%s", expected, output)
 		}
+	}
+	if strings.Contains(output, "Direct exit") || strings.Contains(output, "Direct CF DL") {
+		t.Fatalf("SSH detail still exposes direct route rows:\n%s", output)
 	}
 }
 
-func TestTUISSHDashboardOrdersInetDirectAndManagedExitRows(t *testing.T) {
+func TestTUISSHDashboardOrdersProxyMetrics(t *testing.T) {
 	output := stripTUIANSI(renderTUIAtSize(
 		tuiSnapshot{
 			Page:              tuiPageSSH,
 			SSHDashboardFocus: true,
+			SSHDetailName:     "school",
+			SSHTraffic: trafficSnapshot{
+				Up: 1024, Down: 2048,
+			},
 			SSHNetwork: tuiNetworkInfo{
 				IntranetIP: "172.18.130.216 (eth7)",
 				PublicIP:   "198.51.100.10",
@@ -1643,15 +1922,11 @@ func TestTUISSHDashboardOrdersInetDirectAndManagedExitRows(t *testing.T) {
 		cliPaths{}, "private Unix socket", true, false, 180, 40,
 	))
 	wantOrder := []string{
-		"A inet IP",
-		"B inet IP",
-		"B direct exit",
-		"B direct IP",
-		"Direct RTT",
-		"Direct CF DL",
-		"B managed IP",
-		"Managed RTT",
-		"Managed CF DL",
+		"Tunnel",
+		"Proxy Inet IP",
+		"Proxy IP",
+		"Speed",
+		"Traffic history",
 	}
 	previous := -1
 	for _, label := range wantOrder {
@@ -1661,22 +1936,31 @@ func TestTUISSHDashboardOrdersInetDirectAndManagedExitRows(t *testing.T) {
 		}
 		previous = position
 	}
-	for _, expected := range []string{
-		"172.18.130.216 (eth7)",
-		"192.168.1.20 (eth0)",
-	} {
+	for _, expected := range []string{"192.168.1.20 (eth0)", "198.51.100.10", "↓ 2.0 KB/s · ↑ 1.0 KB/s"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("SSH Dashboard does not render %q:\n%s", expected, output)
 		}
 	}
+	if strings.Contains(output, "172.18.130.216 (eth7)") || strings.Contains(output, "203.0.113.20") {
+		t.Fatalf("SSH detail displays local or direct-route IP:\n%s", output)
+	}
 }
 
-func TestTUISSHDashboardDirectRowsRouteTestsToDirectExit(t *testing.T) {
-	for row := 0; row < tuiSSHDashboardRowCount; row++ {
-		wantDirect := row >= tuiSSHDashboardDirectExitRow &&
-			row <= tuiSSHDashboardDirectSpeedRow
-		if got := tuiSSHDashboardRowIsDirect(row); got != wantDirect {
-			t.Fatalf("SSH Dashboard row %d direct = %t, want %t", row, got, wantDirect)
+func TestTUISSHDisconnectedHidesProxyMetrics(t *testing.T) {
+	snapshot := tuiSnapshot{
+		Page:          tuiPageSSH,
+		SSHDetailName: "school",
+		SSHProfiles:   []tuiSSHProfile{{Name: "school", Destination: "student@example.edu", Port: 22}},
+	}
+	var output strings.Builder
+	drawTUISSH(&output, snapshot, 100, 30)
+	plain := stripTUIANSI(output.String())
+	if !strings.Contains(plain, "DISCONNECTED") || !strings.Contains(plain, "Enter connect") {
+		t.Fatalf("disconnected SSH status missing:\n%s", plain)
+	}
+	for _, hidden := range []string{"Proxy Inet IP", "Proxy IP", "Speed", "Traffic history"} {
+		if strings.Contains(plain, hidden) {
+			t.Fatalf("disconnected SSH page shows %q:\n%s", hidden, plain)
 		}
 	}
 }
@@ -2940,7 +3224,8 @@ func TestCLISSHFriendlyErrorMapsOpenSSHFailures(t *testing.T) {
 func TestTUISSHPageRendersDefaultAndLastError(t *testing.T) {
 	output := stripTUIANSI(renderTUIAtSize(
 		tuiSnapshot{
-			Page: tuiPageSSH,
+			Page:          tuiPageSSH,
+			SSHDetailName: "school",
 			SSHProfiles: []tuiSSHProfile{{
 				Name:        "school",
 				Default:     true,

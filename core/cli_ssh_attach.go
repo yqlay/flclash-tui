@@ -270,7 +270,7 @@ func stopCLIAttachedTunnel(state cliSSHTunnelState) error {
 
 func restoreCLIPreviousSSHTunnel(old cliSSHTunnelState, oldProfile cliSSHProfile) error {
 	if old.Kind == cliSSHAttachedSOCKSKind {
-		_, err := attachCLISSHSocksTunnel(oldProfile, old.UpstreamPort)
+		_, err := attachCLISSHSocksTunnel(oldProfile, old.UpstreamPort, old.AutoCreated, old.Reverse)
 		return err
 	}
 	if cliSSHTunnelOwnsMaster(old) {
@@ -450,6 +450,7 @@ func attachCLISSHSocksTunnel(profile cliSSHProfile, socksPort int, autoCreated .
 		}
 	}
 	isAutoCreated := len(autoCreated) > 0 && autoCreated[0]
+	isReverse := len(autoCreated) > 1 && autoCreated[1]
 	state := cliSSHTunnelState{
 		Name:         profile.Name,
 		Destination:  formatCLISSHDestination(profile.Username, profile.Host),
@@ -457,6 +458,7 @@ func attachCLISSHSocksTunnel(profile cliSSHProfile, socksPort int, autoCreated .
 		UpstreamPort: socksPort,
 		Kind:         cliSSHAttachedSOCKSKind,
 		AutoCreated:  isAutoCreated,
+		Reverse:      isReverse,
 		StartedAt:    time.Now(),
 		StatePath: filepath.Join(
 			runtimeDirectory,

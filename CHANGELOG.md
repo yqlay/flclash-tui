@@ -1,3 +1,10 @@
+## FlClash TUI v0.5.32
+
+- Simplify the SSH page: selecting a profile only moves the highlight; Enter opens its compact tunnel, IP, live-speed, and adaptive traffic view. Capture distinguishes existing local SOCKS from inbound reverse SOCKS without opening a new SSH login.
+- Show subscription usage, quota, expiry, and fetch time when the provider supplies `Subscription-Userinfo`; keep local profiles and missing metadata explicitly unknown.
+- Keep SSH dashboard results tied to the opened tunnel and latest refresh. Ignore late network checks, out-of-order relay samples, and samples from a restarted relay; clear stale metrics after an external tunnel change.
+- Clear stale Connections rows after a malformed controller response, and add regression coverage for SSH, Connections, subscription metadata, and TUI navigation.
+
 ## FlClash TUI v0.5.31
 
 - Support auto-detecting and capturing inbound SSH reverse SOCKS5 proxies (`ssh -R <port> user@this-host`): scans loopback listen ports via `/proc/net/tcp` and `/proc/net/tcp6`, validates via SOCKS5 handshake, matches remote client IPs from sshd connections, and displays candidates in TUI Capture and `flclash ssh attach`.

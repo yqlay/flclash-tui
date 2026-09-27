@@ -5,6 +5,7 @@ package main
 import (
 	"net/http"
 
+	"core/internal/protocol"
 	"core/internal/subscription"
 )
 
@@ -14,6 +15,7 @@ const (
 )
 
 type tuiSubscriptionPayload = subscription.Payload
+type tuiSubscriptionInfo = protocol.TuiSubscriptionInfo
 
 func normalizeTUISubscription(data []byte) (tuiSubscriptionPayload, error) {
 	return subscription.Normalize(data)

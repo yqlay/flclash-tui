@@ -19,12 +19,13 @@ const (
 )
 
 type tuiPersistentState struct {
-	Version             int               `json:"version"`
-	ActiveProfile       string            `json:"active_profile,omitempty"`
-	SelectedProxies     map[string]string `json:"selected_proxies,omitempty"`
-	SubscriptionSources map[string]string `json:"subscription_sources,omitempty"`
-	TrafficMode         string            `json:"traffic_mode,omitempty"`
-	FLCOutbound         string            `json:"flc_outbound,omitempty"`
+	Version             int                            `json:"version"`
+	ActiveProfile       string                         `json:"active_profile,omitempty"`
+	SelectedProxies     map[string]string              `json:"selected_proxies,omitempty"`
+	SubscriptionSources map[string]string              `json:"subscription_sources,omitempty"`
+	SubscriptionInfo    map[string]tuiSubscriptionInfo `json:"subscription_info,omitempty"`
+	TrafficMode         string                         `json:"traffic_mode,omitempty"`
+	FLCOutbound         string                         `json:"flc_outbound,omitempty"`
 }
 
 func loadTUIState(homeDir string) (tuiPersistentState, error) {
@@ -56,6 +57,9 @@ func loadTUIState(homeDir string) (tuiPersistentState, error) {
 	}
 	if state.SubscriptionSources == nil {
 		state.SubscriptionSources = map[string]string{}
+	}
+	if state.SubscriptionInfo == nil {
+		state.SubscriptionInfo = map[string]tuiSubscriptionInfo{}
 	}
 	return state, nil
 }
@@ -109,6 +113,9 @@ func saveTUIState(homeDir string, state tuiPersistentState) error {
 	}
 	if state.SubscriptionSources == nil {
 		state.SubscriptionSources = map[string]string{}
+	}
+	if state.SubscriptionInfo == nil {
+		state.SubscriptionInfo = map[string]tuiSubscriptionInfo{}
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -227,6 +234,13 @@ func tuiProfileStateKey(homeDir, profilePath string) (string, error) {
 }
 
 func rememberTUISubscriptionSource(homeDir, profilePath, sourceURL string) error {
+	return rememberTUISubscriptionSourceWithInfo(homeDir, profilePath, sourceURL, nil)
+}
+
+func rememberTUISubscriptionSourceWithInfo(
+	homeDir, profilePath, sourceURL string,
+	info *tuiSubscriptionInfo,
+) error {
 	key, err := tuiProfileStateKey(homeDir, profilePath)
 	if err != nil {
 		return err
@@ -234,12 +248,37 @@ func rememberTUISubscriptionSource(homeDir, profilePath, sourceURL string) error
 	if strings.TrimSpace(sourceURL) == "" {
 		return errors.New("subscription URL must not be empty")
 	}
+	if err := validateTUISubscriptionInfo(info); err != nil {
+		return err
+	}
 	return updateTUIState(homeDir, func(state *tuiPersistentState) {
 		if state.SubscriptionSources == nil {
 			state.SubscriptionSources = map[string]string{}
 		}
 		state.SubscriptionSources[key] = sourceURL
+		if info == nil {
+			delete(state.SubscriptionInfo, key)
+		} else {
+			if state.SubscriptionInfo == nil {
+				state.SubscriptionInfo = map[string]tuiSubscriptionInfo{}
+			}
+			state.SubscriptionInfo[key] = *info
+		}
 	})
+}
+
+func loadTUISubscriptionInfo(homeDir string) map[string]tuiSubscriptionInfo {
+	state, err := loadTUIState(homeDir)
+	if err != nil {
+		return map[string]tuiSubscriptionInfo{}
+	}
+	info := make(map[string]tuiSubscriptionInfo, len(state.SubscriptionInfo))
+	for profile, details := range state.SubscriptionInfo {
+		if validateTUISubscriptionInfo(&details) == nil {
+			info[filepath.Clean(profile)] = details
+		}
+	}
+	return info
 }
 
 func loadTUISubscriptionSources(homeDir string) map[string]string {
@@ -288,6 +327,10 @@ func renameTUISubscriptionSource(homeDir, oldPath, newPath string) error {
 		}
 		delete(state.SubscriptionSources, oldKey)
 		state.SubscriptionSources[newKey] = sourceURL
+		if info, found := state.SubscriptionInfo[oldKey]; found {
+			delete(state.SubscriptionInfo, oldKey)
+			state.SubscriptionInfo[newKey] = info
+		}
 	})
 }
 

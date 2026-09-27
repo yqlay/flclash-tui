@@ -507,9 +507,10 @@ func TestTUIFocusNavigationMakesSidebarOperable(t *testing.T) {
 
 func TestTUIFocusNavigationCyclesThroughSSHProfilesAndDashboard(t *testing.T) {
 	snapshot := tuiSnapshot{
-		Page:         tuiPageSSH,
-		SelectedMenu: int(tuiPageSSH),
-		FocusSidebar: true,
+		Page:          tuiPageSSH,
+		SelectedMenu:  int(tuiPageSSH),
+		FocusSidebar:  true,
+		SSHDetailName: "school",
 	}
 	if !handleTUIFocusNavigation(&snapshot, tuiKeyFocusNext) ||
 		snapshot.FocusSidebar || snapshot.SSHDashboardFocus {
@@ -540,8 +541,8 @@ func TestTUIFocusNavigationCyclesThroughSSHProfilesAndDashboard(t *testing.T) {
 func TestPreserveTUIInteractionKeepsSSHSelectionDashboardAndMetrics(t *testing.T) {
 	current := tuiSnapshot{
 		SSHDashboardFocus: true,
+		SSHDetailName:     "second",
 		SelectedSSH:       1,
-		SelectedSSHDetail: 3,
 		SSHNetwork:        tuiNetworkInfo{PublicIP: "203.0.113.8"},
 		SSHTrafficHistory: []trafficSnapshot{{Up: 10, Down: 20}},
 		SSHProfiles: []tuiSSHProfile{
@@ -558,10 +559,28 @@ func TestPreserveTUIInteractionKeepsSSHSelectionDashboardAndMetrics(t *testing.T
 	merged := preserveTUIInteraction(current, updated)
 	if merged.SelectedSSH != 0 ||
 		!merged.SSHDashboardFocus ||
-		merged.SelectedSSHDetail != 3 ||
+		merged.SSHDetailName != "second" ||
 		merged.SSHNetwork.PublicIP != "203.0.113.8" ||
 		len(merged.SSHTrafficHistory) != 1 {
 		t.Fatalf("SSH interaction was not preserved: %+v", merged)
+	}
+}
+
+func TestPreserveTUIInteractionClosesDeletedSSHDetail(t *testing.T) {
+	current := tuiSnapshot{
+		Page:              tuiPageSSH,
+		SelectedSSH:       0,
+		SSHDetailName:     "removed",
+		SSHDashboardFocus: true,
+		SSHProfiles: []tuiSSHProfile{
+			{Name: "removed"},
+			{Name: "remaining"},
+		},
+	}
+	updated := tuiSnapshot{SSHProfiles: []tuiSSHProfile{{Name: "remaining"}}}
+	merged := preserveTUIInteraction(current, updated)
+	if merged.SSHDetailName != "" || merged.SSHDashboardFocus {
+		t.Fatalf("deleted SSH profile detail survived refresh: %+v", merged)
 	}
 }
 
