@@ -4,12 +4,16 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
+	if m.languageSelectionOpen {
+		return m.handleLanguageSelection(message)
+	}
 	key, ok := tuiKeyFromTea(message)
 	if !ok {
 		return nil
@@ -51,8 +55,12 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 		}
 		return tea.Batch(cmds...)
 	}
+	if key == tuiKeySelect && m.snapshot.Page == tuiPageTools && !m.snapshot.FocusSidebar && m.snapshot.SelectedTool == tuiSettingsLanguageRow {
+		m.beginLanguageSelection()
+		return nil
+	}
 	if m.busy && !tuiKeyAllowedWhileBusy(key) {
-		m.snapshot.Status = "Operation in progress; navigation remains available"
+		m.snapshot.setStatus(newTUIMessage("ui.03e6bb796eac"))
 		return nil
 	}
 	return m.handleKey(key)
@@ -80,10 +88,19 @@ func tuiKeyAllowedWhileBusy(key tuiKey) bool {
 }
 
 func (m *tuiModel) View() string {
+	tr := tuiTranslator(m.snapshot.Language)
 	snapshot := m.snapshot
+	snapshot.LanguageSelectionOpen = m.languageSelectionOpen
+	snapshot.SelectedLanguage = m.selectedLanguage
 	snapshot.DangerConfirmOpen = m.dangerConfirmOpen
 	snapshot.DangerConfirmTitle = m.dangerConfirmTitle
 	snapshot.DangerConfirmMessage = m.dangerConfirmMessage
+	if m.dangerConfirmTitleText.Key != "" {
+		snapshot.DangerConfirmTitle = m.dangerConfirmTitleText.text(snapshot.Language)
+	}
+	if m.dangerConfirmBodyText.Key != "" {
+		snapshot.DangerConfirmMessage = m.dangerConfirmBodyText.text(snapshot.Language)
+	}
 	snapshot.SSHForm = m.sshFormView()
 	snapshot.SSHCredentialPrompt = tuiSSHCredentialPromptView{
 		Open:     m.sshCredentialPromptOpen,
@@ -104,25 +121,25 @@ func (m *tuiModel) View() string {
 	snapshot.NotificationSelected = m.notificationSelected
 	snapshot.NotificationScroll = m.notificationScroll
 	if m.notificationDetailOpen {
-		snapshot.Status = "Notifications · ↑↓ select · PgUp/PgDn scroll · Enter confirm · Esc close"
+		snapshot.Status = tr("ui.7cb3e7ed7ef0")
 	} else if m.sshCaptureOpen {
-		snapshot.SelectionTitle = fmt.Sprintf("Capture · %d live", len(m.sshCaptureCandidates))
+		snapshot.SelectionTitle = fmt.Sprintf(tr("ui.f4d5ed40e313"), len(m.sshCaptureCandidates))
 		if m.sshCaptureNames == nil {
-			snapshot.SelectionTitle = "Capture"
+			snapshot.SelectionTitle = tr("ui.1900b478a586")
 		}
 		snapshot.SelectionOptions = append([]string(nil), m.sshCaptureOptions...)
 		snapshot.SelectedOption = m.sshCaptureSelected
 		snapshot.SelectionHint = ""
-		snapshot.Status = "↑↓ · Enter · Esc"
+		snapshot.Status = tr("ui.54346e32fec8")
 	} else if m.modeSelectionOpen {
-		snapshot.SelectionTitle = "Select outbound mode"
+		snapshot.SelectionTitle = tr("ui.d3f86ef363b3")
 		snapshot.SelectionOptions = append(
 			[]string(nil),
 			tuiTrafficModes...,
 		)
 		snapshot.SelectedOption = m.selectedMode
-		snapshot.SelectionHint = "rule uses routing rules · silent proxies only flc commands · global proxies all traffic · direct bypasses proxies"
-		snapshot.Status = "Selecting mode · ↑↓/ws choose · Enter confirm · Esc cancel"
+		snapshot.SelectionHint = tr("ui.35294cbec8a7")
+		snapshot.Status = tr("ui.304481cef0bc")
 	} else if m.inputMode != tuiInputNone {
 		cursor := m.inputCursor
 		if cursor < 0 {
@@ -135,9 +152,9 @@ func (m *tuiModel) View() string {
 		snapshot.InputValue = tuiInputViewport(
 			m.inputValue,
 			cursor,
-			maxTUIWidth(m.width-36, 20),
+			maxTUIWidth(tuiLayoutAtSize(m.width, m.height, snapshot.Language).ContentWidth-4, 1),
 		)
-		snapshot.Status = "Editing input · Enter confirm · Esc cancel"
+		snapshot.Status = tr("ui.93388fbb005d")
 	}
 	return renderTUIAtSize(
 		snapshot,
@@ -186,33 +203,38 @@ func (m *tuiModel) sshFormView() tuiSSHFormView {
 			m.sshFormSelected == tuiSSHFormPasswordRow {
 			value = []rune(strings.Repeat("•", len(m.sshFormInput)))
 		}
+		// Measure the same labels that the form renderer uses. A placeholder
+		// keeps an empty editing field in the label/value column calculation.
+		view.FieldInput = " "
+		budget := tuiFieldInputWidth(tuiSSHFormFields(view, m.snapshot.Language), tuiLayoutAtSize(m.width, m.height, m.snapshot.Language).ContentWidth)
 		view.FieldInput = tuiInputViewport(
 			value,
 			m.sshFormCursor,
-			maxTUIWidth(m.width-48, 16),
+			budget,
 		)
 	}
 	return view
 }
 
 func (m *tuiModel) inputPresentation() (string, string) {
+	tr := tuiTranslator(m.snapshot.Language)
 	switch m.inputMode {
 	case tuiInputMixedPort:
-		return "Set proxy port", "Type 0-65535; silent mode keeps it closed"
+		return tr("ui.0ecd20bdfce8"), tr("ui.b14cdbf61b08")
 	case tuiInputSubscription:
-		return "Import subscription", "Paste a YAML, URI, Base64, JSON, or client-format URL"
+		return tr("ui.59f37e6883b8"), tr("ui.9d6a7e5ff358")
 	case tuiInputProfileFile:
-		return "Import local profile", "Type a YAML, URI, Base64, JSON, or client-format file path"
+		return tr("ui.15445e4510f5"), tr("ui.4e378981f377")
 	case tuiInputProfileName:
-		return "Rename profile", "Type a file name; .yaml is added automatically"
+		return tr("ui.c9aaa25628eb"), tr("profiles.rename_hint")
 	case tuiInputHistorySearch:
-		return "Search History", "Match host, process, network, route, or connection ID"
+		return tr("ui.66d7e4a1c738"), tr("ui.0adcb8727d46")
 	case tuiInputConnectionsSearch:
-		return "Search Connections", "Match host, process, network, route, or connection ID"
+		return tr("ui.902ce24cde98"), tr("ui.0adcb8727d46")
 	case tuiInputLogsSearch:
-		return "Search Logs", "Case-insensitive text search; empty clears the search"
+		return tr("ui.a12157d01bea"), tr("ui.20a730d8e192")
 	default:
-		return "Input", ""
+		return tr("ui.36ecb4f86691"), ""
 	}
 }
 
@@ -226,18 +248,24 @@ func tuiInputViewport(value []rune, cursor, width int) string {
 	if cursor > len(value) {
 		cursor = len(value)
 	}
+	boundaries := tuiGraphemeBoundaries(value)
+	cursorIndex := sort.SearchInts(boundaries, cursor)
+	cursor = boundaries[cursorIndex]
 	start := cursor
+	startIndex := cursorIndex
 	used := 1
-	for start > 0 {
-		runeWidth := tuiRuneWidth(value[start-1])
+	for startIndex > 0 {
+		previous := boundaries[startIndex-1]
+		runeWidth := tuiDisplayWidth(string(value[previous:start]))
 		reservedPrefix := 0
-		if start-1 > 0 {
+		if previous > 0 {
 			reservedPrefix = 1
 		}
 		if used+runeWidth+reservedPrefix > width {
 			break
 		}
-		start--
+		start = previous
+		startIndex--
 		used += runeWidth
 	}
 	used = 1 + tuiDisplayWidth(string(value[start:cursor]))
@@ -245,16 +273,19 @@ func tuiInputViewport(value []rune, cursor, width int) string {
 		used++
 	}
 	end := cursor
-	for end < len(value) {
-		runeWidth := tuiRuneWidth(value[end])
+	endIndex := cursorIndex
+	for endIndex+1 < len(boundaries) {
+		next := boundaries[endIndex+1]
+		runeWidth := tuiDisplayWidth(string(value[end:next]))
 		reservedSuffix := 0
-		if end+1 < len(value) {
+		if next < len(value) {
 			reservedSuffix = 1
 		}
 		if used+runeWidth+reservedSuffix > width {
 			break
 		}
-		end++
+		end = next
+		endIndex++
 		used += runeWidth
 	}
 	var output strings.Builder
@@ -267,5 +298,5 @@ func tuiInputViewport(value []rune, cursor, width int) string {
 	if end < len(value) {
 		output.WriteRune('…')
 	}
-	return output.String()
+	return truncateTUI(output.String(), width)
 }

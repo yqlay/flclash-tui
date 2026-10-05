@@ -43,20 +43,20 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 		if !m.snapshot.ProxyNodeFocus {
 			if m.snapshot.SelectedGroup < 0 ||
 				m.snapshot.SelectedGroup >= len(m.snapshot.Groups) {
-				m.snapshot.Status = "Select a proxy group first"
+				m.snapshot.setStatus(newTUIMessage("ui.1c7acba93ad7"))
 				return nil
 			}
 			m.snapshot.ProxyNodeFocus = true
 			group := m.snapshot.Groups[m.snapshot.SelectedGroup]
 			m.snapshot.SelectedNode = findTUIString(group.Nodes, group.Now)
-			m.snapshot.Status = "Nodes in " + group.Name +
-				" · ↑↓/ws select · Enter apply · Esc back"
+			m.snapshot.setStatus(newTUIMessage("ui.2bd1bcb7294c", group.Name))
+
 			return nil
 		}
 		group := m.snapshot.Groups[m.snapshot.SelectedGroup]
 		if m.snapshot.SelectedNode < 0 ||
 			m.snapshot.SelectedNode >= len(group.Nodes) {
-			m.snapshot.Status = "Select a proxy node before applying it"
+			m.snapshot.setStatus(newTUIMessage("ui.b93098d46940"))
 			return nil
 		}
 		return m.startOperation(func(state *tuiOperationState) {
@@ -81,18 +81,15 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 		}
 		if m.snapshot.SelectedRow < 0 ||
 			m.snapshot.SelectedRow >= len(m.snapshot.Profiles) {
-			m.snapshot.Status = "Select a profile before activating it"
+			m.snapshot.setStatus(newTUIMessage("ui.823a5205daec"))
 			return nil
 		}
 		if m.service == nil {
-			m.snapshot.Status = "Profile activation requires the managed backend"
+			m.snapshot.setStatus(newTUIMessage("ui.29c61cf77f8e"))
 			return nil
 		}
 		return m.startOperation(func(state *tuiOperationState) {
 			switchTUIServiceProfile(state, m.service, m.client)
-			state.pendingMixedPort = nil
-			state.stagedSettings = nil
-			state.settingsDirty = false
 			syncStoppedTUISettings(state)
 		})
 	case tuiPageSSH:
@@ -104,7 +101,7 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			index = m.sshDetailProfileIndex()
 		}
 		if index < 0 || index >= len(m.snapshot.SSHProfiles) {
-			m.snapshot.Status = "Press n to add an SSH profile, or a to capture live SSH"
+			m.snapshot.setStatus(newTUIMessage("ui.84d646458df9"))
 			return nil
 		}
 		profile := m.snapshot.SSHProfiles[index]
@@ -112,7 +109,7 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			m.beginSSHForm(true)
 			if m.sshFormOpen {
 				m.sshFormSelected = tuiSSHFormUsernameRow
-				m.snapshot.Status = "Legacy SSH profile · enter Username before connecting"
+				m.snapshot.setStatus(newTUIMessage("ui.ae8f2123f758"))
 			}
 			return nil
 		}
@@ -123,7 +120,7 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			m.snapshot.SSHDetailName = profile.Name
 			m.snapshot.SSHDashboardFocus = true
 			if profile.Connected && profile.Ready {
-				m.snapshot.Status = "SSH " + profile.Name + " opened · Enter controls tunnel · n refreshes IPs"
+				m.snapshot.setStatus(newTUIMessage("ui.4bb703bee905", profile.Name))
 				return m.refreshSelectedSSHDashboard()
 			}
 			return m.runSelectedSSHAction("connect")
@@ -134,19 +131,19 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 		return m.runSelectedSSHAction("connect")
 	case tuiPageRequests:
 		if len(matchedTUIRequestIndexes(m.snapshot)) == 0 {
-			m.snapshot.Status = "No matching History entry"
+			m.snapshot.setStatus(newTUIMessage("ui.0b3f2bb4a168"))
 			return nil
 		}
 		m.snapshot.HistoryDetailOpen = true
 	case tuiPageConnections:
 		if len(matchedTUIConnectionIndexes(m.snapshot)) == 0 {
-			m.snapshot.Status = "No matching active connection"
+			m.snapshot.setStatus(newTUIMessage("ui.09de56663b60"))
 			return nil
 		}
 		m.snapshot.ConnectionsDetailOpen = true
 	case tuiPageLogs:
 		if len(matchedTUILogIndexes(m.snapshot)) == 0 {
-			m.snapshot.Status = "No matching log entry"
+			m.snapshot.setStatus(newTUIMessage("ui.119328193809"))
 			return nil
 		}
 		m.snapshot.LogDetailOpen = true
@@ -185,11 +182,11 @@ func (m *tuiModel) openProxiesForFLCOutbound() tea.Cmd {
 		group := m.snapshot.Groups[m.snapshot.SelectedGroup]
 		m.snapshot.ProxyNodeFocus = true
 		m.snapshot.SelectedNode = findTUIString(group.Nodes, group.Now)
-		m.snapshot.Status = "flc uses " + group.Name + " · select a node"
+		m.snapshot.setStatus(newTUIMessage("ui.87f40cd6c526", group.Name))
 		return tea.Batch(cmds...)
 	}
 	m.snapshot.ProxyNodeFocus = false
-	m.snapshot.Status = "Select a proxy node; flc follows that group"
+	m.snapshot.setStatus(newTUIMessage("ui.5c535d92dda4"))
 	return tea.Batch(cmds...)
 }
 
@@ -200,29 +197,27 @@ func selectTUIServiceProxy(
 ) {
 	if state.snapshot.SelectedGroup < 0 ||
 		state.snapshot.SelectedGroup >= len(state.snapshot.Groups) {
-		state.snapshot.Status = "Select a proxy group before applying it"
+		state.snapshot.setStatus(newTUIMessage("ui.c87bc128ca34"))
 		return
 	}
 	group := state.snapshot.Groups[state.snapshot.SelectedGroup]
 	if state.snapshot.SelectedNode < 0 ||
 		state.snapshot.SelectedNode >= len(group.Nodes) {
-		state.snapshot.Status = "Select a proxy node before applying it"
+		state.snapshot.setStatus(newTUIMessage("ui.b93098d46940"))
 		return
 	}
 	node := group.Nodes[state.snapshot.SelectedNode]
 	if !prepareTUIBackendRevision(state, service) {
 		return
 	}
-	status, err := service.selectProxy(group.Name, node, state.backendRevision)
+	status, err := state.service.selectProxy(group.Name, node, state.backendRevision)
 	if err != nil {
-		state.snapshot.Status = "Switch failed: " + err.Error()
+		state.snapshot.setStatus(newTUIMessage("ui.0c8dbf711c49", err.Error()))
 		return
 	}
-	state.snapshot.Status = fmt.Sprintf(
-		"Switched %s to %s · silent flc follows this group",
-		group.Name,
-		node,
-	)
+	state.snapshot.setStatus(newTUIMessage("ui.3cdc89efcce5", group.Name,
+		node))
+
 	refreshTUISnapshot(&state.snapshot, client)
 	applyTUIOperationServiceStatus(state, status)
 	state.networkChanged = true
@@ -235,39 +230,39 @@ func switchTUIServiceProfile(
 ) {
 	if state.snapshot.SelectedRow < 0 ||
 		state.snapshot.SelectedRow >= len(state.snapshot.Profiles) {
-		state.snapshot.Status = "Select a profile before activating it"
+		state.snapshot.setStatus(newTUIMessage("ui.823a5205daec"))
 		return
 	}
 	profile := state.snapshot.Profiles[state.snapshot.SelectedRow]
 	if profile.Current {
-		state.snapshot.Status = "Profile is already active"
+		state.snapshot.setStatus(newTUIMessage("ui.bbe0e38f1b66"))
 		return
 	}
 	if message := cliHub.ValidateConfig(profile.Path); message != "" {
-		state.snapshot.Status = "Profile invalid: " + message
+		state.snapshot.setStatus(newTUIMessage("ui.4b591ed16c4b", message))
 		return
 	}
 	expectedSHA256, err := tuiFileSHA256(profile.Path)
 	if err != nil {
-		state.snapshot.Status = "Profile read failed: " + err.Error()
+		state.snapshot.setStatus(newTUIMessage("ui.475d9c583566", err.Error()))
 		return
 	}
 	if !prepareTUIBackendRevision(state, service) {
 		return
 	}
-	status, err := service.reloadAtRevisionWithDigest(
+	status, err := state.service.reloadAtRevisionWithDigest(
 		profile.Path,
 		state.backendRevision,
 		expectedSHA256,
 	)
 	if err != nil {
-		state.snapshot.Status = "Profile hot-reload failed: " + err.Error()
+		state.snapshot.setStatus(newTUIMessage("ui.7bae351770be", err.Error()))
 		return
 	}
 	state.paths.ConfigPath = profile.Path
 	state.snapshot.GroupOrder = loadTUIProxyGroupOrder(profile.Path)
 	state.snapshot.ProxyNodeFocus = false
-	state.snapshot.Status = "Active profile: " + profile.Name
+	state.snapshot.setStatus(newTUIMessage("ui.09891acf3c0e", profile.Name))
 	refreshTUISnapshot(&state.snapshot, client)
 	applyTUIOperationServiceStatus(state, status)
 	state.networkChanged = true
@@ -276,6 +271,9 @@ func switchTUIServiceProfile(
 
 func (m *tuiModel) selectTUISetting(index int) tea.Cmd {
 	switch index {
+	case tuiSettingsLanguageRow:
+		m.beginLanguageSelection()
+		return nil
 	case tuiSettingsAllowLANRow:
 		return m.handleKey(tuiKeyAllowLAN)
 	case tuiSettingsIPv6Row:
@@ -301,55 +299,64 @@ func (m *tuiModel) runTool(index int) tea.Cmd {
 		switch index {
 		case 1:
 			if m.service == nil {
-				state.snapshot.Status = "Backup requires the managed backend"
+				state.snapshot.setStatus(newTUIMessage("ui.84e07e8ee65e"))
 				return
 			}
 			if !prepareTUIBackendRevision(state, m.service) {
 				return
 			}
-			status, err := m.service.backupProfile(
+			status, err := state.service.backupProfile(
 				state.paths.ConfigPath,
 				state.backendRevision,
 			)
 			if err != nil {
-				state.snapshot.Status = "Backup failed: " + err.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.87ab982de4ef", err.Error()))
 			} else {
 				state.backendRevision = status.Revision
-				state.snapshot.Status = "Backup created: " + filepath.Base(status.ResultPath)
+				state.snapshot.setStatus(newTUIMessage("ui.926013bbeabf", filepath.Base(status.ResultPath)))
 			}
 		case 2:
 			if m.service == nil {
-				state.snapshot.Status = "Restore requires the managed backend"
+				state.snapshot.setStatus(newTUIMessage("ui.8a6d1f4612f7"))
 				return
 			}
 			if !prepareTUIBackendRevision(state, m.service) {
 				return
 			}
-			status, err := m.service.restoreProfile(
+			status, err := state.service.restoreProfile(
 				state.paths.ConfigPath,
 				state.backendRevision,
 			)
 			if err != nil {
-				state.snapshot.Status = "Restore failed: " + err.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.84bb92888280", err.Error()))
 			} else {
 				applyTUIOperationServiceStatus(state, status)
-				state.snapshot.Status = "Restored and hot-reloaded: " +
-					filepath.Base(status.ResultPath)
+				state.snapshot.setStatus(newTUIMessage("ui.3e1608683331", filepath.Base(status.ResultPath)))
 				syncStoppedTUISettings(state)
 			}
 		case 3:
 			if err := m.client.updateGeo(); err != nil {
-				state.snapshot.Status = "Geo update failed: " + err.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.a0a5ec4d845b", err.Error()))
 			} else {
-				state.snapshot.Status = "Geo databases update started"
+				state.snapshot.setStatus(newTUIMessage("ui.532856d3bd98"))
 			}
 		case 4:
-			if m.ownsCore {
-				cliHub.ResetTraffic()
-				state.snapshot.Status = "Traffic counters reset"
-			} else {
-				state.snapshot.Status = "Traffic reset requires a core started by this process"
+			if state.service == nil {
+				state.snapshot.setStatus(newTUIMessage("ui.e351b8fb7841"))
+				return
 			}
+			if !prepareTUIBackendRevision(state, state.service) {
+				return
+			}
+			status, err := state.service.resetTraffic(state.backendRevision)
+			if err != nil {
+				state.snapshot.setStatus(newTUIMessage("ui.13f4425a0649", err.Error()))
+				return
+			}
+			applyTUIOperationServiceStatus(state, status)
+			state.snapshot.TotalTraffic = trafficSnapshot{}
+			state.trafficReset = true
+			state.snapshot.setStatus(newTUIMessage("ui.984eb5b20446"))
 		case 5:
 			checkTUIUpdate(&state.snapshot)
 		}
@@ -359,13 +366,13 @@ func (m *tuiModel) runTool(index int) tea.Cmd {
 func (m *tuiModel) testSelectedProxyDelay() tea.Cmd {
 	if m.snapshot.SelectedGroup < 0 ||
 		m.snapshot.SelectedGroup >= len(m.snapshot.Groups) {
-		m.snapshot.Status = "Select a proxy group first"
+		m.snapshot.setStatus(newTUIMessage("ui.1c7acba93ad7"))
 		return nil
 	}
 	group := m.snapshot.Groups[m.snapshot.SelectedGroup]
 	if m.snapshot.SelectedNode < 0 ||
 		m.snapshot.SelectedNode >= len(group.Nodes) {
-		m.snapshot.Status = "Select a proxy node first"
+		m.snapshot.setStatus(newTUIMessage("ui.d938e6c3a9c1"))
 		return nil
 	}
 	groupName := group.Name
@@ -376,23 +383,23 @@ func (m *tuiModel) testSelectedProxyDelay() tea.Cmd {
 		delay, err := testTUIProxyDelaySamples(m.client, node, testURL)
 		if err != nil {
 			setTUIGroupDelay(&state.snapshot, groupName, node, tuiDelayResult{Error: err.Error()})
-			state.snapshot.Status = node + " delay: Timeout · " + err.Error()
+			state.snapshot.setStatus(newTUIMessage("ui.13f55ad346eb", node, err.Error()))
 			return
 		}
 		setTUIGroupDelay(&state.snapshot, groupName, node, delay)
-		state.snapshot.Status = node + " delay: " + formatTUIDelay(delay)
+		state.snapshot.setStatus(newTUIMessage("ui.c5d054f540f9", node, formatTUIDelay(delay)))
 	})
 }
 
 func (m *tuiModel) testSelectedProxyGroupDelays() tea.Cmd {
 	if m.snapshot.SelectedGroup < 0 ||
 		m.snapshot.SelectedGroup >= len(m.snapshot.Groups) {
-		m.snapshot.Status = "Select a proxy group first"
+		m.snapshot.setStatus(newTUIMessage("ui.1c7acba93ad7"))
 		return nil
 	}
 	group := m.snapshot.Groups[m.snapshot.SelectedGroup]
 	if len(group.Nodes) == 0 {
-		m.snapshot.Status = "Selected proxy group has no nodes"
+		m.snapshot.setStatus(newTUIMessage("ui.9f3df17e59c6"))
 		return nil
 	}
 	nodes := append([]string(nil), group.Nodes...)
@@ -411,18 +418,16 @@ func (m *tuiModel) testSelectedProxyGroupDelays() tea.Cmd {
 			}
 		}
 		setTUIGroupDelays(&state.snapshot, group.Name, delays)
-		state.snapshot.Status = fmt.Sprintf(
-			"%s delays complete: %d/%d reachable",
-			group.Name,
+		state.snapshot.setStatus(newTUIMessage("ui.343980935349", group.Name,
 			successes,
-			len(nodes),
-		)
+			len(nodes)))
+
 	})
 }
 
 func (m *tuiModel) testDashboardDelay() tea.Cmd {
 	if m.service == nil {
-		m.snapshot.Status = "Dashboard delay test requires the managed backend"
+		m.snapshot.setStatus(newTUIMessage("ui.df7bb6bc35d4"))
 		return nil
 	}
 	m.snapshot.DashboardDelay = tuiDelayResult{Testing: true}
@@ -432,17 +437,17 @@ func (m *tuiModel) testDashboardDelay() tea.Cmd {
 		delay, err := m.service.testRouteDelay(mixedPort, testURL)
 		if err != nil {
 			state.snapshot.DashboardDelay = tuiDelayResult{Error: err.Error()}
-			state.snapshot.Status = "Current route delay: Timeout · " + err.Error()
+			state.snapshot.setStatus(newTUIMessage("ui.07774aaecaa3", err.Error()))
 			return
 		}
 		state.snapshot.DashboardDelay = delay
-		state.snapshot.Status = "Current route delay: " + formatTUIDelay(delay)
+		state.snapshot.setStatus(newTUIMessage("ui.593694af3dbf", formatTUIDelay(delay)))
 	})
 }
 
 func (m *tuiModel) testDashboardSpeed() tea.Cmd {
 	if m.service == nil {
-		m.snapshot.Status = "Dashboard speed test requires the managed backend"
+		m.snapshot.setStatus(newTUIMessage("ui.e1c7c4a7c00b"))
 		return nil
 	}
 	m.snapshot.DashboardSpeed = tuiSpeedResult{Testing: true}
@@ -451,28 +456,28 @@ func (m *tuiModel) testDashboardSpeed() tea.Cmd {
 		result, err := m.service.testRouteSpeed(mixedPort)
 		if err != nil {
 			state.snapshot.DashboardSpeed = tuiSpeedResult{Error: err.Error()}
-			state.snapshot.Status = "Current route speed failed: " + err.Error()
+			state.snapshot.setStatus(newTUIMessage("ui.524fc802cbfb", err.Error()))
 			return
 		}
 		state.snapshot.DashboardSpeed = result
-		state.snapshot.Status = "Current route speed: " + formatTUISpeed(result)
+		state.snapshot.setStatus(newTUIMessage("ui.dccbe0cdbd03", formatTUISpeed(result)))
 	})
 }
 
 func (m *tuiModel) testSelectedProxySpeed() tea.Cmd {
 	if m.service == nil {
-		m.snapshot.Status = "Proxy speed testing requires the managed backend"
+		m.snapshot.setStatus(newTUIMessage("ui.85df53e87e9c"))
 		return nil
 	}
 	if m.snapshot.SelectedGroup < 0 ||
 		m.snapshot.SelectedGroup >= len(m.snapshot.Groups) {
-		m.snapshot.Status = "Select a proxy group first"
+		m.snapshot.setStatus(newTUIMessage("ui.1c7acba93ad7"))
 		return nil
 	}
 	group := m.snapshot.Groups[m.snapshot.SelectedGroup]
 	if m.snapshot.SelectedNode < 0 ||
 		m.snapshot.SelectedNode >= len(group.Nodes) {
-		m.snapshot.Status = "Select a proxy node first"
+		m.snapshot.setStatus(newTUIMessage("ui.d938e6c3a9c1"))
 		return nil
 	}
 	groupName := group.Name
@@ -492,27 +497,27 @@ func (m *tuiModel) testSelectedProxySpeed() tea.Cmd {
 				node,
 				tuiSpeedResult{Error: err.Error()},
 			)
-			state.snapshot.Status = node + " speed failed: " + err.Error()
+			state.snapshot.setStatus(newTUIMessage("ui.e72ac0c17cec", node, err.Error()))
 			return
 		}
 		setTUIGroupSpeed(&state.snapshot, groupName, node, result)
-		state.snapshot.Status = node + " speed: " + formatTUISpeed(result)
+		state.snapshot.setStatus(newTUIMessage("ui.2be9d7d0142c", node, formatTUISpeed(result)))
 	})
 }
 
 func (m *tuiModel) testSelectedProxyGroupSpeeds() tea.Cmd {
 	if m.service == nil {
-		m.snapshot.Status = "Proxy speed testing requires the managed backend"
+		m.snapshot.setStatus(newTUIMessage("ui.85df53e87e9c"))
 		return nil
 	}
 	if m.snapshot.SelectedGroup < 0 ||
 		m.snapshot.SelectedGroup >= len(m.snapshot.Groups) {
-		m.snapshot.Status = "Select a proxy group first"
+		m.snapshot.setStatus(newTUIMessage("ui.1c7acba93ad7"))
 		return nil
 	}
 	group := m.snapshot.Groups[m.snapshot.SelectedGroup]
 	if len(group.Nodes) == 0 {
-		m.snapshot.Status = "Selected proxy group has no nodes"
+		m.snapshot.setStatus(newTUIMessage("ui.9f3df17e59c6"))
 		return nil
 	}
 	nodes := append([]string(nil), group.Nodes...)
@@ -522,18 +527,16 @@ func (m *tuiModel) testSelectedProxyGroupSpeeds() tea.Cmd {
 	}
 	setTUIGroupSpeeds(&m.snapshot, group.Name, testingSpeeds)
 	if m.busy {
-		m.snapshot.Status = "Another operation is still running"
+		m.snapshot.setStatus(newTUIMessage("ui.c90e0573178b"))
 		return nil
 	}
 	m.busy = true
 	m.refreshInFlight = false
 	m.refreshSequence++
-	m.snapshot.Status = fmt.Sprintf(
-		"%s speed tests: 0/%d complete · up to %d MB total",
-		group.Name,
+	m.snapshot.setStatus(newTUIMessage("ui.fffba2149b7e", group.Name,
 		len(nodes),
-		len(nodes)*100,
-	)
+		len(nodes)*100))
+
 	return m.testNextProxyGroupSpeed(group.Name, nodes, len(nodes), 0)
 }
 
@@ -701,11 +704,11 @@ func formatTUISpeed(result tuiSpeedResult) string {
 
 func (m *tuiModel) startEditor(path string) tea.Cmd {
 	if m.busy {
-		m.snapshot.Status = "Another operation is still running"
+		m.snapshot.setStatus(newTUIMessage("ui.c90e0573178b"))
 		return nil
 	}
 	if m.service == nil {
-		m.snapshot.Status = "Editing shared YAML requires the managed backend"
+		m.snapshot.setStatus(newTUIMessage("ui.01b786e6983d"))
 		return nil
 	}
 	editor := os.Getenv("VISUAL")
@@ -717,39 +720,39 @@ func (m *tuiModel) startEditor(path string) tea.Cmd {
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
-		m.snapshot.Status = "Editor failed: " + err.Error()
+		m.snapshot.setStatus(newTUIMessage("ui.d06cf3587589", err.Error()))
 		return nil
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		m.snapshot.Status = "Editor failed: configuration must be a regular file"
+		m.snapshot.setStatus(newTUIMessage("ui.15629ee15792"))
 		return nil
 	}
 	backup, err := os.ReadFile(path)
 	if err != nil {
-		m.snapshot.Status = "Editor failed: " + err.Error()
+		m.snapshot.setStatus(newTUIMessage("ui.d06cf3587589", err.Error()))
 		return nil
 	}
 	temporary, err := os.CreateTemp("", "flclash-tui-edit-*.yaml")
 	if err != nil {
-		m.snapshot.Status = "Editor failed: " + err.Error()
+		m.snapshot.setStatus(newTUIMessage("ui.d06cf3587589", err.Error()))
 		return nil
 	}
 	temporaryPath := temporary.Name()
 	if err := temporary.Chmod(0o600); err != nil {
 		_ = temporary.Close()
 		_ = os.Remove(temporaryPath)
-		m.snapshot.Status = "Editor failed: " + err.Error()
+		m.snapshot.setStatus(newTUIMessage("ui.d06cf3587589", err.Error()))
 		return nil
 	}
 	if _, err := temporary.Write(backup); err != nil {
 		_ = temporary.Close()
 		_ = os.Remove(temporaryPath)
-		m.snapshot.Status = "Editor failed: " + err.Error()
+		m.snapshot.setStatus(newTUIMessage("ui.d06cf3587589", err.Error()))
 		return nil
 	}
 	if err := temporary.Close(); err != nil {
 		_ = os.Remove(temporaryPath)
-		m.snapshot.Status = "Editor failed: " + err.Error()
+		m.snapshot.setStatus(newTUIMessage("ui.d06cf3587589", err.Error()))
 		return nil
 	}
 	command := exec.Command(
@@ -766,7 +769,7 @@ func (m *tuiModel) startEditor(path string) tea.Cmd {
 		mode: info.Mode(),
 	}
 	m.busy = true
-	m.snapshot.Status = "Editor open"
+	m.snapshot.setStatus(newTUIMessage("ui.7c0af99c219a"))
 	return tea.ExecProcess(command, func(err error) tea.Msg {
 		return tuiEditorResultMsg{err: err}
 	})

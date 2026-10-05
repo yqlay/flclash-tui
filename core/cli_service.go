@@ -11,11 +11,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
 const (
-	tuiServiceProtocolVersion = 6
+	tuiServiceProtocolVersion = 7
 	tuiServiceSocketFilename  = ".flclash-cli-service.sock"
 	tuiCoreSocketFilename     = ".flclash-cli-core.sock"
 	tuiServiceLogFilename     = "flclash-cli-service.log"
@@ -29,9 +30,27 @@ const (
 )
 
 type tuiServiceClient struct {
-	homeDir       string
-	timeout       time.Duration
-	reloadTimeout time.Duration
+	homeDir         string
+	timeout         time.Duration
+	reloadTimeout   time.Duration
+	instanceMu      sync.Mutex
+	instanceID      string
+	boundInstanceID string
+}
+
+// Operations bind to the instance that supplied their snapshot, not whichever
+// Backend happens to occupy the socket when the command finally executes.
+func (c *tuiServiceClient) forInstance(id string) *tuiServiceClient {
+	if c == nil {
+		return nil
+	}
+	if id == "" {
+		c.instanceMu.Lock()
+		id = c.instanceID
+		c.instanceMu.Unlock()
+	}
+	return &tuiServiceClient{homeDir: c.homeDir, timeout: c.timeout,
+		reloadTimeout: c.reloadTimeout, boundInstanceID: id}
 }
 
 func newTUIServiceClient(homeDir string) *tuiServiceClient {
@@ -80,6 +99,14 @@ func (c *tuiServiceClient) requestPayloadUnversioned(
 func (c *tuiServiceClient) sendRequest(
 	request tuiServiceRequest,
 ) (tuiServiceStatus, error) {
+	if request.ExpectedInstanceID == "" && (request.ExpectedRevision != nil || request.Action == "watch") {
+		request.ExpectedInstanceID = c.boundInstanceID
+		if request.ExpectedInstanceID == "" {
+			c.instanceMu.Lock()
+			request.ExpectedInstanceID = c.instanceID
+			c.instanceMu.Unlock()
+		}
+	}
 	if request.RequestID == "" {
 		request.RequestID = newTUIServiceRequestID()
 	}
@@ -112,6 +139,11 @@ func (c *tuiServiceClient) sendRequest(
 		return tuiServiceStatus{}, err
 	}
 	applyTUIServiceStatusCompatibility(&status)
+	if request.Action == "status" && status.OK && c.boundInstanceID == "" {
+		c.instanceMu.Lock()
+		c.instanceID = status.InstanceID
+		c.instanceMu.Unlock()
+	}
 	if !status.OK {
 		if status.Error == "" {
 			status.Error = "Backend rejected the request"
@@ -467,6 +499,10 @@ func (c *tuiServiceClient) watch(
 		AfterRevision:  afterRevision,
 		WatchTimeoutMS: int(timeout / time.Millisecond),
 	})
+}
+
+func (c *tuiServiceClient) resetTraffic(revision uint64) (tuiServiceStatus, error) {
+	return c.requestPayload(tuiServiceRequest{Action: "reset_traffic", ExpectedRevision: &revision})
 }
 
 func (c *tuiServiceClient) shutdown() error {

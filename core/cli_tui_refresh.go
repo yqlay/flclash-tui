@@ -3,6 +3,7 @@
 package main
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,11 +58,12 @@ func (m *tuiModel) waitServiceUpdate() tea.Cmd {
 	if m.service == nil {
 		return nil
 	}
-	service := m.service
+	service := m.service.forInstance(m.backendInstanceID)
 	revision := m.backendRevision
+	generation := m.backendGeneration
 	return func() tea.Msg {
 		status, err := service.watch(revision, 30*time.Second)
-		return tuiServiceWatchMsg{status: status, err: err}
+		return tuiServiceWatchMsg{status: status, err: err, generation: generation}
 	}
 }
 
@@ -72,10 +74,11 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 	m.refreshInFlight = true
 	m.refreshSequence++
 	sequence := m.refreshSequence
+	generation := m.backendGeneration
 	scope := tuiIdleTickPlanFor(m.snapshot.Page)
 	m.refreshIncludesHistory = scope.FetchHistory
 	m.refreshIncludesLogs = scope.FetchLogs
-	snapshot := m.snapshot
+	snapshot := cloneTUISnapshot(m.snapshot)
 	clearTUITransientRefreshStatus(&snapshot)
 	previousLogs := append([]string(nil), m.snapshot.Logs...)
 	client := m.client
@@ -84,18 +87,43 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 	fetchHistory := scope.FetchHistory
 	fetchLogs := scope.FetchLogs
 	return func() tea.Msg {
-		refreshTUISnapshot(&snapshot, client)
-		refreshTUIProfiles(&snapshot, paths)
-		refreshTUISSH(&snapshot)
-		snapshot.Frontends, _ = listCLIFrontends()
-		refreshIssues := make([]string, 0, 2)
 		var serviceStatus *tuiServiceStatus
+		var configuredSettings *tuiSettings
+		original := cloneTUISnapshot(snapshot)
+		initialPaths := paths
+		unavailable := func(err error) tea.Msg {
+			refreshTUILocalSnapshot(&original, initialPaths)
+			applyTUISSHConnections(&original, filterConnectionsBySource(original.Connections, tuiTrafficSourceProxy), tuiSelectedConnectionID(original), tuiSelectedRequestID(original))
+			original.setStatus(newTUIMessage("ui.3dbb8b44d1fa", "Status: "+err.Error()))
+			return tuiRefreshResultMsg{sequence: sequence, generation: generation, snapshot: original, paths: initialPaths, backendUnavailable: true}
+		}
 		if service != nil {
-			if status, err := service.status(); err == nil {
-				serviceStatus = &status
-			} else {
-				refreshIssues = append(refreshIssues, "Status: "+err.Error())
+			status, err := service.status()
+			if err != nil {
+				return unavailable(err)
 			}
+			serviceStatus = &status
+			if status.HomeDir != "" {
+				paths.HomeDir = status.HomeDir
+			}
+			if status.ConfigPath != "" {
+				paths.ConfigPath = status.ConfigPath
+			}
+			if !status.Running {
+				configuredSettings = loadTUIConfiguredSettings(paths.ConfigPath, true)
+				if configuredSettings != nil {
+					snapshot.Settings = *configuredSettings
+				}
+			}
+			applyTUIBackendDisplay(&snapshot, status)
+		}
+		if paths.ConfigPath != "" {
+			snapshot.GroupOrder = loadTUIProxyGroupOrder(paths.ConfigPath)
+		}
+		refreshTUISnapshot(&snapshot, client)
+		refreshTUILocalSnapshot(&snapshot, paths)
+		refreshIssues := make([]string, 0, 2)
+		if service != nil {
 			if fetchHistory {
 				if status, err := service.history(); err == nil {
 					snapshot.Requests = append([]tuiRequest(nil), status.History...)
@@ -107,40 +135,97 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 		if fetchLogs {
 			if service != nil {
 				if status, err := service.logs(1000); err == nil {
-					localLogs := cliLogSnapshot()
-					snapshot.Logs = append(append([]string(nil), status.Logs...), localLogs...)
-					if len(snapshot.Logs) > 1500 {
-						snapshot.Logs = snapshot.Logs[len(snapshot.Logs)-1500:]
-					}
+					snapshot.BackendLogs = append([]string(nil), status.Logs...)
+					snapshot.LogsInitialized = true
+					mergeTUILogBuffers(&snapshot, cliLogSnapshot())
 				} else {
 					snapshot.Logs = previousLogs
 					refreshIssues = append(refreshIssues, "Logs: "+err.Error())
 				}
 			} else {
-				snapshot.Logs = cliLogSnapshot()
+				mergeTUILogBuffers(&snapshot, cliLogSnapshot())
 			}
 		}
+		if service != nil {
+			if status, err := service.status(); err == nil {
+				if serviceStatus != nil && (status.InstanceID != serviceStatus.InstanceID || status.Revision != serviceStatus.Revision) {
+					return tuiRefreshResultMsg{sequence: sequence, generation: generation, retry: true}
+				}
+				serviceStatus = &status
+			} else {
+				return unavailable(err)
+			}
+		}
+		if configuredSettings != nil {
+			snapshot.Settings = *configuredSettings
+		}
+		if serviceStatus != nil {
+			applyTUIBackendDisplay(&snapshot, *serviceStatus)
+		}
 		if len(refreshIssues) > 0 && (snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Loading...") {
-			snapshot.Status = "Refresh incomplete · " + strings.Join(refreshIssues, " · ")
+			snapshot.setStatus(newTUIMessage("ui.3dbb8b44d1fa", strings.Join(refreshIssues, " · ")))
 		}
 		return tuiRefreshResultMsg{
-			sequence:      sequence,
-			snapshot:      snapshot,
-			serviceStatus: serviceStatus,
+			generation:         generation,
+			sequence:           sequence,
+			snapshot:           snapshot,
+			serviceStatus:      serviceStatus,
+			configuredSettings: configuredSettings,
+			paths:              paths,
 		}
 	}
 }
 
+func refreshTUILocalSnapshot(snapshot *tuiSnapshot, paths cliPaths) {
+	refreshTUIProfiles(snapshot, paths)
+	refreshTUISSH(snapshot)
+	snapshot.Frontends, _ = listCLIFrontends()
+}
+
+func tuiSelectedConnectionID(snapshot tuiSnapshot) string {
+	if index := snapshot.SelectedConnection; index >= 0 && index < len(snapshot.Connections) {
+		return snapshot.Connections[index].ID
+	}
+	return ""
+}
+
+func tuiSelectedRequestID(snapshot tuiSnapshot) string {
+	if index := snapshot.SelectedRequest; index >= 0 && index < len(snapshot.Requests) {
+		return snapshot.Requests[index].ID
+	}
+	return ""
+}
+
+func mergeTUIUnavailableBackend(current, refreshed tuiSnapshot, paths cliPaths, currentPaths cliPaths) tuiSnapshot {
+	// Only independent/local data is trustworthy without a complete Backend
+	// status bracket. Keep the latest live state, not the command's old copy.
+	merged := cloneTUISnapshot(current)
+	merged.SSHProfiles = refreshed.SSHProfiles
+	merged.Frontends = refreshed.Frontends
+	if paths.HomeDir == currentPaths.HomeDir {
+		merged.Profiles = refreshed.Profiles
+		for index := range merged.Profiles {
+			merged.Profiles[index].Current = filepath.Clean(merged.Profiles[index].Path) == filepath.Clean(currentPaths.ConfigPath)
+		}
+	}
+	merged.Connections = mergeTUITrafficConnections(filterConnectionsBySource(current.Connections, tuiTrafficSourceProxy), filterConnectionsBySource(refreshed.Connections, tuiTrafficSourceSSH))
+	merged.setStatus(refreshed.currentMessage())
+	return merged
+}
+
 func (m *tuiModel) startOperation(action func(*tuiOperationState)) tea.Cmd {
 	if m.busy {
-		m.snapshot.Status = "Another operation is still running"
+		m.snapshot.setStatus(newTUIMessage("ui.c90e0573178b"))
 		return nil
 	}
 	m.busy = true
 	m.refreshInFlight = false
 	m.refreshSequence++
 	state := tuiOperationState{
-		snapshot:           m.snapshot,
+		service:            m.service.forInstance(m.backendInstanceID),
+		backendInstanceID:  m.backendInstanceID,
+		backendGeneration:  m.backendGeneration,
+		snapshot:           cloneTUISnapshot(m.snapshot),
 		paths:              m.paths,
 		setupParams:        append([]byte(nil), m.setupParams...),
 		coreRunning:        m.coreRunning,
@@ -148,13 +233,48 @@ func (m *tuiModel) startOperation(action func(*tuiOperationState)) tea.Cmd {
 		pendingMixedPort:   cloneTUIOptionalInt(m.pendingMixedPort),
 		stagedSettings:     cloneTUISettings(m.stagedSettings),
 		settingsDirty:      m.settingsDirty,
+		settingsDraft:      cloneTUISettingsDraft(m.settingsDraft),
 		backendRevision:    m.backendRevision,
 	}
-	m.snapshot.Status = "Working..."
+	m.snapshot.setStatus(newTUIMessage("ui.b93900bded31"))
 	return func() tea.Msg {
 		action(&state)
 		return tuiOperationResultMsg{state: state}
 	}
+}
+
+// Commands execute outside Bubble Tea's update loop. Never share writable
+// slices/maps with the live model or a concurrent refresh/traffic result.
+func cloneTUISnapshot(source tuiSnapshot) tuiSnapshot {
+	cloned := source
+	cloned.Groups = append([]tuiGroup(nil), source.Groups...)
+	for index := range cloned.Groups {
+		cloned.Groups[index].Nodes = append([]string(nil), source.Groups[index].Nodes...)
+		cloned.Groups[index].Delays = maps.Clone(source.Groups[index].Delays)
+		cloned.Groups[index].Speeds = maps.Clone(source.Groups[index].Speeds)
+	}
+	cloned.Profiles = append([]tuiProfile(nil), source.Profiles...)
+	for index := range cloned.Profiles {
+		if info := source.Profiles[index].SubscriptionInfo; info != nil {
+			copied := *info
+			cloned.Profiles[index].SubscriptionInfo = &copied
+		}
+	}
+	cloned.SSHProfiles = append([]tuiSSHProfile(nil), source.SSHProfiles...)
+	for index := range cloned.SSHProfiles {
+		cloned.SSHProfiles[index].Options = append([]string(nil), source.SSHProfiles[index].Options...)
+	}
+	cloned.Connections = append([]tuiConnection(nil), source.Connections...)
+	cloned.Requests = append([]tuiRequest(nil), source.Requests...)
+	cloned.Providers = append([]tuiProvider(nil), source.Providers...)
+	cloned.GroupOrder = append([]string(nil), source.GroupOrder...)
+	cloned.TrafficHistory = append([]trafficSnapshot(nil), source.TrafficHistory...)
+	cloned.SSHTrafficHistory = append([]trafficSnapshot(nil), source.SSHTrafficHistory...)
+	cloned.Logs = append([]string(nil), source.Logs...)
+	cloned.BackendLogs = append([]string(nil), source.BackendLogs...)
+	cloned.LocalLogs = append([]string(nil), source.LocalLogs...)
+	cloned.Frontends = append([]cliProcessOwner(nil), source.Frontends...)
+	return cloned
 }
 
 func cloneTUIOptionalInt(value *int) *int {
@@ -184,27 +304,19 @@ func mergeTUIRefresh(current, refreshed tuiSnapshot) tuiSnapshot {
 	if !current.UpdatedAt.IsZero() {
 		refreshed.Settings.SystemProxy = current.Settings.SystemProxy
 	}
-	if !tuiStatusIsControllerError(refreshed.Status) &&
-		!tuiStatusIsControllerError(current.Status) &&
+	if !refreshed.controllerError() &&
+		!current.controllerError() &&
 		current.Status != "" &&
 		current.Status != "Connected" &&
 		current.Status != "Loading..." {
-		refreshed.Status = current.Status
+		refreshed.setStatus(current.currentMessage())
 	}
 	return refreshed
 }
 
-func tuiStatusIsControllerError(status string) bool {
-	return strings.HasPrefix(status, "Controller unavailable:") ||
-		strings.HasPrefix(status, "Invalid controller response:") ||
-		strings.HasPrefix(status, "Connections refresh failed:") ||
-		strings.HasPrefix(status, "Refresh incomplete ·") ||
-		strings.HasPrefix(status, "SSH profiles unavailable:")
-}
-
 func clearTUITransientRefreshStatus(snapshot *tuiSnapshot) {
-	if tuiStatusIsControllerError(snapshot.Status) {
-		snapshot.Status = "Loading..."
+	if snapshot.controllerError() {
+		snapshot.setStatus(newTUIMessage("ui.47d2a515ef2f"))
 	}
 }
 
@@ -259,6 +371,7 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	}
 
 	updated.Page = current.Page
+	updated.Language = current.Language
 	updated.SelectedMenu = current.SelectedMenu
 	updated.SelectedDashboard = current.SelectedDashboard
 	updated.SelectedSetting = current.SelectedSetting
@@ -288,11 +401,13 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	updated.TrafficSource = current.TrafficSource
 	updated.HistoryFilter = current.HistoryFilter
 	updated.HistoryQuery = current.HistoryQuery
+	updated.HistoryDetailOpen = current.HistoryDetailOpen
 	updated.ConnectionsQuery = current.ConnectionsQuery
-	if len(current.GroupOrder) > 0 {
-		updated.GroupOrder = append([]string(nil), current.GroupOrder...)
-		orderTUIGroups(updated.Groups, updated.GroupOrder)
-	}
+	updated.ConnectionsDetailOpen = current.ConnectionsDetailOpen
+	updated.LogsQuery = current.LogsQuery
+	updated.LogsLevel = current.LogsLevel
+	updated.LogDetailOpen = current.LogDetailOpen
+	updated.DashboardScroll = current.DashboardScroll
 	if current.Network.Loading ||
 		current.Network.CheckedAt.After(updated.Network.CheckedAt) {
 		updated.Network = current.Network
@@ -335,7 +450,7 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 			updated.ConnectionsDetailOpen = false
 		}
 	}
-	if updated.SelectedConnection < 0 {
+	if updated.SelectedConnection < 0 || findTUIInt(matchedTUIConnectionIndexes(updated), updated.SelectedConnection) < 0 {
 		updated.ConnectionsDetailOpen = false
 	}
 	updated.SelectedRequest = findTUIRequest(updated.Requests, selectedRequestID)
@@ -348,7 +463,7 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 			updated.HistoryDetailOpen = false
 		}
 	}
-	if updated.SelectedRequest < 0 {
+	if updated.SelectedRequest < 0 || findTUIInt(matchedTUIRequestIndexes(updated), updated.SelectedRequest) < 0 {
 		updated.HistoryDetailOpen = false
 	}
 	updated.SelectedLog = findTUILog(updated.Logs, selectedLog)

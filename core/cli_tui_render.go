@@ -3,13 +3,13 @@
 package main
 
 import (
+	"core/internal/i18n"
 	"fmt"
+	"github.com/clipperhouse/uax29/v2/graphemes"
 	"io"
 	"os"
 	"strconv"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"golang.org/x/term"
 )
@@ -24,20 +24,23 @@ func drawTUIAtSize(w io.Writer, snapshot tuiSnapshot, paths cliPaths, controller
 }
 
 func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress string, ownsCore, coreRunning bool, width, height int) string {
+	language := []string{snapshot.Language}
+	tr := tuiTranslator(language...)
+	layout := tuiLayoutAtSize(width, height, snapshot.Language)
 	if width <= 0 || height <= 0 {
 		return ""
 	}
-	if width < 40 || height < 10 {
-		return renderTUITiny(snapshot, ownsCore, coreRunning, width, height)
+	if layout.Tiny {
+		return renderTUITiny(snapshot, ownsCore, coreRunning, width, height, language...)
 	}
 	snapshot.ServiceRunning = coreRunning
 	snapshot.ExternalCore = !ownsCore
 	if ownsCore && coreRunning && snapshot.Settings.Mode != tuiSilentMode &&
 		snapshot.Settings.MixedPort <= 0 &&
 		(snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Core listeners started") {
-		snapshot.Status = "No proxy listener active; select Proxy port in Dashboard"
+		snapshot.setStatus(newTUIMessage("ui.73ece136b3ce"))
 	}
-	if width < 88 || height < 18 {
+	if layout.Compact {
 		return renderTUICompact(
 			snapshot,
 			paths,
@@ -45,25 +48,29 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 			ownsCore,
 			coreRunning,
 			width,
-			height,
-		)
+			height, language...)
 	}
 	contentWidth := width - 2
 	headerHeight := 3
 	footerHeight := 1
 	bodyHeight := height - headerHeight - footerHeight
-	sidebarWidth := minTUI(maxTUIWidth(width/5, 22), 28)
+	sidebarWidth := layout.Sidebar
 	mainOuterWidth := width - sidebarWidth - 1
 	mainContentWidth := mainOuterWidth - 2
 	var b strings.Builder
 	b.WriteString(tuiBoxTop(contentWidth))
-	headerLeft := "  FlClash  ·  terminal proxy manager"
-	headerRight := "  " + tuiStatusDot(ownsCore, coreRunning) + " " + tuiCoreStatus(ownsCore, coreRunning) + "  " + truncateTUI(controllerAddress, 30) + "  "
+	headerLeft := tr("ui.a07466a928d7")
+	headerRight := "  " + tuiStatusDot(ownsCore, coreRunning) + " " + tuiCoreStatus(ownsCore, coreRunning, language...) + "  "
+	if tuiDisplayWidth(headerLeft)+tuiDisplayWidth(headerRight)+tuiDisplayWidth(controllerAddress)+2 <= contentWidth {
+		headerRight += controllerAddress + "  "
+	} else if tuiDisplayWidth(headerLeft)+tuiDisplayWidth(headerRight) > contentWidth {
+		headerLeft = "  FlClash"
+	}
 	b.WriteString(tuiBoxRow(headerLeft, headerRight, contentWidth, tuiCyan, tuiDim))
 	b.WriteString(tuiBoxBottom(contentWidth))
 
-	page := tuiRenderPage(snapshot, paths, mainContentWidth, bodyHeight)
-	sidebar := tuiSidebar(snapshot, sidebarWidth, bodyHeight)
+	page := tuiRenderPage(snapshot, paths, mainContentWidth, bodyHeight, language...)
+	sidebar := tuiSidebar(snapshot, sidebarWidth, bodyHeight, language...)
 	pageLines := strings.Split(strings.TrimSuffix(page, "\n"), "\n")
 	for row := 0; row < bodyHeight; row++ {
 		left := ""
@@ -85,16 +92,16 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 		b.WriteByte('\n')
 	}
 
-	footer := "  ←→ panel  ↑↓/ws move  Enter apply  Esc nav  ? help  q exit TUI  ^C full exit"
+	footer := tr("ui.a9b34ecb8fd7")
 	if width >= 110 {
-		footer = "  ←→ panel  ↑↓/ws move  Enter open/apply  Esc back  d delay  ? help  q exit TUI  ^C full exit"
+		footer = tr("ui.f43c74fbfff4")
 	}
 	if snapshot.Page == tuiPageDashboard && bodyHeight < 33 {
-		footer = "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  q exit TUI  ^C full exit"
+		footer = tr("ui.e1db28b2e468")
 	} else if snapshot.Page == tuiPageSSH {
-		footer = "  Tab list/details  Enter connect/disconnect  a Capture  n add/refresh IPs  ? help  q exit TUI  ^C full exit"
+		footer = tr("ui.cfc17a4264b8")
 	}
-	b.WriteString(tuiNotificationFooter(snapshot, footer, width))
+	b.WriteString(tuiNotificationFooter(snapshot, footer, width, language...))
 	return b.String()
 }
 
@@ -105,34 +112,37 @@ func renderTUICompact(
 	ownsCore,
 	coreRunning bool,
 	width,
-	height int,
+	height int, language ...string,
 ) string {
-	pageName := tuiPageName(snapshot.Page)
-	focus := "CONTENT"
+	tr := tuiTranslator(language...)
+	pageName := tuiPageName(snapshot.Page, language...)
+	focus := tr("ui.65f23e22a9bf")
 	if snapshot.FocusSidebar {
-		focus = "NAV"
+		focus = tr("ui.59d29bfe4c87")
 	} else if snapshot.Page == tuiPageSSH {
-		focus = "SSH PROFILES"
+		focus = tr("ui.65c80c24b574")
 		if snapshot.SSHDashboardFocus {
-			focus = "SSH DETAILS"
+			focus = tr("ui.3197fdf77782")
 		}
 	}
-	header := fmt.Sprintf(
-		"  FlClash · %d %s · %s · %s",
-		int(snapshot.Page)+1,
+	header := fmt.Sprintf(tr("ui.7c59d12a8362"), int(snapshot.Page)+1,
 		pageName,
-		tuiCoreStatus(ownsCore, coreRunning),
+		tuiCoreStatus(ownsCore, coreRunning, language...),
 		focus,
 	)
 	if width >= 72 {
 		header += " · " + truncateTUI(controllerAddress, 24)
+	}
+	if tuiDisplayWidth(header) > width {
+		header = tuiPanelHeading("FlClash · "+pageName, tuiCoreStatus(ownsCore, coreRunning, language...)+" · "+focus, width)
 	}
 
 	bodyHeight := height - 2
 	contentWidth := width - 2
 	var page string
 	switch {
-	case snapshot.NotificationDetailOpen ||
+	case snapshot.LanguageSelectionOpen || snapshot.NotificationDetailOpen ||
+		snapshot.DangerConfirmOpen ||
 		snapshot.ProfileDelete.Open ||
 		snapshot.SSHForm.DeleteConfirmOpen ||
 		snapshot.SSHCredentialPrompt.Open ||
@@ -143,28 +153,24 @@ func renderTUICompact(
 			snapshot,
 			paths,
 			contentWidth,
-			bodyHeight,
-		)
+			bodyHeight, language...)
 	case snapshot.FocusSidebar:
 		page = renderTUICompactNavigation(
 			snapshot,
 			contentWidth,
-			bodyHeight,
-		)
+			bodyHeight, language...)
 	case snapshot.Page == tuiPageDashboard:
 		page = renderTUICompactDashboard(
 			snapshot,
 			paths,
 			contentWidth,
-			bodyHeight,
-		)
+			bodyHeight, language...)
 	default:
 		page = tuiRenderPage(
 			snapshot,
 			paths,
 			contentWidth,
-			bodyHeight,
-		)
+			bodyHeight, language...)
 	}
 
 	var b strings.Builder
@@ -179,50 +185,52 @@ func renderTUICompact(
 		b.WriteString(tuiClampAnsiLine(line, width))
 		b.WriteByte('\n')
 	}
-	footer := "  1-9 page · ←/Esc nav · ↑↓/ws · Enter · q exit TUI · ^C full exit"
+	footer := tr("ui.03473830b9e6")
 	if snapshot.FocusSidebar {
-		footer = "  ↑↓/ws page · →/Enter open · 1-9 direct · q exit TUI · ^C full exit"
+		footer = tr("ui.441352eba67d")
 	} else if snapshot.Page == tuiPageDashboard {
-		footer = "  ↑↓/ws select · Enter Core/flc · PgUp/PgDn · q exit TUI · ^C full exit"
+		footer = tr("ui.b813f1451df7")
 	} else if snapshot.Page == tuiPageSSH {
-		footer = "  Tab list/detail · Enter connect/action · a capture · n add/refresh · q exit TUI · ^C full exit"
+		footer = tr("ui.e41981133fd7")
 	}
-	b.WriteString(tuiNotificationFooter(snapshot, footer, width))
+	b.WriteString(tuiNotificationFooter(snapshot, footer, width, language...))
 	return b.String()
 }
 
-func tuiPageName(page tuiPage) string {
+func tuiPageName(page tuiPage, language ...string) string {
+	tr := tuiTranslator(language...)
 	switch page {
 	case tuiPageDashboard:
-		return "Dashboard"
+		return tr("ui.67b696468610")
 	case tuiPageProxies:
-		return "Proxies"
+		return tr("ui.29c4349715f3")
 	case tuiPageProfiles:
-		return "Profiles"
+		return tr("ui.535e52e4a261")
 	case tuiPageSSH:
 		return "SSH"
 	case tuiPageRequests:
-		return "History"
+		return tr("ui.0e7696009337")
 	case tuiPageConnections:
-		return "Connections"
+		return tr("ui.dc273117482b")
 	case tuiPageLogs:
-		return "Logs"
+		return tr("ui.ea2100dc89ae")
 	case tuiPageTools:
-		return "Settings"
+		return tr("ui.74a883a037bc")
 	case tuiPageMaintenance:
-		return "Maintenance"
+		return tr("ui.17ccfa5b681e")
 	default:
-		return "Unknown"
+		return tr("ui.b764cdc0eab7")
 	}
 }
 
 func renderTUICompactNavigation(
 	snapshot tuiSnapshot,
 	width,
-	height int,
+	height int, language ...string,
 ) string {
+	tr := tuiTranslator(language...)
 	var b strings.Builder
-	tuiTitle(&b, "Navigation", "↑↓/ws select · →/Enter open", width)
+	tuiTitle(&b, tr("ui.3db65f8c2a7d"), tr("ui.40c05dff4899"), width)
 	limit := maxTUIWidth(height-3, 1)
 	start, end := tuiVisibleRange(
 		int(tuiPageCount),
@@ -232,7 +240,7 @@ func renderTUICompactNavigation(
 	for index := start; index < end; index++ {
 		tuiRow(
 			&b,
-			fmt.Sprintf("%d  %s", index+1, tuiPageName(tuiPage(index))),
+			fmt.Sprintf("%d  %s", index+1, tuiPageName(tuiPage(index), language...)),
 			width,
 			index == snapshot.SelectedMenu,
 			"",
@@ -283,14 +291,21 @@ func tuiWrapWord(value string, width int) []string {
 	parts := make([]string, 0, 1)
 	var part strings.Builder
 	partWidth := 0
-	for _, valueRune := range value {
-		runeWidth := tuiRuneWidth(valueRune)
+	clusters := graphemes.FromString(strings.ToValidUTF8(value, "�"))
+	clusters.AnsiEscapeSequences = true
+	for clusters.Next() {
+		cluster := clusters.Value()
+		runeWidth := tuiDisplayWidth(cluster)
+		if runeWidth > width {
+			// An indivisible wide cluster cannot fit in a one-cell viewport.
+			continue
+		}
 		if partWidth > 0 && partWidth+runeWidth > width {
 			parts = append(parts, part.String())
 			part.Reset()
 			partWidth = 0
 		}
-		part.WriteRune(valueRune)
+		part.WriteString(cluster)
 		partWidth += runeWidth
 	}
 	if part.Len() > 0 {
@@ -306,15 +321,11 @@ func drawTUITooSmall(w io.Writer, width, height int) {
 	writeTUIFrame(w, renderTUITooSmall(width, height))
 }
 
-func renderTUITooSmall(width, height int) string {
+func renderTUITooSmall(width, height int, language ...string) string {
+	tr := tuiTranslator(language...)
 	lines := []string{
-		"",
-		"  FlClash TUI",
-		"",
-		fmt.Sprintf("  Terminal: %dx%d", width, height),
-		"  Resize to at least 40x10",
-		"",
-		"  q exit TUI · Ctrl+C full exit",
+		"", tr("ui.1e9567a9dd43"), "",
+		fmt.Sprintf(tr("ui.811807ed4d6e"), width, height), tr("ui.b9180024339b"), "", tr("ui.b0199ea270f3"),
 	}
 	var b strings.Builder
 	for row := 0; row < height; row++ {
@@ -335,21 +346,49 @@ func renderTUITiny(
 	ownsCore,
 	coreRunning bool,
 	width,
-	height int,
+	height int, language ...string,
 ) string {
-	lines := []string{
-		"FlClash " + tuiCoreStatus(ownsCore, coreRunning),
-		fmt.Sprintf("%d %s", int(snapshot.Page)+1, tuiPageName(snapshot.Page)),
+	tr := tuiTranslator(language...)
+	lines := []string{tr("ui.f84639a4084d") +
+		tuiCoreStatus(ownsCore, coreRunning, language...), fmt.Sprintf("%d %s", int(snapshot.Page)+1, tuiPageName(snapshot.Page, language...)),
 	}
-	if snapshot.NotificationDetailOpen {
-		lines = append(lines, tuiNotificationTinyDetail(snapshot, width)...)
+	if snapshot.LanguageSelectionOpen {
+		items := i18n.Languages()
+		selected := minTUI(maxTUIWidth(snapshot.SelectedLanguage, 0), len(items)-1)
+		lines = []string{"Language", items[selected].Name + " [" + items[selected].Code + "]", i18n.Text(snapshot.Language, "language.choose")}
+	} else if snapshot.NotificationDetailOpen {
+		lines = append(lines, tuiNotificationTinyDetail(snapshot, width, language...)...)
+	} else if snapshot.DangerConfirmOpen {
+		lines = []string{snapshot.DangerConfirmTitle, snapshot.DangerConfirmMessage, "Enter · Esc"}
+	} else if snapshot.ProfileDelete.Open {
+		lines = []string{tr("ui.4e5fc6f52f59"), snapshot.ProfileDelete.Name, "Enter · Esc"}
+	} else if snapshot.SSHForm.DeleteConfirmOpen {
+		lines = []string{tr("ui.5cbce6c2671b"), snapshot.SSHForm.DeleteName, "Enter · Esc"}
+	} else if snapshot.SSHCredentialPrompt.Open {
+		lines = []string{tr("ui.5495b65bea00"), snapshot.SSHCredentialPrompt.Value, "Enter · Esc"}
+	} else if snapshot.InputTitle != "" {
+		lines = []string{snapshot.InputTitle, snapshot.InputValue, "Enter · Esc"}
+	} else if snapshot.SelectionTitle != "" {
+		lines = []string{snapshot.SelectionTitle}
+		if len(snapshot.SelectionOptions) > 0 {
+			index := minTUI(maxTUIIndex(snapshot.SelectedOption), len(snapshot.SelectionOptions)-1)
+			lines = append(lines, snapshot.SelectionOptions[index], "Enter · Esc")
+		}
+	} else if snapshot.SSHForm.Open {
+		rows := tuiFieldRows(tuiSSHFormFields(snapshot.SSHForm, language...), width+4)
+		for _, row := range rows {
+			if row.selected {
+				lines = append([]string{"SSH"}, row.value, "Enter · Esc")
+				break
+			}
+		}
 	} else if notification, ok := tuiLatestUnreadNotification(snapshot.Notifications); ok {
-		lines = append(lines, tuiNotificationTinySummary(notification, width))
+		lines = append(lines, tuiNotificationTinySummary(notification, width, language...))
 	}
 	if height > 0 && len(lines) >= height {
 		lines = lines[:height-1]
 	}
-	lines = append(lines, "q exit TUI · ^C full exit")
+	lines = append(lines, tr("ui.797be7a3e1f9"))
 	var b strings.Builder
 	for row := 0; row < height; row++ {
 		line := ""
@@ -394,62 +433,61 @@ func (w *tuiFrameWriter) invalidate() {
 	w.last = ""
 }
 
-func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) string {
+func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int, language ...string) string {
+	tr := tuiTranslator(language...)
 	var b strings.Builder
-	if snapshot.NotificationDetailOpen {
-		drawTUINotificationDetails(&b, snapshot, width, height)
+	if snapshot.LanguageSelectionOpen {
+		drawTUILanguageSelection(&b, snapshot, width, height)
+	} else if snapshot.NotificationDetailOpen {
+		drawTUINotificationDetails(&b, snapshot, width, height, language...)
 	} else if snapshot.DangerConfirmOpen {
-		drawTUIDangerConfirm(&b, snapshot, width)
+		drawTUIDangerConfirm(&b, snapshot, width, height, language...)
 	} else if snapshot.ProfileDelete.Open {
-		drawTUIProfileDeleteConfirm(&b, snapshot.ProfileDelete, width)
+		drawTUIProfileDeleteConfirm(&b, snapshot.ProfileDelete, width, height, language...)
 	} else if snapshot.SSHForm.DeleteConfirmOpen {
-		drawTUISSHDeleteConfirm(&b, snapshot.SSHForm, width)
+		drawTUISSHDeleteConfirm(&b, snapshot.SSHForm, width, height, language...)
 	} else if snapshot.SSHCredentialPrompt.Open {
-		drawTUISSHCredentialPrompt(&b, snapshot.SSHCredentialPrompt, width)
+		drawTUISSHCredentialPrompt(&b, snapshot.SSHCredentialPrompt, width, height, language...)
 	} else if snapshot.SSHForm.Open {
-		drawTUISSHForm(&b, snapshot.SSHForm, width, height)
+		drawTUISSHForm(&b, snapshot.SSHForm, width, height, language...)
 	} else if snapshot.SelectionTitle != "" {
-		drawTUISelection(&b, snapshot, width)
+		drawTUISelection(&b, snapshot, width, height, language...)
 	} else if snapshot.InputTitle != "" {
-		drawTUIInput(&b, snapshot, width)
+		drawTUIInput(&b, snapshot, width, height, language...)
 	} else if snapshot.ShowHelp {
-		drawTUIHelp(&b, width, height)
+		drawTUIHelp(&b, width, height, language...)
 	} else if snapshot.Page == tuiPageRequests {
-		drawTUIRequests(&b, snapshot, width, height)
+		drawTUIRequests(&b, snapshot, width, height, language...)
 	} else if snapshot.Page == tuiPageConnections {
-		drawTUIConnections(&b, snapshot, width, height)
+		drawTUIConnections(&b, snapshot, width, height, language...)
 	} else if snapshot.Page == tuiPageLogs {
-		drawTUILogs(&b, snapshot, width, height)
+		drawTUILogs(&b, snapshot, width, height, language...)
 	} else if snapshot.Page == tuiPageProfiles {
-		drawTUIProfiles(&b, snapshot, width, height)
+		drawTUIProfiles(&b, snapshot, width, height, language...)
 	} else if snapshot.Page == tuiPageSSH {
-		drawTUISSH(&b, snapshot, width, height)
+		drawTUISSH(&b, snapshot, width, height, language...)
 	} else if snapshot.Page == tuiPageTools {
-		drawTUITools(&b, snapshot, width, height)
+		drawTUITools(&b, snapshot, width, height, language...)
 	} else if snapshot.Page == tuiPageMaintenance {
-		drawTUIMaintenance(&b, snapshot, width, height)
+		drawTUIMaintenance(&b, snapshot, width, height, language...)
 	} else if snapshot.Page == tuiPageDashboard {
 		if height < 33 {
 			return renderTUICompactDashboard(
 				snapshot,
 				paths,
 				width,
-				height,
-			)
+				height, language...)
 		}
-		drawTUIDashboard(&b, snapshot, paths, width, height)
+		drawTUIDashboard(&b, snapshot, paths, width, height, language...)
 	} else if snapshot.Page == tuiPageProxies &&
 		snapshot.ProxyView == tuiProxyViewProviders {
-		drawTUIProviders(&b, snapshot, width, height)
+		drawTUIProviders(&b, snapshot, width, height, language...)
 	} else if snapshot.Page == tuiPageProxies && len(snapshot.Groups) == 0 {
 		drawTUIEmpty(
 			&b,
-			width,
-			"Proxy groups",
-			"No selectable groups · press ] for Providers or r to refresh",
-		)
+			width, tr("ui.b39dc0586e6b"), tr("ui.e06a1f3bf373"), language...)
 	} else {
-		drawTUIProxies(&b, snapshot, width, height)
+		drawTUIProxies(&b, snapshot, width, height, language...)
 	}
 	return b.String()
 }
@@ -457,95 +495,97 @@ func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int) stri
 func drawTUISSHCredentialPrompt(
 	b *strings.Builder,
 	prompt tuiSSHCredentialPromptView,
-	width int,
+	width, height int, language ...string,
 ) {
-	tuiTitle(b, "Unlock SSH private key", "Enter connect · Esc cancel", width)
-	tuiRow(b, "Profile       "+prompt.Profile, width, false, tuiCyan)
-	tuiRow(b, "Identity      "+prompt.Identity, width, false, tuiDim)
-	tuiRow(b, "Passphrase    "+prompt.Value, width, true, tuiCyan)
-	tuiRow(b, "One-time credential · it will not be saved", width, false, tuiDim)
-	tuiEndPanel(b, width)
-}
-
-func drawTUIDangerConfirm(b *strings.Builder, snapshot tuiSnapshot, width int) {
-	tuiTitle(b, snapshot.DangerConfirmTitle, "Enter confirm · Esc cancel", width)
-	for _, line := range tuiWrapText(snapshot.DangerConfirmMessage, maxTUIWidth(width-4, 1)) {
-		tuiRow(b, line, width, false, tuiYellow)
+	tr := tuiTranslator(language...)
+	tuiTitle(b, tr("ui.5495b65bea00"), tr("ui.c6ed2550e4a5"), width)
+	fields := []tuiField{
+		tuiLabelField(tr("ui.40f9380eb081"), prompt.Profile),
+		tuiLabelField(tr("ui.5ca3303d2b97"), prompt.Identity),
+		tuiLabelField(tr("ui.8cdf355377b7"), prompt.Value),
 	}
-	tuiRow(b, "This operation cannot be undone in the current session.", width, false, tuiRed)
+	for index := range fields {
+		fields[index].truncate = true
+		fields[index].color = tuiCyan
+	}
+	fields[1].color, fields[2].selected = tuiDim, true
+	rows := tuiFieldRows(fields, width)
+	tuiWriteRows(b, tuiSelectedRows(rows, maxTUIWidth(height-4, 1)), width)
+	if height >= len(rows)+5 {
+		tuiRow(b, tr("ui.a3b01b249557"), width, false, tuiDim)
+	}
+	tuiRow(b, tuiOverlayHint(tr("ui.c6ed2550e4a5"), width-4), width, false, tuiDim)
 	tuiEndPanel(b, width)
 }
 
-func drawTUISelection(b *strings.Builder, snapshot tuiSnapshot, width int) {
-	tuiTitle(b, snapshot.SelectionTitle, "Enter confirm · Esc cancel", width)
-	for index, option := range snapshot.SelectionOptions {
+func drawTUIDangerConfirm(b *strings.Builder, snapshot tuiSnapshot, width, height int, language ...string) {
+	tr := tuiTranslator(language...)
+	tuiConfirmationPanel(b, snapshot.DangerConfirmTitle, snapshot.DangerConfirmMessage, tr("ui.566b258d2d58"), width, height, tuiYellow, tr("ui.2082f6d15946"))
+}
+
+func drawTUISelection(b *strings.Builder, snapshot tuiSnapshot, width, height int, language ...string) {
+	tr := tuiTranslator(language...)
+	tuiTitle(b, snapshot.SelectionTitle, tr("ui.566b258d2d58"), width)
+	start, end := tuiVisibleRange(len(snapshot.SelectionOptions), snapshot.SelectedOption, maxTUIWidth(height-4, 1))
+	for index := start; index < end; index++ {
+		option := snapshot.SelectionOptions[index]
 		label := option
 		if strings.EqualFold(option, snapshot.Settings.Mode) {
-			label += "  (current)"
+			label += tr("ui.fdf010627cf3")
 		}
 		tuiRow(b, label, width, index == snapshot.SelectedOption, "")
 	}
+	tuiRow(b, tuiOverlayHint(tr("ui.566b258d2d58"), width-4), width, false, tuiDim)
 	tuiEndPanel(b, width)
-	if snapshot.SelectionHint != "" {
-		tuiEmptyPanel(b, "Selection help", snapshot.SelectionHint, width)
+	if snapshot.SelectionHint != "" && height-(end-start+4) >= 4 {
+		tuiEmptyPanel(b, tr("ui.76c528171b52"), snapshot.SelectionHint, width)
 	}
 }
 
-func drawTUIInput(b *strings.Builder, snapshot tuiSnapshot, width int) {
-	tuiTitle(b, snapshot.InputTitle, "Enter confirm · Esc cancel", width)
+func drawTUIInput(b *strings.Builder, snapshot tuiSnapshot, width, height int, language ...string) {
+	tr := tuiTranslator(language...)
+	tuiTitle(b, snapshot.InputTitle, tr("ui.566b258d2d58"), width)
 	tuiRow(b, snapshot.InputValue, width, true, "")
+	tuiRow(b, tuiOverlayHint(tr("ui.566b258d2d58"), width-4), width, false, tuiDim)
 	tuiEndPanel(b, width)
-	if snapshot.InputHint != "" {
-		tuiEmptyPanel(b, "Input help", snapshot.InputHint, width)
+	if snapshot.InputHint != "" && height >= 9 {
+		tuiEmptyPanel(b, tr("ui.3046ec5fc894"), snapshot.InputHint, width)
 	}
 }
 
 func drawTUISSHDeleteConfirm(
 	b *strings.Builder,
 	form tuiSSHFormView,
-	width int,
+	width, height int, language ...string,
 ) {
-	tuiTitle(b, "Delete SSH profile", "Enter confirm · Esc cancel", width)
-	tuiRow(
-		b,
-		"Delete "+form.DeleteName+"? This also disconnects its active tunnel.",
-		width,
-		true,
-		tuiRed,
-	)
-	tuiEndPanel(b, width)
+	tr := tuiTranslator(language...)
+	tuiConfirmationPanel(b, tr("ui.5cbce6c2671b"), tr("ui.85941fb9c992")+form.DeleteName+tr("ui.eff2e5d9ad9b"), tr("ui.566b258d2d58"), width, height, tuiRed)
 }
 
 func drawTUIProfileDeleteConfirm(
 	b *strings.Builder,
 	profile tuiProfileDeleteView,
-	width int,
+	width, height int, language ...string,
 ) {
-	tuiTitle(b, "Delete Profile", "Enter confirm · Esc cancel", width)
-	tuiRow(
-		b,
-		"Delete "+profile.Name+" ("+profile.Kind+")? The saved YAML and linked metadata will be removed.",
-		width,
-		true,
-		tuiRed,
-	)
-	tuiEndPanel(b, width)
+	tr := tuiTranslator(language...)
+	tuiConfirmationPanel(b, tr("ui.4e5fc6f52f59"), tr("ui.85941fb9c992")+profile.Name+" ("+profile.Kind+tr("ui.83e91cd4a9a2"), tr("ui.566b258d2d58"), width, height, tuiRed)
 }
 
 func drawTUISSHForm(
 	b *strings.Builder,
 	form tuiSSHFormView,
 	width,
-	height int,
+	height int, language ...string,
 ) {
-	title := "Add SSH profile"
-	subtitle := "↑↓/Tab select · Enter edit/confirm · x remove option · Esc cancel"
+	tr := tuiTranslator(language...)
+	title := tr("ui.4ad0afb38058")
+	subtitle := tr("ui.8202eba653cf")
 	if form.Existing {
-		title = "Edit SSH profile"
+		title = tr("ui.e5124b518aec")
 	}
 	if form.ReadOnly {
-		title = "SSH profile details · CONNECTED · READ ONLY"
-		subtitle = "↑↓ select · disconnect before editing · Esc close"
+		title = tr("ui.d30fbba17a15")
+		subtitle = tr("ui.305888507e97")
 	}
 	tuiTitle(
 		b,
@@ -553,161 +593,122 @@ func drawTUISSHForm(
 		subtitle,
 		width,
 	)
-	rows := make([]struct {
-		label string
-		color string
-	}, 0, len(form.Options)+12)
-	rows = append(rows,
-		struct {
-			label string
-			color string
-		}{label: "Name                   " + form.Name},
-		struct {
-			label string
-			color string
-		}{label: "SSH username           " + form.Username},
-		struct {
-			label string
-			color string
-		}{label: "SSH host               " + form.Host},
-		struct {
-			label string
-			color string
-		}{label: "Jump host              " + cliDisplayValue(form.Jump)},
-		struct {
-			label string
-			color string
-		}{label: fmt.Sprintf("SSH port               %d", form.Port)},
-		struct {
-			label string
-			color string
-		}{label: "Local SOCKS            " + formatTUISSHLocalPort(form.LocalPort)},
-		struct {
-			label string
-			color string
-		}{label: "Identity(private key)  " + cliDisplayValue(form.Identity)},
-	)
-	passphrase := "not saved · Enter set"
-	switch {
-	case form.Identity == "":
-		passphrase = "not applicable · select Identity first"
-	case form.IdentityError != "":
-		passphrase = "key unavailable/invalid · check Identity"
-	case form.IdentityKind == cliSSHIdentityUnencrypted:
-		passphrase = "not required · private key is unencrypted"
-	case form.IdentityKind == cliSSHIdentityEncrypted && !form.PassphraseSet:
-		passphrase = "ask once when connecting · not saved"
-	case form.PassphraseSet:
-		passphrase = "******** · Enter replace · c clear"
-	}
-	if form.ReadOnly && form.PassphraseSet {
-		passphrase = "******** · set · read only"
-	} else if form.ReadOnly {
-		passphrase = "not saved · read only"
-	}
-	if form.PassphraseChanged {
-		passphrase = "******** · replacement staged · c clear"
-	}
-	if form.PassphraseCleared {
-		passphrase = "clear on save · Enter set"
-	}
-	rows = append(rows, struct {
-		label string
-		color string
-	}{label: "Key passphrase         " + passphrase})
-	password := "not saved · Enter set"
-	if form.PasswordSet {
-		password = "******** · Enter replace · c clear"
-	}
-	if form.ReadOnly && form.PasswordSet {
-		password = "******** · set · read only"
-	} else if form.ReadOnly {
-		password = "not saved · read only"
-	}
-	if form.PasswordChanged {
-		password = "******** · replacement staged · c clear"
-	}
-	if form.PasswordCleared {
-		password = "clear on save · Enter set"
-	}
-	rows = append(rows, struct {
-		label string
-		color string
-	}{label: "SSH password           " + password})
-	for index, option := range form.Options {
-		rows = append(rows, struct {
-			label string
-			color string
-		}{label: fmt.Sprintf("Option %-3d   %s", index+1, option)})
-	}
-	addOptionLabel := "+ Add OpenSSH option (KEY=VALUE)"
-	addOptionColor := tuiCyan
-	saveLabel := "Save profile"
-	saveColor := tuiGreen
-	if form.ReadOnly {
-		addOptionLabel = "Options are read only while connected"
-		addOptionColor = tuiDim
-		saveLabel = "Save unavailable · disconnect before editing"
-		saveColor = tuiDim
-	}
-	rows = append(rows,
-		struct {
-			label string
-			color string
-		}{label: addOptionLabel, color: addOptionColor},
-		struct {
-			label string
-			color string
-		}{label: saveLabel, color: saveColor},
-	)
-	if form.Existing {
-		rows = append(rows, struct {
-			label string
-			color string
-		}{label: "Delete profile", color: tuiRed})
-	}
-	cancelLabel := "Cancel"
-	if form.ReadOnly {
-		cancelLabel = "Close details"
-	}
-	rows = append(rows, struct {
-		label string
-		color string
-	}{label: cancelLabel, color: tuiYellow})
-	if form.FieldEditing && form.Selected >= 0 && form.Selected < len(rows) {
-		label := "Value        " + form.FieldInput
-		if form.Selected == tuiSSHFormPassphraseRow {
-			label = "Key passphrase         " + form.FieldInput
-			if form.PassphraseConfirm {
-				label = "Confirm passphrase     " + form.FieldInput
-			}
-		} else if form.Selected == tuiSSHFormPasswordRow {
-			label = "SSH password           " + form.FieldInput
-			if form.PasswordConfirm {
-				label = "Confirm password       " + form.FieldInput
-			}
-		} else if form.Selected == tuiSSHFormJumpRow {
-			label = "Jump host              " + form.FieldInput
-		}
-		rows[form.Selected].label = label
-	}
-	limit := maxTUIWidth(height-4, 1)
-	start, end := tuiVisibleRange(len(rows), form.Selected, limit)
-	for index := start; index < end; index++ {
-		tuiRow(
-			b,
-			rows[index].label,
-			width,
-			index == form.Selected,
-			rows[index].color,
-		)
-	}
+	rows := tuiFieldRows(tuiSSHFormFields(form, language...), width)
+	tuiWriteRows(b, tuiSelectedRows(rows, maxTUIWidth(height-4, 1)), width)
+	tuiRow(b, tuiOverlayHint(tr("ui.566b258d2d58"), width-4), width, false, tuiDim)
 	tuiEndPanel(b, width)
 }
 
-func formatTUISSHLocalPort(port int) string {
+func tuiSSHFormFields(form tuiSSHFormView, language ...string) []tuiField {
+	tr := tuiTranslator(language...)
+	rows := []tuiField{
+		tuiLabelField(tr("ui.6f1f5571c8d7"), form.Name),
+		tuiLabelField(tr("ui.dae627471c92"), form.Username),
+		tuiLabelField(tr("ui.3399bee80cd4"), form.Host),
+		tuiLabelField(tr("ui.fa98cd3e1313"), cliDisplayValue(form.Jump)),
+		tuiTemplateField(tr("ui.cfe13ac844d1"), form.Port),
+		tuiLabelField(tr("ui.580605e99507"), formatTUISSHLocalPort(form.LocalPort, language...)),
+		tuiLabelField(tr("ui.b4771c58ec60"), cliDisplayValue(form.Identity)),
+	}
+	passphrase := tr("ui.be5192ae9afa")
+	switch {
+	case form.Identity == "":
+		passphrase = tr("ui.4821b22cbe04")
+	case form.IdentityError != "":
+		passphrase = tr("ui.ad5596433ee6")
+	case form.IdentityKind == cliSSHIdentityUnencrypted:
+		passphrase = tr("ui.d3519f496eb7")
+	case form.IdentityKind == cliSSHIdentityEncrypted && !form.PassphraseSet:
+		passphrase = tr("ui.3e629128caf6")
+	case form.PassphraseSet:
+		passphrase = tr("ui.5ae755203e2e")
+	}
+	if form.ReadOnly && form.PassphraseSet {
+		passphrase = tr("ui.b4ccf9453934")
+	} else if form.ReadOnly {
+		passphrase = tr("ui.7c999d8f7c2c")
+	}
+	if form.PassphraseChanged {
+		passphrase = tr("ui.baaebcc4c8db")
+	}
+	if form.PassphraseCleared {
+		passphrase = tr("ui.ab64806442ee")
+	}
+	rows = append(rows, tuiLabelField(tr("ui.d467413fb105"), passphrase))
+	password := tr("ui.be5192ae9afa")
+	if form.PasswordSet {
+		password = tr("ui.5ae755203e2e")
+	}
+	if form.ReadOnly && form.PasswordSet {
+		password = tr("ui.b4ccf9453934")
+	} else if form.ReadOnly {
+		password = tr("ui.7c999d8f7c2c")
+	}
+	if form.PasswordChanged {
+		password = tr("ui.baaebcc4c8db")
+	}
+	if form.PasswordCleared {
+		password = tr("ui.ab64806442ee")
+	}
+	rows = append(rows, tuiLabelField(tr("ui.89c8cb234afb"), password))
+	for index, option := range form.Options {
+		rows = append(rows, tuiLabelField(fmt.Sprintf(tr("ui.94fb36dd783a"), index+1, ""), option))
+	}
+	addOptionLabel := tr("ui.203a4ea6a7c1")
+	addOptionColor := tuiCyan
+	saveLabel := tr("ui.0c8209e72ec8")
+	saveColor := tuiGreen
+	if form.ReadOnly {
+		addOptionLabel = tr("ui.979b8c7be4eb")
+		addOptionColor = tuiDim
+		saveLabel = tr("ui.fda7316f24a0")
+		saveColor = tuiDim
+	}
+	rows = append(rows,
+		tuiField{label: addOptionLabel, color: addOptionColor},
+		tuiField{label: saveLabel, color: saveColor},
+	)
+	if form.Existing {
+		rows = append(rows, tuiField{label: tr("ui.47311af432a7"), color: tuiRed})
+	}
+	cancelLabel := tr("ui.19766ed6ccb2")
+	if form.ReadOnly {
+		cancelLabel = tr("ui.edc82d69e76d")
+	}
+	rows = append(rows, tuiField{label: cancelLabel, color: tuiYellow})
+	if form.FieldEditing && form.Selected >= 0 && form.Selected < len(rows) {
+		rows[form.Selected] = tuiLabelField(tuiSSHFormEditingLabel(form, language...), form.FieldInput)
+	}
+	for index := range rows {
+		rows[index].selected = index == form.Selected
+	}
+	return rows
+}
+
+func tuiSSHFormEditingLabel(form tuiSSHFormView, language ...string) string {
+	tr := tuiTranslator(language...)
+	if form.Selected == tuiSSHFormPassphraseRow {
+		if form.PassphraseConfirm {
+			return tr("ui.f4ab89f5dce3")
+		}
+		return tr("ui.d467413fb105")
+	}
+	if form.Selected == tuiSSHFormPasswordRow {
+		if form.PasswordConfirm {
+			return tr("ui.4522fb74ce00")
+		}
+		return tr("ui.89c8cb234afb")
+	}
+	if form.Selected == tuiSSHFormJumpRow {
+		return tr("ui.fa98cd3e1313")
+	}
+	return tr("ui.e9e16253d5f9")
+}
+
+func formatTUISSHLocalPort(port int, language ...string) string {
+	tr := tuiTranslator(language...)
 	if port <= 0 {
-		return "auto"
+		return tr("ui.929260ad9b9e")
 	}
 	return "127.0.0.1:" + strconv.Itoa(port)
 }
@@ -770,18 +771,12 @@ func tuiBoxRow(left, right string, width int, leftColor, rightColor string) stri
 	return "│" + leftColor + left + tuiReset + rightColor + right + tuiReset + "│\n"
 }
 
-func tuiSidebar(snapshot tuiSnapshot, width, height int) []string {
+func tuiSidebar(snapshot tuiSnapshot, width, height int, language ...string) []string {
+	tr := tuiTranslator(language...)
 	innerWidth := maxTUIWidth(width-2, 1)
-	labels := []string{
-		"@  Dashboard",
-		"#  SSH",
-		"*  Proxies",
-		"+  Profiles",
-		">  History",
-		"~  Connections",
-		"=  Logs",
-		":  Settings",
-		"!  Maintenance",
+	labels := make([]string, len(tuiSidebarKeys))
+	for index, key := range tuiSidebarKeys {
+		labels[index] = tr(key)
 	}
 	lines := make([]string, 0, height)
 	lines = append(lines, tuiBoxTop(innerWidth))
@@ -797,10 +792,10 @@ func tuiSidebar(snapshot tuiSnapshot, width, height int) []string {
 		if snapshot.FocusSidebar && index == snapshot.SelectedMenu {
 			prefix = "> "
 			color = tuiSelect + tuiCyan
-			if label == ">  History" {
+			if tuiPage(index) == tuiPageRequests {
 				// History uses a chevron as its page icon. Do not render it twice
 				// when the sidebar cursor is also a chevron.
-				label = "   History"
+				label = tr("ui.42b4edf0c131")
 			}
 		}
 		lines = append(lines, tuiBoxRow("  "+prefix+label, "", innerWidth, color, ""))
@@ -824,14 +819,15 @@ func tuiStatusDot(ownsCore, coreRunning bool) string {
 	return "○"
 }
 
-func tuiCoreStatus(ownsCore, coreRunning bool) string {
+func tuiCoreStatus(ownsCore, coreRunning bool, language ...string) string {
+	tr := tuiTranslator(language...)
 	if !ownsCore {
-		return "EXTERNAL CORE"
+		return tr("ui.08d241ad5168")
 	}
 	if coreRunning {
-		return "CORE RUNNING"
+		return tr("ui.43fc9642f9a3")
 	}
-	return "CORE STOPPED"
+	return tr("ui.c06b7ed36d40")
 }
 
 func maxTUIWidth(width, minimum int) int {
@@ -846,70 +842,13 @@ func tuiPadRight(value string, width int) string {
 	return value + strings.Repeat(" ", maxTUIWidth(width-tuiDisplayWidth(value), 0))
 }
 
-func tuiDisplayWidth(value string) int {
-	width := 0
-	for _, r := range value {
-		width += tuiRuneWidth(r)
-	}
-	return width
-}
-
-func tuiRuneWidth(value rune) int {
-	if value == 0 || value < 32 {
-		return 0
-	}
-	if value == '\u200d' || value == '\ufe0e' || value == '\ufe0f' ||
-		unicode.Is(unicode.Mn, value) || unicode.Is(unicode.Me, value) || unicode.Is(unicode.Cf, value) {
-		return 0
-	}
-	if value >= 0x1100 && (value <= 0x115f || value == 0x2329 || value == 0x232a ||
-		(value >= 0x2e80 && value <= 0xa4cf) || (value >= 0xac00 && value <= 0xd7a3) ||
-		(value >= 0xf900 && value <= 0xfaff) || (value >= 0xfe10 && value <= 0xfe6f) ||
-		(value >= 0xff00 && value <= 0xff60) || (value >= 0xffe0 && value <= 0xffe6) ||
-		(value >= 0x1f1e6 && value <= 0x1f1ff) || (value >= 0x1f300 && value <= 0x1faff)) {
-		return 2
-	}
-	return 1
-}
-
 func tuiClampAnsiLine(line string, width int) string {
 	if width <= 0 {
 		return ""
 	}
 	line = strings.TrimSuffix(strings.TrimSuffix(line, "\r"), "\n")
-	var b strings.Builder
-	visibleWidth := 0
-	for index := 0; index < len(line); {
-		if line[index] == '\x1b' {
-			start := index
-			index++
-			if index < len(line) && line[index] == '[' {
-				index++
-				for index < len(line) {
-					value := line[index]
-					index++
-					if value >= '@' && value <= '~' {
-						break
-					}
-				}
-			}
-			b.WriteString(line[start:index])
-			continue
-		}
-		value, size := utf8.DecodeRuneInString(line[index:])
-		runeWidth := tuiRuneWidth(value)
-		if visibleWidth+runeWidth > width {
-			break
-		}
-		b.WriteString(line[index : index+size])
-		visibleWidth += runeWidth
-		index += size
-	}
-	if visibleWidth < width {
-		b.WriteString(strings.Repeat(" ", width-visibleWidth))
-	}
-	b.WriteString(tuiReset)
-	return b.String()
+	line = tuiTruncateGraphemes(line, width, "")
+	return line + strings.Repeat(" ", maxTUIWidth(width-tuiDisplayWidth(line), 0)) + tuiReset
 }
 
 func tuiRow(b *strings.Builder, value string, width int, selected bool, color string) {
@@ -928,10 +867,7 @@ func tuiRow(b *strings.Builder, value string, width int, selected bool, color st
 
 func tuiTitle(b *strings.Builder, title, subtitle string, width int) {
 	b.WriteString(tuiBoxTop(width))
-	left := "  " + title
-	if subtitle != "" {
-		left += "  ·  " + subtitle
-	}
+	left := tuiPanelHeading(title, subtitle, width)
 	b.WriteString(tuiBoxRow(left, "", width, tuiBold+tuiCyan, ""))
 }
 
@@ -939,20 +875,20 @@ func tuiTrafficTitle(
 	b *strings.Builder,
 	traffic trafficSnapshot,
 	peak int64,
-	width int,
+	width int, language ...string,
 ) {
+	tr := tuiTranslator(language...)
 	b.WriteString(tuiBoxTop(width))
-	line := "  " + tuiBold + tuiCyan + "Live traffic" + tuiReset +
-		"  ·  " + formatTUITrafficLegend(traffic, peak)
+	line := "  " + tuiBold + tuiCyan + tr("ui.9fd866625ba6") + tuiReset +
+		"  ·  " + formatTUITrafficLegend(traffic, peak, language...)
 	b.WriteString("│")
 	b.WriteString(tuiClampAnsiLine(line, width))
 	b.WriteString("│\n")
 }
 
-func formatTUITrafficLegend(traffic trafficSnapshot, peak int64) string {
-	return fmt.Sprintf(
-		"%s↑ %s/s%s · %s↓ %s/s%s%s · peak %s/s · 30 samples%s",
-		tuiTrafficChartUpload,
+func formatTUITrafficLegend(traffic trafficSnapshot, peak int64, language ...string) string {
+	tr := tuiTranslator(language...)
+	return fmt.Sprintf(tr("ui.41278a3a38a0"), tuiTrafficChartUpload,
 		formatBytes(traffic.Up),
 		tuiReset,
 		tuiTrafficChartDownload,
@@ -974,6 +910,6 @@ func tuiEmptyPanel(b *strings.Builder, title, message string, width int) {
 	tuiEndPanel(b, width)
 }
 
-func drawTUIEmpty(b *strings.Builder, width int, title, message string) {
+func drawTUIEmpty(b *strings.Builder, width int, title, message string, language ...string) {
 	tuiEmptyPanel(b, title, message, width)
 }

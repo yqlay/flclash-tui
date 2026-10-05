@@ -3,9 +3,9 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -22,7 +22,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			return nil
 		}
 		m.shutdownRequested = true
-		m.snapshot.Status = "Shutting down all frontends, Backend, and Core..."
+		m.snapshot.setStatus(newTUIMessage("ui.df28c9362434"))
 		return func() tea.Msg {
 			return tuiShutdownResultMsg{
 				err: completeCLIExitForTUI(os.Getpid()),
@@ -31,7 +31,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeyBack:
 		if m.snapshot.Page == tuiPageSSH && m.snapshot.SSHDashboardFocus {
 			m.snapshot.SSHDashboardFocus = false
-			m.snapshot.Status = "SSH profiles · Enter connects or focuses Dashboard"
+			m.snapshot.setStatus(newTUIMessage("ui.b2cb6c0f5d77"))
 		} else if m.snapshot.Page == tuiPageRequests && m.snapshot.HistoryDetailOpen {
 			m.snapshot.HistoryDetailOpen = false
 		} else if m.snapshot.Page == tuiPageConnections && m.snapshot.ConnectionsDetailOpen {
@@ -43,7 +43,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			m.snapshot.ProxyView == tuiProxyViewGroups &&
 			m.snapshot.ProxyNodeFocus {
 			m.snapshot.ProxyNodeFocus = false
-			m.snapshot.Status = "Proxy groups · Enter opens nodes · d node RTT (5 samples) · v speed"
+			m.snapshot.setStatus(newTUIMessage("ui.8d24f11c058c"))
 		} else if !m.snapshot.FocusSidebar {
 			m.snapshot.FocusSidebar = true
 			m.snapshot.SelectedMenu = int(m.snapshot.Page)
@@ -61,9 +61,10 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				m.client,
 				m.ownsCore,
 			); reloadErr != nil {
-				state.snapshot.Status = "Reload failed: " + reloadErr.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.0b3a51a19453", reloadErr.Error()))
 			} else {
-				state.snapshot.Status = "Configuration reloaded"
+				clearTUISettingsDraft(state)
+				state.snapshot.setStatus(newTUIMessage("ui.7b3279fdc1ff"))
 				syncStoppedTUISettings(state)
 			}
 		})
@@ -88,14 +89,14 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			m.snapshot.HistoryFilter = filters[wrapTUIIndex(current, 1, len(filters))]
 			m.snapshot.SelectedRequest = firstTUIRequestMatch(m.snapshot)
 			m.snapshot.HistoryDetailOpen = false
-			m.snapshot.Status = "History filter: " + m.snapshot.HistoryFilter
+			m.snapshot.setStatus(newTUIMessage("ui.bd778900ebc6", m.snapshot.HistoryFilter))
 		case tuiPageLogs:
 			levels := []string{"ALL", "ERROR", "WARN", "INFO", "DEBUG"}
 			current := findTUIString(levels, tuiDefaultValue(m.snapshot.LogsLevel, "ALL"))
 			m.snapshot.LogsLevel = levels[wrapTUIIndex(current, 1, len(levels))]
 			m.snapshot.SelectedLog = firstTUILogMatch(m.snapshot)
 			m.snapshot.LogDetailOpen = false
-			m.snapshot.Status = "Log level filter: " + m.snapshot.LogsLevel
+			m.snapshot.setStatus(newTUIMessage("ui.0c8ba04ef125", m.snapshot.LogsLevel))
 		}
 	case tuiKeySourceFilter:
 		if m.snapshot.Page == tuiPageRequests || m.snapshot.Page == tuiPageConnections {
@@ -104,7 +105,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeyCloseConnections:
 		if m.snapshot.Page == tuiPageSSH {
 			if m.snapshot.FocusSidebar || m.snapshot.SSHDashboardFocus {
-				m.snapshot.Status = "Focus SSH profiles before deleting"
+				m.snapshot.setStatus(newTUIMessage("ui.e834cf942835"))
 				return nil
 			}
 			m.beginSSHDeleteConfirm()
@@ -114,33 +115,42 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			return nil
 		} else if m.snapshot.Page == tuiPageRequests {
 			if !m.dangerConfirmed {
-				m.beginDangerConfirm("Clear shared History?", trafficClearConfirmMessage(m.snapshot.TrafficSource, "history"), key)
+				m.beginLocalizedDangerConfirm(newTUIMessage("danger.history.title"), tuiTrafficConfirmMessage(m.snapshot.TrafficSource, "history"), key)
+				m.dangerConfirmSource = normalizeTrafficSource(m.snapshot.TrafficSource)
 				return nil
 			}
+			source := m.confirmedTrafficSource()
 			if m.service != nil {
 				return m.startOperation(func(state *tuiOperationState) {
 					if !prepareTUIBackendRevision(state, m.service) {
 						return
 					}
-					status, err := m.service.clearHistoryForSource(m.snapshot.TrafficSource, state.backendRevision)
+					status, err := state.service.clearHistoryForSource(source, state.backendRevision)
 					if err != nil {
-						state.snapshot.Status = "Clear History failed: " + err.Error()
+						state.snapshot.setStatus(newTUIMessage("ui.1905760dba41", err.Error()))
 						return
 					}
 					state.backendRevision = status.Revision
-					state.snapshot.Requests = nil
+					state.snapshot.Requests = append([]tuiRequest(nil), status.History...)
+					state.snapshot.SSHHistoryClearedBefore = status.SSHHistoryClearedBefore
 					state.snapshot.SelectedRequest = -1
 					state.snapshot.HistoryDetailOpen = false
-					state.snapshot.Status = "Shared History cleared"
+					state.snapshot.setStatus(newTUIMessage("ui.a47de339e760"))
 				})
 			}
-			m.snapshot.Requests = nil
+			m.snapshot.Requests = filterRequestsBySource(m.snapshot.Requests, inverseTrafficSource(source))
+			if source == tuiTrafficSourceMixed {
+				m.snapshot.Requests = nil
+			}
+			if trafficSourceMatches(source, tuiTrafficSourceSSH) {
+				m.snapshot.SSHHistoryClearedBefore = time.Now().UTC()
+			}
 			m.snapshot.SelectedRequest = -1
 			m.snapshot.HistoryDetailOpen = false
-			m.snapshot.Status = "History cleared"
+			m.snapshot.setStatus(newTUIMessage("ui.183e4443c02f"))
 		} else if m.snapshot.Page == tuiPageLogs {
 			if !m.dangerConfirmed {
-				m.beginDangerConfirm("Clear shared logs?", "Delete the Backend log and its rotated backup, plus this TUI's in-memory log entries.", key)
+				m.beginLocalizedDangerConfirm(newTUIMessage("danger.logs.title"), newTUIMessage("danger.logs.body"), key)
 				return nil
 			}
 			if m.service != nil {
@@ -148,29 +158,37 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 					if !prepareTUIBackendRevision(state, m.service) {
 						return
 					}
-					status, err := m.service.clearLogs(state.backendRevision)
+					status, err := state.service.clearLogs(state.backendRevision)
 					if err != nil {
-						state.snapshot.Status = "Clear logs failed: " + err.Error()
+						state.snapshot.setStatus(newTUIMessage("ui.a4c472c88838", err.Error()))
 						return
 					}
 					state.backendRevision = status.Revision
 					clearTUILogs()
 					state.snapshot.Logs = nil
+					state.snapshot.BackendLogs = nil
+					state.snapshot.LocalLogs = nil
+					state.snapshot.LogsInitialized = true
 					state.snapshot.SelectedLog = -1
 					state.snapshot.LogDetailOpen = false
-					state.snapshot.Status = "Shared logs cleared"
+					state.snapshot.setStatus(newTUIMessage("ui.195a05ddfebb"))
 				})
 			}
 			clearTUILogs()
 			m.snapshot.Logs = nil
+			m.snapshot.BackendLogs = nil
+			m.snapshot.LocalLogs = nil
+			m.snapshot.LogsInitialized = true
 			m.snapshot.SelectedLog = -1
 			m.snapshot.LogDetailOpen = false
-			m.snapshot.Status = "Logs cleared"
+			m.snapshot.setStatus(newTUIMessage("ui.0cd1f5ed362f"))
 		} else if m.snapshot.Page == tuiPageConnections {
 			if !m.dangerConfirmed {
-				m.beginDangerConfirm("Close all connections?", trafficClearConfirmMessage(m.snapshot.TrafficSource, "connections"), key)
+				m.beginLocalizedDangerConfirm(newTUIMessage("danger.connections.title"), tuiTrafficConfirmMessage(m.snapshot.TrafficSource, "connections"), key)
+				m.dangerConfirmSource = normalizeTrafficSource(m.snapshot.TrafficSource)
 				return nil
 			}
+			source := m.confirmedTrafficSource()
 			return m.startOperation(func(state *tuiOperationState) {
 				var err error
 				if m.service != nil {
@@ -178,23 +196,23 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 						return
 					}
 					var status tuiServiceStatus
-					status, err = m.service.closeAllConnectionsManagedForSource(m.snapshot.TrafficSource, state.backendRevision)
+					status, err = state.service.closeAllConnectionsManagedForSource(source, state.backendRevision)
 					if err == nil {
 						state.backendRevision = status.Revision
 					}
 				} else {
-					err = closeTUIVisibleConnectionsForSource(m.client, uint32(os.Getuid()), state.snapshot.Settings.TunEnabled && state.snapshot.Settings.TunScope == tuiTunScopeSystem, "", m.snapshot.TrafficSource)
+					err = closeTUIVisibleConnectionsForSource(m.client, uint32(os.Getuid()), state.snapshot.Settings.TunEnabled && state.snapshot.Settings.TunScope == tuiTunScopeSystem, "", source)
 				}
 				if err != nil {
-					state.snapshot.Status = "Close connections failed: " + err.Error()
+					state.snapshot.setStatus(newTUIMessage("ui.a179d29a704a", err.Error()))
 				} else {
-					state.snapshot.Status = "All connections closed"
+					state.snapshot.setStatus(newTUIMessage("ui.837ad1848112"))
 				}
 			})
 		}
 	case tuiKeyCloseConnection:
 		if m.snapshot.Page == tuiPageSSH {
-			m.snapshot.Status = "SSH speed is live · press n to refresh proxy IPs"
+			m.snapshot.setStatus(newTUIMessage("ui.e0d8c381bc7f"))
 			return nil
 		}
 		if m.snapshot.Page == tuiPageDashboard {
@@ -208,19 +226,17 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			}
 			return m.testSelectedProxyGroupDelays()
 		}
-		if m.snapshot.Page == tuiPageConnections &&
-			m.snapshot.SelectedConnection >= 0 &&
-			m.snapshot.SelectedConnection < len(m.snapshot.Connections) {
+		if m.snapshot.Page == tuiPageConnections && (m.dangerConfirmed && m.dangerConfirmTarget != "" ||
+			m.snapshot.SelectedConnection >= 0 && m.snapshot.SelectedConnection < len(m.snapshot.Connections)) {
 			if !m.dangerConfirmed {
 				connection := m.snapshot.Connections[m.snapshot.SelectedConnection]
-				m.beginDangerConfirm("Close selected connection?", "Close "+cliDisplayValue(connection.Host)+" ("+connection.ID+").", key)
+				m.beginLocalizedDangerConfirm(newTUIMessage("danger.connection.title"), newTUIMessage("danger.connection.body", cliDisplayValue(connection.Host), connection.ID), key)
 				m.dangerConfirmTarget = connection.ID
+				m.dangerConfirmSource = normalizeTrafficSource(m.snapshot.TrafficSource)
 				return nil
 			}
-			connectionID := m.snapshot.Connections[m.snapshot.SelectedConnection].ID
-			if m.dangerConfirmTarget != "" {
-				connectionID = m.dangerConfirmTarget
-			}
+			connectionID := m.dangerConfirmTarget
+			source := m.confirmedTrafficSource()
 			return m.startOperation(func(state *tuiOperationState) {
 				var err error
 				if m.service != nil {
@@ -228,27 +244,27 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 						return
 					}
 					var status tuiServiceStatus
-					status, err = m.service.closeConnectionManagedForSource(connectionID, m.snapshot.TrafficSource, state.backendRevision)
+					status, err = state.service.closeConnectionManagedForSource(connectionID, source, state.backendRevision)
 					if err == nil {
 						state.backendRevision = status.Revision
 					}
 				} else {
-					err = closeTUIVisibleConnectionsForSource(m.client, uint32(os.Getuid()), state.snapshot.Settings.TunEnabled && state.snapshot.Settings.TunScope == tuiTunScopeSystem, connectionID, m.snapshot.TrafficSource)
+					err = closeTUIVisibleConnectionsForSource(m.client, uint32(os.Getuid()), state.snapshot.Settings.TunEnabled && state.snapshot.Settings.TunScope == tuiTunScopeSystem, connectionID, source)
 				}
 				if err != nil {
-					state.snapshot.Status = "Close connection failed: " + err.Error()
+					state.snapshot.setStatus(newTUIMessage("ui.a372309c919a", err.Error()))
 				} else {
-					state.snapshot.Status = "Connection closed"
+					state.snapshot.setStatus(newTUIMessage("ui.fdb770cf60c2"))
 				}
 			})
 		}
 		if m.snapshot.Page == tuiPageConnections {
-			m.snapshot.Status = "Select an active connection before closing it"
+			m.snapshot.setStatus(newTUIMessage("ui.e69b5e9624e1"))
 		}
 	case tuiKeyCoreToggle:
 		return m.startOperation(func(state *tuiOperationState) {
 			if !m.ownsCore {
-				state.snapshot.Status = "Core lifecycle is owned by the external process"
+				state.snapshot.setStatus(newTUIMessage("ui.cd919234613f"))
 			} else if state.coreRunning {
 				stopTUIManagedCore(state, m.service)
 			} else {
@@ -259,7 +275,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		switch m.snapshot.Page {
 		case tuiPageSSH:
 			if m.snapshot.FocusSidebar || m.snapshot.SSHDashboardFocus {
-				m.snapshot.Status = "Focus SSH profiles before editing"
+				m.snapshot.setStatus(newTUIMessage("ui.31adfd67cd2a"))
 				return nil
 			}
 			m.beginSSHForm(true)
@@ -267,7 +283,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		case tuiPageProfiles:
 			if m.snapshot.SelectedRow < 0 ||
 				m.snapshot.SelectedRow >= len(m.snapshot.Profiles) {
-				m.snapshot.Status = "Select a profile before editing its YAML"
+				m.snapshot.setStatus(newTUIMessage("ui.828aebbc21b9"))
 				return nil
 			}
 			return m.startEditor(m.snapshot.Profiles[m.snapshot.SelectedRow].Path)
@@ -275,15 +291,15 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			return m.startOperation(func(state *tuiOperationState) {
 				path, err := exportTUILogs(state.paths.HomeDir, state.snapshot.Logs)
 				if err != nil {
-					state.snapshot.Status = "Export logs failed: " + err.Error()
+					state.snapshot.setStatus(newTUIMessage("ui.a1978577d9c8", err.Error()))
 				} else {
-					state.snapshot.Status = "Logs exported: " + path
+					state.snapshot.setStatus(newTUIMessage("ui.3c3165db18d2", path))
 				}
 			})
 		case tuiPageMaintenance:
 			return m.startEditor(m.paths.ConfigPath)
 		default:
-			m.snapshot.Status = "Edit YAML is available in Profiles and Maintenance"
+			m.snapshot.setStatus(newTUIMessage("ui.49c4e78c047b"))
 		}
 	case tuiKeyNewProfile:
 		if m.snapshot.Page == tuiPageSSH {
@@ -291,7 +307,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				return m.refreshSelectedSSHProxyIPs()
 			}
 			if m.snapshot.FocusSidebar {
-				m.snapshot.Status = "Focus SSH profiles before adding a profile"
+				m.snapshot.setStatus(newTUIMessage("ui.665b18f29556"))
 				return nil
 			}
 			m.beginSSHForm(false)
@@ -318,7 +334,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		m.snapshot.FocusSidebar = false
 		m.snapshot.ProxyView = tuiProxyViewProviders
 		m.snapshot.ProxyNodeFocus = false
-		m.snapshot.Status = "Providers view · Enter updates the selected provider"
+		m.snapshot.setStatus(newTUIMessage("ui.faccaeac76cf"))
 		return tea.Batch(cmds...)
 	case tuiKeyBackup:
 		if m.snapshot.Page == tuiPageMaintenance {
@@ -380,10 +396,10 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			)
 			if m.snapshot.ProxyView == tuiProxyViewProviders {
 				m.snapshot.ProxyNodeFocus = false
-				m.snapshot.Status = "Providers view · Enter updates the selected provider"
+				m.snapshot.setStatus(newTUIMessage("ui.faccaeac76cf"))
 			} else {
 				m.snapshot.ProxyNodeFocus = false
-				m.snapshot.Status = "Proxy groups · Enter nodes · d node RTT group · v speed group"
+				m.snapshot.setStatus(newTUIMessage("ui.5aca75ca712d"))
 			}
 		}
 	case tuiKeyPageUp:
@@ -400,8 +416,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				len(tuiCompactDashboardRows(
 					m.snapshot,
 					m.paths,
-					maxTUIWidth(m.width-2, 1),
+					tuiLayoutAtSize(m.width, m.height, m.snapshot.Language).ContentWidth,
 					m.dashboardPageHeight(),
+					m.snapshot.Language,
 				)) -
 					limit,
 			)
@@ -456,13 +473,13 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeySystemProxy:
 		if m.snapshot.Page == tuiPageDashboard {
 			if m.service == nil {
-				m.snapshot.Status = "System proxy changes require the managed backend"
+				m.snapshot.setStatus(newTUIMessage("ui.4149ad38834a"))
 				return nil
 			}
 			return m.startOperation(func(state *tuiOperationState) {
 				enabled := !state.snapshot.Settings.SystemProxy
 				if enabled && state.snapshot.Settings.Mode == tuiSilentMode {
-					state.snapshot.Status = "System proxy cannot be enabled in silent mode; switch mode first"
+					state.snapshot.setStatus(newTUIMessage("ui.0b2f57406e10"))
 					return
 				}
 				autoStarted := false
@@ -475,30 +492,28 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 				if !prepareTUIBackendRevision(state, m.service) {
 					return
 				}
-				status, err := m.service.setSystemProxy(
+				status, err := state.service.setSystemProxy(
 					enabled,
 					state.backendRevision,
 				)
 				proxyUpdated := err == nil
 				if err != nil {
-					state.snapshot.Status = "System proxy update failed: " + err.Error()
+					state.snapshot.setStatus(newTUIMessage("ui.3e34a530360a", err.Error()))
 				} else {
 					applyTUIOperationServiceStatus(state, status)
-					state.snapshot.Status = "System proxy " + cliOnOff(status.SystemProxy)
+					state.snapshot.setStatus(newTUIMessage("ui.a6478a4de097", cliOnOff(status.SystemProxy)))
 				}
 				if proxyUpdated {
 					state.systemProxyManaged = state.snapshot.Settings.SystemProxy
 					if autoStarted && state.snapshot.Settings.SystemProxy {
-						state.snapshot.Status = fmt.Sprintf(
-							"Core started on port %d; system proxy enabled",
-							state.snapshot.Settings.MixedPort,
-						)
+						state.snapshot.setStatus(newTUIMessage("ui.648bc55423be", state.snapshot.Settings.MixedPort))
+
 					}
 				} else if autoStarted {
 					proxyError := state.snapshot.Status
 					if stopTUIManagedCore(state, m.service) {
-						state.snapshot.Status = proxyError +
-							"; automatic Core start rolled back"
+						state.snapshot.setStatus(newTUIMessage("ui.0b82797bddcd", proxyError))
+
 					}
 				}
 			})
@@ -508,11 +523,29 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 }
 
 func (m *tuiModel) beginDangerConfirm(title, message string, key tuiKey) {
+	m.dangerConfirmTarget = ""
+	m.dangerConfirmSource = ""
+	m.dangerConfirmTitleText = tuiMessage{}
+	m.dangerConfirmBodyText = tuiMessage{}
 	m.dangerConfirmOpen = true
 	m.dangerConfirmTitle = title
 	m.dangerConfirmMessage = message
 	m.dangerConfirmKey = key
-	m.snapshot.Status = title + " · Enter confirm · Esc cancel"
+	m.snapshot.setStatus(newTUIMessage("ui.725a3903376d", title))
+}
+
+func (m *tuiModel) confirmedTrafficSource() string {
+	if m.dangerConfirmed && m.dangerConfirmSource != "" {
+		return normalizeTrafficSource(m.dangerConfirmSource)
+	}
+	return normalizeTrafficSource(m.snapshot.TrafficSource)
+}
+
+func (m *tuiModel) beginLocalizedDangerConfirm(title, body tuiMessage, key tuiKey) {
+	m.beginDangerConfirm(title.text("en"), body.text("en"), key)
+	m.dangerConfirmTitleText = title
+	m.dangerConfirmBodyText = body
+	m.snapshot.setStatus(newTUIMessage("ui.725a3903376d", title))
 }
 
 func (m *tuiModel) handleDangerConfirm(message tea.KeyMsg) tea.Cmd {
@@ -527,7 +560,8 @@ func (m *tuiModel) handleDangerConfirm(message tea.KeyMsg) tea.Cmd {
 	case tuiKeyBack:
 		m.dangerConfirmOpen = false
 		m.dangerConfirmTarget = ""
-		m.snapshot.Status = "Operation cancelled"
+		m.dangerConfirmSource = ""
+		m.snapshot.setStatus(newTUIMessage("ui.d98027398ae9"))
 		return nil
 	case tuiKeySelect:
 		action := m.dangerConfirmKey
@@ -536,6 +570,7 @@ func (m *tuiModel) handleDangerConfirm(message tea.KeyMsg) tea.Cmd {
 		command := m.handleKey(action)
 		m.dangerConfirmed = false
 		m.dangerConfirmTarget = ""
+		m.dangerConfirmSource = ""
 		return command
 	default:
 		return nil
@@ -547,19 +582,16 @@ func (m *tuiModel) dashboardViewportLimit() int {
 }
 
 func (m *tuiModel) dashboardPageHeight() int {
-	pageHeight := m.height - 4
-	if m.width < 88 || m.height < 18 {
-		pageHeight = m.height - 2
-	}
-	return maxTUIWidth(pageHeight, 1)
+	return tuiLayoutAtSize(m.width, m.height, m.snapshot.Language).PageHeight
 }
 
 func (m *tuiModel) revealDashboardSelection() {
 	rows := tuiCompactDashboardRows(
 		m.snapshot,
 		m.paths,
-		maxTUIWidth(m.width-2, 1),
+		tuiLayoutAtSize(m.width, m.height, m.snapshot.Language).ContentWidth,
 		m.dashboardPageHeight(),
+		m.snapshot.Language,
 	)
 	selectedRow := -1
 	for index, row := range rows {
@@ -590,30 +622,30 @@ func (m *tuiModel) moveSelection(delta int) tea.Cmd {
 			position := wrapTUIIndex(m.snapshot.SelectedSSH+1, delta, listLen)
 			m.snapshot.SelectedSSH = position - 1
 			if m.snapshot.SelectedSSH == tuiSSHCaptureRow {
-				m.snapshot.Status = "Enter Capture"
+				m.snapshot.setStatus(newTUIMessage("ui.f4ae67d05d76"))
 			} else {
-				m.snapshot.Status = "Enter to open " + m.selectedSSHName()
+				m.snapshot.setStatus(newTUIMessage("ui.0c44df2190bd", m.selectedSSHName()))
 			}
 		}
 	case tuiPageProfiles:
 		moveTUIProfile(&m.snapshot, delta)
 		if m.snapshot.SelectedRow == tuiProfileImportSubscriptionRow {
-			m.snapshot.Status = "Enter to import a subscription URL"
+			m.snapshot.setStatus(newTUIMessage("ui.5564989ba8cc"))
 		} else if m.snapshot.SelectedRow == tuiProfileImportFileRow {
-			m.snapshot.Status = "Enter to convert and import a local profile file"
+			m.snapshot.setStatus(newTUIMessage("ui.d42c0a34419b"))
 		} else if m.snapshot.SelectedRow < len(m.snapshot.Profiles) {
 			profile := m.snapshot.Profiles[m.snapshot.SelectedRow]
 			if profile.Current {
 				if profile.SubscriptionURL != "" {
-					m.snapshot.Status = "Active subscription · U refreshes · e edits YAML"
+					m.snapshot.setStatus(newTUIMessage("ui.50692330c61b"))
 				} else {
-					m.snapshot.Status = "Active local profile · e edits YAML"
+					m.snapshot.setStatus(newTUIMessage("ui.8aa2ec470969"))
 				}
 			} else {
 				if profile.SubscriptionURL != "" {
-					m.snapshot.Status = "Enter activates · U refreshes · F2/u renames · e edits"
+					m.snapshot.setStatus(newTUIMessage("ui.db93c9e4cf26"))
 				} else {
-					m.snapshot.Status = "Enter activates · F2/u renames · e edits"
+					m.snapshot.setStatus(newTUIMessage("ui.a1f28af8ebfd"))
 				}
 			}
 		}
@@ -659,7 +691,7 @@ func (m *tuiModel) stageTUIAdjustedPort(key tuiKey) {
 	switch key {
 	case tuiKeyPortUp:
 		if port >= 65535 {
-			m.snapshot.Status = "Proxy port is already at 65535"
+			m.snapshot.setStatus(newTUIMessage("ui.191046cd2be2"))
 			return
 		}
 		port++
@@ -672,10 +704,8 @@ func (m *tuiModel) stageTUIAdjustedPort(key tuiKey) {
 	m.snapshot.Settings.MixedPort = port
 	m.stagedSettings = cloneTUISettings(&m.snapshot.Settings)
 	m.settingsDirty = true
-	m.snapshot.Status = fmt.Sprintf(
-		"Proxy port %d staged; enable System proxy or start Core to apply",
-		port,
-	)
+	m.snapshot.setStatus(newTUIMessage("ui.0301590625fb", port))
+
 	m.persistStagedTUISettings()
 }
 
@@ -702,6 +732,6 @@ func (m *tuiModel) stageTUISetting(key tuiKey) {
 	m.pendingMixedPort = &port
 	m.stagedSettings = cloneTUISettings(&m.snapshot.Settings)
 	m.settingsDirty = true
-	m.snapshot.Status = "Settings staged; enable System proxy or start Core to apply"
+	m.snapshot.setStatus(newTUIMessage("ui.807224a9beca"))
 	m.persistStagedTUISettings()
 }

@@ -66,18 +66,18 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 	}
 	toggleCore := func() {
 		if !ownsCore {
-			snapshot.Status = "Core lifecycle is owned by the external process"
+			snapshot.setStatus(newTUIMessage("ui.cd919234613f"))
 		} else if coreRunning {
 			if cliHub.StopListener() {
 				coreRunning = false
-				snapshot.Status = "Core listeners stopped"
+				snapshot.setStatus(newTUIMessage("ui.d7a2587ef8f5"))
 				if systemProxyManaged && snapshot.Settings.SystemProxy {
 					if !linuxSystemProxyMatches(snapshot.Settings.MixedPort) {
 						snapshot.Settings.SystemProxy = false
 						systemProxyManaged = false
-						snapshot.Status += "; another instance owns the system proxy"
+						snapshot.appendStatus(newTUIMessage("ui.401493c0a318"))
 					} else if err := setLinuxSystemProxy(snapshot.Settings.MixedPort, false); err != nil {
-						snapshot.Status += "; system proxy cleanup failed: " + err.Error()
+						snapshot.appendStatus(newTUIMessage("ui.42dbf63e8261", err.Error()))
 					} else {
 						snapshot.Settings.SystemProxy = false
 						systemProxyManaged = false
@@ -86,7 +86,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 			}
 		} else if cliHub.StartListener() {
 			coreRunning = true
-			snapshot.Status = "Core listeners started"
+			snapshot.setStatus(newTUIMessage("ui.95855b291942"))
 			refreshTUISnapshot(&snapshot, client)
 		}
 	}
@@ -102,10 +102,8 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 		if toggleTUISystemProxy(&snapshot) {
 			systemProxyManaged = snapshot.Settings.SystemProxy
 			if autoStarted && snapshot.Settings.SystemProxy {
-				snapshot.Status = fmt.Sprintf(
-					"Core started on port %d; system proxy enabled",
-					snapshot.Settings.MixedPort,
-				)
+				snapshot.setStatus(newTUIMessage("ui.648bc55423be", snapshot.Settings.MixedPort))
+
 			}
 		}
 	}
@@ -130,11 +128,11 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 				continue
 			case syscall.SIGHUP:
 				if !ownsCore {
-					snapshot.Status = "Reload requires a core started by this process"
+					snapshot.setStatus(newTUIMessage("ui.7602af8e4854"))
 				} else if message := cliHub.SetupConfig(setupParams); message != "" {
-					snapshot.Status = "Reload failed: " + message
+					snapshot.setStatus(newTUIMessage("ui.0b3a51a19453", message))
 				} else {
-					snapshot.Status = "Configuration reloaded"
+					snapshot.setStatus(newTUIMessage("ui.7b3279fdc1ff"))
 					refreshTUISnapshot(&snapshot, client)
 				}
 				draw()
@@ -168,13 +166,13 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 				refreshTUIProfiles(&snapshot, paths)
 			case tuiKeyReload:
 				if !ownsCore {
-					snapshot.Status = "Reload requires a core started by this process"
+					snapshot.setStatus(newTUIMessage("ui.7602af8e4854"))
 					break
 				}
 				if message := cliHub.SetupConfig(setupParams); message != "" {
-					snapshot.Status = "Reload failed: " + message
+					snapshot.setStatus(newTUIMessage("ui.0b3a51a19453", message))
 				} else {
-					snapshot.Status = "Configuration reloaded"
+					snapshot.setStatus(newTUIMessage("ui.7b3279fdc1ff"))
 					refreshTUISnapshot(&snapshot, client)
 				}
 			case tuiKeyHelp:
@@ -183,22 +181,22 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 				if snapshot.Page == tuiPageRequests {
 					snapshot.Requests = nil
 					snapshot.SelectedRequest = 0
-					snapshot.Status = "History cleared"
+					snapshot.setStatus(newTUIMessage("ui.183e4443c02f"))
 					break
 				}
 				if snapshot.Page == tuiPageLogs {
 					clearTUILogs()
 					snapshot.Logs = nil
-					snapshot.Status = "Logs cleared"
+					snapshot.setStatus(newTUIMessage("ui.0cd1f5ed362f"))
 					break
 				}
 				if snapshot.Page != tuiPageConnections {
 					break
 				}
 				if err := client.closeAllConnections(); err != nil {
-					snapshot.Status = "Close connections failed: " + err.Error()
+					snapshot.setStatus(newTUIMessage("ui.a179d29a704a", err.Error()))
 				} else {
-					snapshot.Status = "All connections closed"
+					snapshot.setStatus(newTUIMessage("ui.837ad1848112"))
 				}
 			case tuiKeyCloseConnection:
 				if snapshot.Page != tuiPageConnections || snapshot.SelectedConnection < 0 || snapshot.SelectedConnection >= len(snapshot.Connections) {
@@ -206,9 +204,9 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 				}
 				connection := snapshot.Connections[snapshot.SelectedConnection]
 				if err := client.closeConnection(connection.ID); err != nil {
-					snapshot.Status = "Close connection failed: " + err.Error()
+					snapshot.setStatus(newTUIMessage("ui.a372309c919a", err.Error()))
 				} else {
-					snapshot.Status = "Connection closed"
+					snapshot.setStatus(newTUIMessage("ui.fdb770cf60c2"))
 					refreshTUISnapshot(&snapshot, client)
 				}
 			case tuiKeyCoreToggle:
@@ -217,19 +215,19 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 				if snapshot.Page == tuiPageLogs {
 					path, err := exportTUILogs(paths.HomeDir, snapshot.Logs)
 					if err != nil {
-						snapshot.Status = "Export logs failed: " + err.Error()
+						snapshot.setStatus(newTUIMessage("ui.a1978577d9c8", err.Error()))
 					} else {
-						snapshot.Status = "Logs exported: " + path
+						snapshot.setStatus(newTUIMessage("ui.3c3165db18d2", path))
 					}
 					break
 				}
 				if snapshot.Page == tuiPageProfiles &&
 					(snapshot.SelectedRow < 0 || snapshot.SelectedRow >= len(snapshot.Profiles)) {
-					snapshot.Status = "Select a profile before editing its YAML"
+					snapshot.setStatus(newTUIMessage("ui.828aebbc21b9"))
 					break
 				}
 				if snapshot.Page != tuiPageProfiles && snapshot.Page != tuiPageTools {
-					snapshot.Status = "Edit YAML is available in Profiles and Maintenance"
+					snapshot.setStatus(newTUIMessage("ui.49c4e78c047b"))
 					break
 				}
 				screen.invalidate()
@@ -238,27 +236,27 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 					editPath = snapshot.Profiles[snapshot.SelectedRow].Path
 				}
 				if err := runTUIEditor(editPath, &oldState); err != nil {
-					snapshot.Status = "Editor failed: " + err.Error()
+					snapshot.setStatus(newTUIMessage("ui.d06cf3587589", err.Error()))
 				} else if ownsCore {
 					if message := cliHub.SetupConfig(setupParams); message != "" {
-						snapshot.Status = "Edited config is invalid: " + message
+						snapshot.setStatus(newTUIMessage("ui.4795efe5b117", message))
 					} else {
-						snapshot.Status = "Configuration applied"
+						snapshot.setStatus(newTUIMessage("ui.455f8f165480"))
 					}
 				} else {
-					snapshot.Status = "Configuration saved; reload the external core to apply it"
+					snapshot.setStatus(newTUIMessage("ui.28da573f2104"))
 				}
 			case tuiKeyNewProfile:
 				if snapshot.Page == tuiPageProfiles {
 					screen.invalidate()
 					if err := addTUIProfile(paths.HomeDir, &oldState); err != nil {
 						if errors.Is(err, errTUIActionCancelled) {
-							snapshot.Status = "Profile download cancelled"
+							snapshot.setStatus(newTUIMessage("ui.c1fbc05c228e"))
 						} else {
-							snapshot.Status = "Add profile failed: " + err.Error()
+							snapshot.setStatus(newTUIMessage("ui.4f89b986ab7e", err.Error()))
 						}
 					} else {
-						snapshot.Status = "Profile downloaded"
+						snapshot.setStatus(newTUIMessage("ui.13929d79cbed"))
 						refreshTUIProfiles(&snapshot, paths)
 					}
 				}
@@ -337,9 +335,9 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 							"https://www.gstatic.com/generate_204",
 						)
 						if err != nil {
-							snapshot.Status = "Delay test failed: " + err.Error()
+							snapshot.setStatus(newTUIMessage("ui.0ebfa5742b16", err.Error()))
 						} else {
-							snapshot.Status = fmt.Sprintf("%s delay: %d ms", node, delay)
+							snapshot.setStatus(newTUIMessage("ui.49e9969582e8", node, delay))
 						}
 					}
 				}
@@ -366,14 +364,14 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 						snapshot.Page = tuiPageProxies
 						snapshot.SelectedMenu = int(tuiPageProxies)
 						snapshot.FocusSidebar = false
-						snapshot.Status = "Select a proxy node; flc follows that group"
+						snapshot.setStatus(newTUIMessage("ui.5c535d92dda4"))
 					case tuiDashboardMixedPortRow:
 						screen.invalidate()
 						setTUIMixedPort(&snapshot, client, &oldState)
 					case tuiDashboardDelayRow:
-						snapshot.Status = "Dashboard route delay testing requires the managed TUI"
+						snapshot.setStatus(newTUIMessage("ui.38480b0a5d4c"))
 					case tuiDashboardSpeedRow:
-						snapshot.Status = "Dashboard route speed testing requires the managed TUI"
+						snapshot.setStatus(newTUIMessage("ui.929eb303f25a"))
 					}
 				} else if snapshot.Page == tuiPageProxies {
 					if snapshot.ProxyView == tuiProxyViewProviders {
@@ -396,7 +394,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 					case tuiSettingsLogLevelRow:
 						updateTUISettings(&snapshot, client, tuiKeyLogLevel)
 					case tuiSettingsTunScopeRow:
-						snapshot.Status = "TUN scope changes require the managed Backend"
+						snapshot.setStatus(newTUIMessage("ui.604f5593583b"))
 					}
 				}
 			case tuiKeyAllowLAN, tuiKeyIPv6, tuiKeyUnifiedDelay, tuiKeyTCPConcurrent,
@@ -457,46 +455,46 @@ func executeTUITool(
 	switch index {
 	case 0:
 		if err := runTUIEditor(paths.ConfigPath, oldState); err != nil {
-			snapshot.Status = "Editor failed: " + err.Error()
+			snapshot.setStatus(newTUIMessage("ui.d06cf3587589", err.Error()))
 		} else if ownsCore {
 			if message := cliHub.SetupConfig(setupParams); message != "" {
-				snapshot.Status = "Edited config is invalid: " + message
+				snapshot.setStatus(newTUIMessage("ui.4795efe5b117", message))
 			} else {
-				snapshot.Status = "Configuration applied"
+				snapshot.setStatus(newTUIMessage("ui.455f8f165480"))
 			}
 		} else {
-			snapshot.Status = "Configuration saved; reload the external core to apply it"
+			snapshot.setStatus(newTUIMessage("ui.28da573f2104"))
 		}
 	case 1:
 		if backupPath, err := backupTUIConfig(paths.ConfigPath); err != nil {
-			snapshot.Status = "Backup failed: " + err.Error()
+			snapshot.setStatus(newTUIMessage("ui.87ab982de4ef", err.Error()))
 		} else {
-			snapshot.Status = "Backup created: " + filepath.Base(backupPath)
+			snapshot.setStatus(newTUIMessage("ui.926013bbeabf", filepath.Base(backupPath)))
 		}
 	case 2:
 		if backupPath, err := restoreLatestTUIConfig(paths.ConfigPath); err != nil {
-			snapshot.Status = "Restore failed: " + err.Error()
+			snapshot.setStatus(newTUIMessage("ui.84bb92888280", err.Error()))
 		} else if ownsCore {
 			if message := cliHub.SetupConfig(setupParams); message != "" {
-				snapshot.Status = "Restore applied with errors: " + message
+				snapshot.setStatus(newTUIMessage("ui.e247228cf04a", message))
 			} else {
-				snapshot.Status = "Restored: " + filepath.Base(backupPath)
+				snapshot.setStatus(newTUIMessage("ui.0376075ef9a4", filepath.Base(backupPath)))
 			}
 		} else {
-			snapshot.Status = "Restored: " + filepath.Base(backupPath) + "; reload the external core to apply it"
+			snapshot.setStatus(newTUIMessage("ui.c58a91b16bd5", filepath.Base(backupPath)))
 		}
 	case 3:
 		if err := client.updateGeo(); err != nil {
-			snapshot.Status = "Geo update failed: " + err.Error()
+			snapshot.setStatus(newTUIMessage("ui.a0a5ec4d845b", err.Error()))
 		} else {
-			snapshot.Status = "Geo databases update started"
+			snapshot.setStatus(newTUIMessage("ui.532856d3bd98"))
 		}
 	case 4:
 		if ownsCore {
 			cliHub.ResetTraffic()
-			snapshot.Status = "Traffic counters reset"
+			snapshot.setStatus(newTUIMessage("ui.984eb5b20446"))
 		} else {
-			snapshot.Status = "Traffic reset requires a core started by this process"
+			snapshot.setStatus(newTUIMessage("ui.e351b8fb7841"))
 		}
 	case 5:
 		checkTUIUpdate(snapshot)
@@ -515,13 +513,13 @@ func checkTUIUpdate(snapshot *tuiSnapshot) {
 	snapshot.Update.CheckedAt = time.Now()
 	if err != nil {
 		snapshot.Update.Error = err.Error()
-		snapshot.Status = "Update check failed: " + err.Error()
+		snapshot.setStatus(newTUIMessage("ui.c60759d564bd", err.Error()))
 		return
 	}
 	latestVersion := normalizeCLIVersion(release.TagName)
 	if latestVersion == "" {
 		snapshot.Update.Error = "invalid release version " + release.TagName
-		snapshot.Status = "Update check failed: invalid release version"
+		snapshot.setStatus(newTUIMessage("ui.57fcdb1bed64"))
 		return
 	}
 	snapshot.Update.Error = ""
@@ -529,18 +527,14 @@ func checkTUIUpdate(snapshot *tuiSnapshot) {
 	snapshot.Update.ReleaseURL = release.HTMLURL
 	snapshot.Update.Available = isNewerCLIVersion(latestVersion, cliVersion)
 	if snapshot.Update.Available {
-		snapshot.Status = fmt.Sprintf(
-			"v%s available · %s · quit and run: flclash update",
-			latestVersion,
-			cliUpdateWarning,
-		)
+		snapshot.setStatus(newTUIMessage("ui.bdee1acc5021", latestVersion,
+			cliUpdateWarning))
+
 		return
 	}
-	snapshot.Status = fmt.Sprintf(
-		"v%s is current · %s",
-		cliVersion,
-		cliUpdateWarning,
-	)
+	snapshot.setStatus(newTUIMessage("ui.cccf36fbdaf8", cliVersion,
+		cliUpdateWarning))
+
 }
 
 func restoreLatestTUIConfig(configPath string) (string, error) {

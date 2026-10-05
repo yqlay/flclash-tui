@@ -1,0 +1,9 @@
+{
+  "name": "flclash-tui-terminal-tests",
+  "private": true,
+  "description": "Development-only cell-buffer regression tests for the Go TUI",
+  "devDependencies": {
+    "@xterm/headless": "6.1.0-beta.197",
+    "@xterm/addon-unicode11": "0.10.0-beta.197"
+  }
+}

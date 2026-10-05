@@ -57,9 +57,9 @@ func TestRememberClosedSSHHistoryInsertsUnseenFlows(t *testing.T) {
 		LastSeen:      now,
 		Active:        false,
 	}}
-	updated := rememberClosedSSHHistory(history, []tuiConnection{
-		{ID: "ssh:keep", Source: tuiTrafficSourceSSH},
-		{ID: "ssh:new", Host: "closed.example:443", Source: tuiTrafficSourceSSH},
+	updated := rememberClosedSSHHistory(history, []tuiRequest{
+		{TuiConnection: tuiConnection{ID: "ssh:keep", Source: tuiTrafficSourceSSH}},
+		{TuiConnection: tuiConnection{ID: "ssh:new", Host: "closed.example:443", Source: tuiTrafficSourceSSH}},
 	}, now)
 	if len(updated) != 2 {
 		t.Fatalf("history = %+v", updated)

@@ -996,10 +996,10 @@ func TestTUISettingsExposeAllInteractiveRows(t *testing.T) {
 		"IPv6          OFF",
 		"Unified delay",
 		"TCP concurrent",
-		"Log level     info",
-		"TUN scope     USER",
+		"Log level      info",
+		"TUN scope      USER",
 	} {
-		if !strings.Contains(plain, row) {
+		if !strings.Contains(strings.Join(strings.Fields(plain), " "), strings.Join(strings.Fields(row), " ")) {
 			t.Fatalf("settings view does not contain %q:\n%s", row, plain)
 		}
 	}
@@ -1248,7 +1248,7 @@ func TestTUISeparatesSettingsAndMaintenance(t *testing.T) {
 		"IPv6",
 		"Unified delay",
 		"TCP concurrent",
-		"Log level     info",
+		"Log level      info",
 		"TUN scope",
 	} {
 		if !strings.Contains(plain, expected) {

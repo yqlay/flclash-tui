@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${FLCLASH_EXIT_TEST_ISOLATED:-}" != 1 ]]; then
+  printf 'Use packaging/tui-exit-isolated-test.sh; shutdown tests must not run against the host runtime.\n' >&2
+  exit 1
+fi
+
 binary=${1:-}
 if [[ -z "$binary" || ! -x "$binary" ]]; then
   printf 'usage: %s /path/to/flclash\n' "$0" >&2
@@ -179,5 +184,9 @@ if comm -13 "$test_dir/before" "$test_dir/final" | grep -q .; then
   printf 'Ctrl+C left a TUI frontend session behind\n' >&2
   exit 1
 fi
+
+backend_started=true
+python3 "$(dirname -- "$0")/tui-terminal-lifecycle-test.py" "$binary" "$managed_dir"
+backend_started=false
 
 printf 'TUI q/Ctrl+C/flclash-exit process lifecycle test passed\n'

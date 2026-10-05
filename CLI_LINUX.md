@@ -12,6 +12,16 @@ make cli-linux
 
 `dist/flclash` is the manager and `dist/flc` is the command-wrapper entry point. Keep `dist/data/` beside a portable build. Debian packages install `/usr/bin/flclash`, `/usr/bin/flc`, documentation, and bundled Geo data.
 
+## TUI language
+
+In **Settings → Language**, ↑↓ highlights a language; Enter saves and switches this frontend immediately; Esc cancels. English is the default and the first choice. The Settings row always includes the English word **Language**.
+
+Choices: English (`en`), Simplified Chinese (`zh-Hans`), Traditional Chinese (`zh-Hant`), Russian (`ru`), Persian (`fa`), Burmese (`my`), Turkmen (`tk`), Urdu (`ur`), Hindi (`hi`), Spanish (`es`), Arabic (`ar`), French (`fr`), Bengali (`bn`), Portuguese (`pt`), Indonesian (`id`), German (`de`), Japanese (`ja`), Nigerian Pidgin (`pcm`). Translations are initial drafts, not native-speaker-certified.
+
+The setting is stored separately in `.flclash-tui-preferences.json` under the data directory (`--home`), with atomic writes and mode `0600`. It does not change subscription YAML, restart Core/SSH, or trigger network probes. Other frontends keep their current language until restarted. Unknown/missing language settings fall back to English; malformed preferences generate a warning and are not silently overwritten.
+
+Shortcuts, layout direction, commands/help, JSON, names/paths/IPs, and raw log/error data remain unchanged. Combining characters and emoji use grapheme-safe clipping/editing. Arabic, Persian, Urdu, and other complex scripts remain in logical Unicode order: correct bidirectional display and shaping depend on your terminal and font. If display is unreadable, choose **Language → English**.
+
 ## Process model
 
 - **Backend** is the detached per-user coordinator and the only managed writer of shared YAML/state and System proxy settings.
@@ -363,6 +373,13 @@ and clear removes both persistent files after confirmation. Subscription URLs,
 YAML contents, and FLC credentials are not logged.
 
 Selecting Mode, or pressing `m` on Dashboard/Settings, opens the `rule`, `silent`, `global`, and `direct` list before making any change. Use ↑/↓ or `w`/`s` and press Enter to confirm.
+
+Settings and port drafts belong to the Backend instance, revision, and active
+profile shown when editing started. If another frontend changes that state or
+Backend restarts, saving is rejected and input is retained. Note any values you
+want to keep, cancel input with Esc, and press uppercase `R` to reload the current
+configuration before editing again. A successful reload discards old staged
+settings. Lowercase `r` only refreshes the view; it does not rebase a draft.
 
 ## Data and advanced external mode
 

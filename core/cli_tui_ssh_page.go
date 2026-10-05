@@ -27,16 +27,16 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 		index = m.sshDetailProfileIndex()
 	}
 	if index < 0 || index >= len(m.snapshot.SSHProfiles) {
-		m.snapshot.Status = "Select an SSH profile first"
+		m.snapshot.setStatus(newTUIMessage("ui.d7d54ef0ad99"))
 		return nil
 	}
 	if m.busy {
-		m.snapshot.Status = "Another operation is still running"
+		m.snapshot.setStatus(newTUIMessage("ui.c90e0573178b"))
 		return nil
 	}
 	name := m.snapshot.SSHProfiles[index].Name
 	m.busy = true
-	m.snapshot.Status = "SSH " + action + " " + name + "..."
+	m.snapshot.setStatus(newTUIMessage("ui.013120ffa8f1", action, name))
 	return func() tea.Msg {
 		message := tuiSSHCommandResultMsg{action: action, selectedName: name}
 		switch action {
@@ -59,6 +59,13 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 					prefix,
 					state.Port,
 				)
+				key := "ssh.connected"
+				if alreadyConnected {
+					key = "ssh.already_connected"
+				} else if cliSSHTunnelIsAttached(state.Kind) {
+					key = "ssh.attached"
+				}
+				message.text = newTUIMessage(key, state.Name, state.Port)
 			}
 		case "attach":
 			state, alreadyConnected, err := attachCLISSHProfile(name)
@@ -74,6 +81,11 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 					prefix,
 					state.Port,
 				)
+				key := "ssh.attached"
+				if alreadyConnected {
+					key = "ssh.already_connected"
+				}
+				message.text = newTUIMessage(key, state.Name, state.Port)
 			}
 		case "disconnect":
 			state, disconnected, err := disconnectCLISSHProfile(name)
@@ -81,8 +93,10 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 			if err == nil {
 				if disconnected {
 					message.status = "SSH " + state.Name + " disconnected"
+					message.text = newTUIMessage("ssh.disconnected", state.Name)
 				} else {
 					message.status = "No persistent SSH tunnel is open"
+					message.text = newTUIMessage("ssh.no_tunnel")
 				}
 			}
 		case "test":
@@ -95,6 +109,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 					state.Port,
 					latency,
 				)
+				message.text = newTUIMessage("ssh.ready", state.Name, state.Port, latency)
 			}
 		default:
 			message.err = fmt.Errorf("unsupported TUI SSH action %q", action)
@@ -105,7 +120,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 
 func (m *tuiModel) beginSSHCapture() tea.Cmd {
 	if m.snapshot.FocusSidebar {
-		m.snapshot.Status = "Focus the SSH list"
+		m.snapshot.setStatus(newTUIMessage("ui.f08d600f6d61"))
 		return nil
 	}
 	profiles := append([]tuiSSHProfile(nil), m.snapshot.SSHProfiles...)
@@ -196,13 +211,13 @@ func (m *tuiModel) handleSSHCapture(message tea.KeyMsg) tea.Cmd {
 		if m.sshCaptureSelected < 0 ||
 			m.sshCaptureSelected >= len(m.sshCaptureCandidates) {
 			m.sshCaptureOpen = false
-			m.snapshot.Status = formatCLICaptureEmptyHint()
+			m.snapshot.setStatus(newTUIMessage("ui.f684c73cba75", formatCLICaptureEmptyHint()))
 			return nil
 		}
 		return m.attachSSHCaptureCandidate(m.sshCaptureCandidates[m.sshCaptureSelected])
 	case tuiKeyBack:
 		m.sshCaptureOpen = false
-		m.snapshot.Status = "SSH capture cancelled"
+		m.snapshot.setStatus(newTUIMessage("ui.2e529a253060"))
 	case tuiKeyQuit, tuiKeyInterrupt:
 		m.sshCaptureOpen = false
 		return m.handleKey(key)
@@ -213,7 +228,7 @@ func (m *tuiModel) handleSSHCapture(message tea.KeyMsg) tea.Cmd {
 func (m *tuiModel) attachSSHCaptureCandidate(candidate cliSSHCaptureCandidate) tea.Cmd {
 	m.sshCaptureOpen = false
 	m.busy = true
-	m.snapshot.Status = "SSH capture " + candidate.Name + "..."
+	m.snapshot.setStatus(newTUIMessage("ui.f34a03e6fb1c", candidate.Name))
 	return func() tea.Msg {
 		state, already, err := captureCLISSHCandidate(candidate)
 		message := tuiSSHCommandResultMsg{
@@ -233,6 +248,11 @@ func (m *tuiModel) attachSSHCaptureCandidate(candidate cliSSHCaptureCandidate) t
 				label,
 				state.Port,
 			)
+			key := "ssh.attached"
+			if already {
+				key = "ssh.already_attached"
+			}
+			message.text = newTUIMessage(key, state.Name, state.Port)
 		}
 		return message
 	}
@@ -258,30 +278,32 @@ func (m *tuiModel) sshDetailProfileIndex() int {
 
 func (m *tuiModel) toggleSelectedSSHDefault() tea.Cmd {
 	if m.snapshot.FocusSidebar || m.snapshot.SSHDashboardFocus {
-		m.snapshot.Status = "Focus SSH profiles before setting a default"
+		m.snapshot.setStatus(newTUIMessage("ui.22ee1096c976"))
 		return nil
 	}
 	if m.snapshot.SelectedSSH < 0 || m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
-		m.snapshot.Status = "Select an SSH profile first"
+		m.snapshot.setStatus(newTUIMessage("ui.d7d54ef0ad99"))
 		return nil
 	}
 	profile := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
 	name := profile.Name
 	clear := profile.Default
 	m.busy = true
-	m.snapshot.Status = "Updating default SSH profile..."
+	m.snapshot.setStatus(newTUIMessage("ui.c88cd9071375"))
 	return func() tea.Msg {
 		message := tuiSSHCommandResultMsg{action: "default", selectedName: name}
 		if clear {
 			message.err = setCLISSHDefault("")
 			if message.err == nil {
 				message.status = "Default SSH profile cleared"
+				message.text = newTUIMessage("ssh.default_cleared")
 			}
 			return message
 		}
 		message.err = setCLISSHDefault(name)
 		if message.err == nil {
 			message.status = "Default SSH profile " + name
+			message.text = newTUIMessage("ssh.default", name)
 		}
 		return message
 	}
@@ -327,7 +349,7 @@ func (m *tuiModel) refreshSelectedSSHProxyIPs() tea.Cmd {
 	}
 	profile := m.snapshot.SSHProfiles[m.sshDetailProfileIndex()]
 	if !profile.Connected || !profile.Ready {
-		m.snapshot.Status = "Connect this SSH profile before refreshing proxy IPs"
+		m.snapshot.setStatus(newTUIMessage("ui.f221ae231ed3"))
 		return nil
 	}
 	m.sshProxyRefreshSequence++
@@ -395,10 +417,10 @@ func (m *tuiModel) refreshSelectedSSHNetworkFor(direct bool) tea.Cmd {
 		info := tuiNetworkInfo{Error: err.Error(), CheckedAt: time.Now()}
 		if direct {
 			m.snapshot.SSHDirectNetwork = info
-			m.snapshot.Status = "SSH direct network detection failed: " + err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.6a9f7c4234be", err.Error()))
 		} else {
 			m.snapshot.SSHNetwork = info
-			m.snapshot.Status = "SSH network detection failed: " + err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.aef5f47e988a", err.Error()))
 		}
 		return nil
 	}
@@ -427,12 +449,12 @@ func (m *tuiModel) testSelectedSSHDelay() tea.Cmd {
 
 func (m *tuiModel) testSelectedSSHDelayFor(direct bool) tea.Cmd {
 	if direct && !m.snapshot.SSHDirectProbe.DirectAllowed {
-		m.snapshot.Status = "SSH direct route unavailable: " + cliDisplayValue(m.snapshot.SSHDirectProbe.Reason)
+		m.snapshot.setStatus(newTUIMessage("ui.f65b91e54bf3", cliDisplayValue(m.snapshot.SSHDirectProbe.Reason)))
 		return nil
 	}
 	name, client, closeClient, err := m.selectedSSHHTTPClient()
 	if err != nil {
-		m.snapshot.Status = "SSH route delay failed: " + err.Error()
+		m.snapshot.setStatus(newTUIMessage("ui.3a60dd9f3513", err.Error()))
 		return nil
 	}
 	if direct {
@@ -455,12 +477,12 @@ func (m *tuiModel) testSelectedSSHSpeed() tea.Cmd {
 
 func (m *tuiModel) testSelectedSSHSpeedFor(direct bool) tea.Cmd {
 	if direct && !m.snapshot.SSHDirectProbe.DirectAllowed {
-		m.snapshot.Status = "SSH direct route unavailable: " + cliDisplayValue(m.snapshot.SSHDirectProbe.Reason)
+		m.snapshot.setStatus(newTUIMessage("ui.f65b91e54bf3", cliDisplayValue(m.snapshot.SSHDirectProbe.Reason)))
 		return nil
 	}
 	name, client, closeClient, err := m.selectedSSHHTTPClient()
 	if err != nil {
-		m.snapshot.Status = "SSH route speed failed: " + err.Error()
+		m.snapshot.setStatus(newTUIMessage("ui.52728cefb85d", err.Error()))
 		return nil
 	}
 	if direct {
@@ -509,7 +531,7 @@ func (m *tuiModel) beginSSHCredentialPrompt(profile, identity string) {
 	m.sshCredentialProfile = profile
 	m.sshCredentialIdentity = identity
 	m.sshCredentialInput = nil
-	m.snapshot.Status = "Encrypted SSH private key · enter its one-time passphrase"
+	m.snapshot.setStatus(newTUIMessage("ui.e0a5e9c91b35"))
 }
 
 func (m *tuiModel) resetSSHCredentialPrompt() {
@@ -529,11 +551,11 @@ func (m *tuiModel) handleSSHCredentialPrompt(message tea.KeyMsg) tea.Cmd {
 		return m.handleKey(tuiKeyInterrupt)
 	case tea.KeyEsc:
 		m.resetSSHCredentialPrompt()
-		m.snapshot.Status = "SSH connection cancelled"
+		m.snapshot.setStatus(newTUIMessage("ui.c659ad238be8"))
 		return nil
 	case tea.KeyEnter:
 		if len(m.sshCredentialInput) == 0 {
-			m.snapshot.Status = "Private key passphrase must not be empty"
+			m.snapshot.setStatus(newTUIMessage("ui.add06c08c882"))
 			return nil
 		}
 		profile := m.sshCredentialProfile
@@ -552,7 +574,7 @@ func (m *tuiModel) handleSSHCredentialPrompt(message tea.KeyMsg) tea.Cmd {
 	case tea.KeyBackspace, tea.KeyDelete:
 		if len(m.sshCredentialInput) > 0 {
 			m.sshCredentialInput[len(m.sshCredentialInput)-1] = 0
-			m.sshCredentialInput = m.sshCredentialInput[:len(m.sshCredentialInput)-1]
+			m.sshCredentialInput = m.sshCredentialInput[:tuiPreviousGrapheme(m.sshCredentialInput, len(m.sshCredentialInput))]
 		}
 	case tea.KeyCtrlU:
 		for index := range m.sshCredentialInput {
@@ -578,27 +600,27 @@ func (m *tuiModel) beginSSHForm(existing bool) {
 	if existing {
 		if m.snapshot.SelectedSSH < 0 ||
 			m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
-			m.snapshot.Status = "Select an SSH profile first"
+			m.snapshot.setStatus(newTUIMessage("ui.d7d54ef0ad99"))
 			return
 		}
 		selected := m.snapshot.SSHProfiles[m.snapshot.SelectedSSH]
 		originalName = selected.Name
 		loaded, err := loadCLISSHProfile(originalName)
 		if err != nil {
-			m.snapshot.Status = "SSH edit failed: " + err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.2b046c8d929c", err.Error()))
 			return
 		}
 		profile = loaded
 		profile.Options = append([]string(nil), loaded.Options...)
 		connected, err := cliSSHProfileConnected(originalName)
 		if err != nil {
-			m.snapshot.Status = "SSH edit failed: " + err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.2b046c8d929c", err.Error()))
 			return
 		}
 		readOnly = connected
 		fingerprint, err = cliSSHProfileFingerprint(loaded)
 		if err != nil {
-			m.snapshot.Status = "SSH edit failed: " + err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.2b046c8d929c", err.Error()))
 			return
 		}
 	}
@@ -621,9 +643,9 @@ func (m *tuiModel) beginSSHForm(existing bool) {
 	m.sshFormAddingOption = false
 	m.refreshSSHFormIdentityState()
 	if readOnly {
-		m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
+		m.snapshot.setStatus(newTUIMessage("ui.7239b70a44b1"))
 	} else {
-		m.snapshot.Status = "Local traffic → SSH host exit · ↑↓/Tab select · Enter edit/confirm · Esc cancel"
+		m.snapshot.setStatus(newTUIMessage("ui.f2adb4b7a95d"))
 	}
 }
 
@@ -696,16 +718,16 @@ func (m *tuiModel) sshFormRowCount() int {
 
 func (m *tuiModel) beginSSHFormFieldEdit() {
 	if m.sshFormReadOnly {
-		m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
+		m.snapshot.setStatus(newTUIMessage("ui.7239b70a44b1"))
 		return
 	}
 	if m.sshFormSelected == tuiSSHFormPassphraseRow {
 		switch {
 		case strings.TrimSpace(m.sshForm.Identity) == "":
-			m.snapshot.Status = "Select Identity(private key) before setting a key passphrase"
+			m.snapshot.setStatus(newTUIMessage("ui.28955a95e445"))
 			return
 		case m.sshFormIdentityKind == cliSSHIdentityUnencrypted:
-			m.snapshot.Status = "This private key is not encrypted; no passphrase is required"
+			m.snapshot.setStatus(newTUIMessage("ui.c761569bbb5b"))
 			return
 		}
 	}
@@ -745,7 +767,7 @@ func (m *tuiModel) beginSSHFormFieldEdit() {
 	m.sshFormInput = []rune(value)
 	m.sshFormCursor = len(m.sshFormInput)
 	m.sshFormSelectAll = value != ""
-	m.snapshot.Status = "Editing SSH field · Enter confirm · Esc cancel"
+	m.snapshot.setStatus(newTUIMessage("ui.e107e1f4c746"))
 }
 
 func (m *tuiModel) cancelSSHFormFieldEdit() {
@@ -781,20 +803,20 @@ func (m *tuiModel) commitSSHFormField() bool {
 	case tuiSSHFormJumpRow:
 		m.sshForm.Jump = strings.TrimSpace(value)
 		if err := validateCLISSHJump(m.sshForm.Jump); err != nil {
-			m.snapshot.Status = err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.ff400816f107", err.Error()))
 			return false
 		}
 	case tuiSSHFormPortRow:
 		port, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || port < 1 || port > 65535 {
-			m.snapshot.Status = "SSH port must be between 1 and 65535"
+			m.snapshot.setStatus(newTUIMessage("ui.1076ae969ced"))
 			return false
 		}
 		m.sshForm.Port = port
 	case tuiSSHFormLocalPortRow:
 		port, err := parseCLISSHLocalPort(value)
 		if err != nil {
-			m.snapshot.Status = err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.ff400816f107", err.Error()))
 			return false
 		}
 		m.sshForm.LocalPort = port
@@ -803,7 +825,7 @@ func (m *tuiModel) commitSSHFormField() bool {
 		m.refreshSSHFormIdentityState()
 	case tuiSSHFormPassphraseRow:
 		if value == "" {
-			m.snapshot.Status = "Private key passphrase must not be empty; press c outside editing to clear it"
+			m.snapshot.setStatus(newTUIMessage("ui.ed135e01134a"))
 			return false
 		}
 		if !m.sshFormPassphraseConfirm {
@@ -812,7 +834,7 @@ func (m *tuiModel) commitSSHFormField() bool {
 			m.sshFormInput = nil
 			m.sshFormCursor = 0
 			m.sshFormSelectAll = false
-			m.snapshot.Status = "Confirm the private key passphrase · Enter confirm · Esc cancel"
+			m.snapshot.setStatus(newTUIMessage("ui.ceeafe06e9a0"))
 			return false
 		}
 		if value != m.sshFormPassphraseFirst {
@@ -820,7 +842,7 @@ func (m *tuiModel) commitSSHFormField() bool {
 			m.sshFormPassphraseFirst = ""
 			m.sshFormInput = nil
 			m.sshFormCursor = 0
-			m.snapshot.Status = "Passphrases do not match; enter the private key passphrase again"
+			m.snapshot.setStatus(newTUIMessage("ui.caa11d9c07f9"))
 			return false
 		}
 		m.sshForm.IdentityPassphrase = value
@@ -829,7 +851,7 @@ func (m *tuiModel) commitSSHFormField() bool {
 		m.refreshSSHFormIdentityState()
 	case tuiSSHFormPasswordRow:
 		if value == "" {
-			m.snapshot.Status = "SSH password must not be empty; press c outside editing to clear it"
+			m.snapshot.setStatus(newTUIMessage("ui.105a94955dbf"))
 			return false
 		}
 		if !m.sshFormPasswordConfirm {
@@ -838,7 +860,7 @@ func (m *tuiModel) commitSSHFormField() bool {
 			m.sshFormInput = nil
 			m.sshFormCursor = 0
 			m.sshFormSelectAll = false
-			m.snapshot.Status = "Confirm the new SSH password · Enter confirm · Esc cancel"
+			m.snapshot.setStatus(newTUIMessage("ui.42102da9ab24"))
 			return false
 		}
 		if value != m.sshFormPasswordFirst {
@@ -846,7 +868,7 @@ func (m *tuiModel) commitSSHFormField() bool {
 			m.sshFormPasswordFirst = ""
 			m.sshFormInput = nil
 			m.sshFormCursor = 0
-			m.snapshot.Status = "SSH passwords do not match; enter the new password again"
+			m.snapshot.setStatus(newTUIMessage("ui.61bd5aed686a"))
 			return false
 		}
 		m.sshForm.Password = value
@@ -859,14 +881,14 @@ func (m *tuiModel) commitSSHFormField() bool {
 			return false
 		}
 		if err := validateCLISSHOption(value); err != nil {
-			m.snapshot.Status = "SSH option invalid: " + err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.b9bb1f61210a", err.Error()))
 			return false
 		}
 		m.sshForm.Options[optionIndex] = value
 		m.sshFormAddingOption = false
 	}
 	m.cancelSSHFormFieldEdit()
-	m.snapshot.Status = "SSH profile form · select Save to commit"
+	m.snapshot.setStatus(newTUIMessage("ui.b517d49f5af0"))
 	return true
 }
 
@@ -883,7 +905,7 @@ func (m *tuiModel) handleSSHForm(message tea.KeyMsg) tea.Cmd {
 			m.resetSSHForm()
 			return m.handleKey(tuiKeyInterrupt)
 		}
-		m.snapshot.Status = "SSH profile save is still running"
+		m.snapshot.setStatus(newTUIMessage("ui.53fd80f4bc25"))
 		return nil
 	}
 	switch message.Type {
@@ -892,7 +914,7 @@ func (m *tuiModel) handleSSHForm(message tea.KeyMsg) tea.Cmd {
 		return m.handleKey(tuiKeyInterrupt)
 	case tea.KeyEsc:
 		m.resetSSHForm()
-		m.snapshot.Status = "SSH profile changes cancelled"
+		m.snapshot.setStatus(newTUIMessage("ui.ddde7e676aff"))
 		return nil
 	case tea.KeyUp, tea.KeyShiftTab:
 		m.sshFormSelected = wrapTUIIndex(
@@ -919,7 +941,7 @@ func (m *tuiModel) handleSSHForm(message tea.KeyMsg) tea.Cmd {
 				if m.sshFormSelected == tuiSSHFormPassphraseRow ||
 					m.sshFormSelected == tuiSSHFormPasswordRow {
 					if m.sshFormReadOnly {
-						m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
+						m.snapshot.setStatus(newTUIMessage("ui.7239b70a44b1"))
 						return nil
 					}
 					if m.sshFormSelected == tuiSSHFormPassphraseRow {
@@ -927,12 +949,12 @@ func (m *tuiModel) handleSSHForm(message tea.KeyMsg) tea.Cmd {
 						m.sshFormPassphraseChanged = false
 						m.sshFormPassphraseCleared = true
 						m.refreshSSHFormIdentityState()
-						m.snapshot.Status = "Saved private key passphrase will be cleared when the form is saved"
+						m.snapshot.setStatus(newTUIMessage("ui.de08d3aaa40f"))
 					} else {
 						m.sshForm.Password = ""
 						m.sshFormPasswordChanged = false
 						m.sshFormPasswordCleared = true
-						m.snapshot.Status = "Saved SSH password will be cleared when the form is saved"
+						m.snapshot.setStatus(newTUIMessage("ui.648e14253453"))
 					}
 				}
 			case 'x':
@@ -950,9 +972,9 @@ func (m *tuiModel) activateSSHFormRow() tea.Cmd {
 			m.beginSSHDeleteConfirmForName(m.sshFormOriginalName)
 		case m.sshFormCancelRow():
 			m.resetSSHForm()
-			m.snapshot.Status = "SSH profile details closed"
+			m.snapshot.setStatus(newTUIMessage("ui.45eaa93cc0a5"))
 		default:
-			m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
+			m.snapshot.setStatus(newTUIMessage("ui.7239b70a44b1"))
 		}
 		return nil
 	}
@@ -970,7 +992,7 @@ func (m *tuiModel) activateSSHFormRow() tea.Cmd {
 		return nil
 	case m.sshFormCancelRow():
 		m.resetSSHForm()
-		m.snapshot.Status = "SSH profile changes cancelled"
+		m.snapshot.setStatus(newTUIMessage("ui.ddde7e676aff"))
 		return nil
 	default:
 		m.beginSSHFormFieldEdit()
@@ -980,7 +1002,7 @@ func (m *tuiModel) activateSSHFormRow() tea.Cmd {
 
 func (m *tuiModel) deleteSelectedSSHFormOption() tea.Cmd {
 	if m.sshFormReadOnly {
-		m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
+		m.snapshot.setStatus(newTUIMessage("ui.7239b70a44b1"))
 		return nil
 	}
 	optionIndex := m.sshFormSelected - tuiSSHFormOptionStartRow
@@ -994,13 +1016,13 @@ func (m *tuiModel) deleteSelectedSSHFormOption() tea.Cmd {
 	if m.sshFormSelected >= m.sshFormRowCount() {
 		m.sshFormSelected = m.sshFormRowCount() - 1
 	}
-	m.snapshot.Status = "SSH option removed from the form; select Save to commit"
+	m.snapshot.setStatus(newTUIMessage("ui.5afdc128a7fa"))
 	return nil
 }
 
 func (m *tuiModel) saveSSHForm() tea.Cmd {
 	if m.sshFormReadOnly {
-		m.snapshot.Status = "CONNECTED · READ ONLY · disconnect this SSH profile before editing"
+		m.snapshot.setStatus(newTUIMessage("ui.7239b70a44b1"))
 		return nil
 	}
 	profile := m.sshForm
@@ -1016,7 +1038,7 @@ func (m *tuiModel) saveSSHForm() tea.Cmd {
 			profile.IdentityPassphrase,
 		)
 		if err != nil {
-			m.snapshot.Status = "SSH private key invalid: " + err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.6b44c425cbe5", err.Error()))
 			return nil
 		}
 		if kind == cliSSHIdentityUnencrypted {
@@ -1024,14 +1046,14 @@ func (m *tuiModel) saveSSHForm() tea.Cmd {
 		}
 	}
 	if err := validateCLISSHProfile(profile); err != nil {
-		m.snapshot.Status = "SSH profile invalid: " + err.Error()
+		m.snapshot.setStatus(newTUIMessage("ui.ff400816f107", err.Error()))
 		return nil
 	}
 	existing := m.sshFormExisting
 	originalName := m.sshFormOriginalName
 	expectedFingerprint := m.sshFormFingerprint
 	m.busy = true
-	m.snapshot.Status = "Saving SSH profile " + profile.Name + "..."
+	m.snapshot.setStatus(newTUIMessage("ui.c9ddeb2e56ea", profile.Name))
 	return func() tea.Msg {
 		var err error
 		action := "add"
@@ -1052,6 +1074,7 @@ func (m *tuiModel) saveSSHForm() tea.Cmd {
 		return tuiSSHCommandResultMsg{
 			action:       action,
 			status:       status,
+			text:         newTUIMessage("ssh.saved", profile.Name),
 			selectedName: profile.Name,
 			err:          err,
 		}
@@ -1065,18 +1088,19 @@ func (m *tuiModel) handleSSHFormFieldInput(message tea.KeyMsg) tea.Cmd {
 		return m.handleKey(tuiKeyInterrupt)
 	case tea.KeyEsc:
 		m.cancelSSHFormFieldEdit()
-		m.snapshot.Status = "SSH field edit cancelled"
+		m.snapshot.setStatus(newTUIMessage("ui.b04a5f561d60"))
 	case tea.KeyEnter:
 		m.commitSSHFormField()
 	case tea.KeyBackspace, tea.KeyCtrlH:
 		if m.sshFormSelectAll {
 			m.clearSSHFormInput()
 		} else if m.sshFormCursor > 0 {
+			previous := tuiPreviousGrapheme(m.sshFormInput, m.sshFormCursor)
 			m.sshFormInput = append(
-				m.sshFormInput[:m.sshFormCursor-1],
+				m.sshFormInput[:previous],
 				m.sshFormInput[m.sshFormCursor:]...,
 			)
-			m.sshFormCursor--
+			m.sshFormCursor = previous
 		}
 	case tea.KeyDelete:
 		if m.sshFormSelectAll {
@@ -1084,7 +1108,7 @@ func (m *tuiModel) handleSSHFormFieldInput(message tea.KeyMsg) tea.Cmd {
 		} else if m.sshFormCursor < len(m.sshFormInput) {
 			m.sshFormInput = append(
 				m.sshFormInput[:m.sshFormCursor],
-				m.sshFormInput[m.sshFormCursor+1:]...,
+				m.sshFormInput[tuiNextGrapheme(m.sshFormInput, m.sshFormCursor):]...,
 			)
 		}
 	case tea.KeyLeft:
@@ -1092,14 +1116,14 @@ func (m *tuiModel) handleSSHFormFieldInput(message tea.KeyMsg) tea.Cmd {
 			m.sshFormCursor = 0
 			m.sshFormSelectAll = false
 		} else if m.sshFormCursor > 0 {
-			m.sshFormCursor--
+			m.sshFormCursor = tuiPreviousGrapheme(m.sshFormInput, m.sshFormCursor)
 		}
 	case tea.KeyRight:
 		if m.sshFormSelectAll {
 			m.sshFormCursor = len(m.sshFormInput)
 			m.sshFormSelectAll = false
 		} else if m.sshFormCursor < len(m.sshFormInput) {
-			m.sshFormCursor++
+			m.sshFormCursor = tuiNextGrapheme(m.sshFormInput, m.sshFormCursor)
 		}
 	case tea.KeyHome, tea.KeyCtrlA:
 		m.sshFormCursor = 0
@@ -1146,6 +1170,7 @@ func (m *tuiModel) handleSSHFormFieldInput(message tea.KeyMsg) tea.Cmd {
 			m.sshFormInput[m.sshFormCursor] = value
 			m.sshFormCursor++
 		}
+		m.sshFormCursor = tuiGraphemeCursor(m.sshFormInput, m.sshFormCursor)
 	}
 	return nil
 }
@@ -1159,7 +1184,7 @@ func (m *tuiModel) clearSSHFormInput() {
 func (m *tuiModel) beginSSHDeleteConfirm() {
 	if m.snapshot.SelectedSSH < 0 ||
 		m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles) {
-		m.snapshot.Status = "Select an SSH profile first"
+		m.snapshot.setStatus(newTUIMessage("ui.d7d54ef0ad99"))
 		return
 	}
 	m.beginSSHDeleteConfirmForName(
@@ -1170,7 +1195,7 @@ func (m *tuiModel) beginSSHDeleteConfirm() {
 func (m *tuiModel) beginSSHDeleteConfirmForName(name string) {
 	m.sshDeleteName = name
 	m.sshDeleteConfirmOpen = true
-	m.snapshot.Status = "Confirm SSH profile deletion · Enter confirm · Esc cancel"
+	m.snapshot.setStatus(newTUIMessage("ui.3ab645ceabd9"))
 }
 
 func (m *tuiModel) handleSSHDeleteConfirm(message tea.KeyMsg) tea.Cmd {
@@ -1182,7 +1207,7 @@ func (m *tuiModel) handleSSHDeleteConfirm(message tea.KeyMsg) tea.Cmd {
 	case tea.KeyEsc:
 		m.sshDeleteConfirmOpen = false
 		m.sshDeleteName = ""
-		m.snapshot.Status = "SSH profile deletion cancelled"
+		m.snapshot.setStatus(newTUIMessage("ui.f253809789f3"))
 	case tea.KeyEnter:
 		name := m.sshDeleteName
 		m.sshDeleteConfirmOpen = false
@@ -1191,7 +1216,7 @@ func (m *tuiModel) handleSSHDeleteConfirm(message tea.KeyMsg) tea.Cmd {
 			m.resetSSHForm()
 		}
 		m.busy = true
-		m.snapshot.Status = "Deleting SSH profile " + name + "..."
+		m.snapshot.setStatus(newTUIMessage("ui.109782297cac", name))
 		return func() tea.Msg {
 			err := deleteCLISSHProfile(name)
 			status := ""
@@ -1201,6 +1226,7 @@ func (m *tuiModel) handleSSHDeleteConfirm(message tea.KeyMsg) tea.Cmd {
 			return tuiSSHCommandResultMsg{
 				action: "delete",
 				status: status,
+				text:   newTUIMessage("ssh.deleted", name),
 				err:    err,
 			}
 		}
@@ -1217,16 +1243,16 @@ func (m *tuiModel) handleSSHDeleteConfirm(message tea.KeyMsg) tea.Cmd {
 func (m *tuiModel) beginProfileDeleteConfirm() {
 	if m.snapshot.SelectedRow < 0 ||
 		m.snapshot.SelectedRow >= len(m.snapshot.Profiles) {
-		m.snapshot.Status = "Select a saved Profile before deleting"
+		m.snapshot.setStatus(newTUIMessage("ui.71211c541b69"))
 		return
 	}
 	profile := m.snapshot.Profiles[m.snapshot.SelectedRow]
 	if profile.Current {
-		m.snapshot.Status = "Cannot delete the active Profile; activate another one first"
+		m.snapshot.setStatus(newTUIMessage("ui.8a396d70c226"))
 		return
 	}
 	if m.service == nil {
-		m.snapshot.Status = "Profile deletion requires the managed Backend"
+		m.snapshot.setStatus(newTUIMessage("ui.bf82ed01550e"))
 		return
 	}
 	m.profileDeleteOpen = true
@@ -1236,7 +1262,7 @@ func (m *tuiModel) beginProfileDeleteConfirm() {
 	if profile.SubscriptionURL != "" {
 		m.profileDeleteKind = "subscription"
 	}
-	m.snapshot.Status = "Confirm Profile deletion · Enter confirm · Esc cancel"
+	m.snapshot.setStatus(newTUIMessage("ui.828cf3849088"))
 }
 
 func (m *tuiModel) resetProfileDeleteConfirm() {
@@ -1253,7 +1279,7 @@ func (m *tuiModel) handleProfileDeleteConfirm(message tea.KeyMsg) tea.Cmd {
 		return m.handleKey(tuiKeyInterrupt)
 	case tea.KeyEsc:
 		m.resetProfileDeleteConfirm()
-		m.snapshot.Status = "Profile deletion cancelled"
+		m.snapshot.setStatus(newTUIMessage("ui.9d01b7c8edde"))
 	case tea.KeyEnter:
 		path := m.profileDeletePath
 		name := m.profileDeleteName
@@ -1262,15 +1288,15 @@ func (m *tuiModel) handleProfileDeleteConfirm(message tea.KeyMsg) tea.Cmd {
 		m.resetProfileDeleteConfirm()
 		return m.startOperation(func(state *tuiOperationState) {
 			if service == nil {
-				state.snapshot.Status = "Profile deletion requires the managed Backend"
+				state.snapshot.setStatus(newTUIMessage("ui.bf82ed01550e"))
 				return
 			}
 			if !prepareTUIBackendRevision(state, service) {
 				return
 			}
-			status, err := service.deleteProfile(path, state.backendRevision)
+			status, err := state.service.deleteProfile(path, state.backendRevision)
 			if err != nil {
-				state.snapshot.Status = "Profile deletion failed: " + err.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.183e219b9094", err.Error()))
 				return
 			}
 			applyTUIOperationServiceStatus(state, status)
@@ -1283,7 +1309,7 @@ func (m *tuiModel) handleProfileDeleteConfirm(message tea.KeyMsg) tea.Cmd {
 					len(state.snapshot.Profiles),
 				)
 			}
-			state.snapshot.Status = "Profile deleted: " + name
+			state.snapshot.setStatus(newTUIMessage("ui.e8a70ca44cc7", name))
 		})
 	case tea.KeyRunes:
 		if len(message.Runes) == 1 && message.Runes[0] == 'q' {

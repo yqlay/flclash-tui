@@ -84,7 +84,7 @@ The terminal client lives in `core/` and is selected with the `cli` build tag. I
 make cli-linux
 cd core && CGO_ENABLED=0 GOOS=linux go test -tags cli ./...
 cd core && CGO_ENABLED=0 GOOS=linux go vet -tags cli ./...
-bash packaging/tui-exit-test.sh dist/flclash
+bash packaging/tui-exit-isolated-test.sh dist/flclash
 ```
 
 After changing CLI files, run the Go tests above. Put new CLI logic in a domain-specific `core/cli_*.go` file; see `.agents/architecture.md`.

@@ -1,3 +1,12 @@
+## FlClash TUI v0.5.33
+
+- Add 18 offline TUI language choices in Settings, defaulting to English. Keep Language / English accessible; CLI commands and diagnostic logs remain in English. Translations are initial drafts.
+- Fix Unicode cell widths, language-picker repainting, notification overlays, and adaptive layouts when switching languages or resizing the terminal. Add real-terminal regression coverage across all languages.
+- Guard asynchronous Backend snapshots and writes with instance/revision checks. Preserve conflicting settings and port input instead of overwriting a newer configuration; reload stopped-Core settings from the active profile without persisting silent runtime overlays.
+- Keep SSH flows independent of Core lifecycle, enforce source-scoped connection operations, preserve final SSH history counters, and persist history-clear cutoffs so cleared records do not reappear.
+- Preserve History/Connections/Logs search, filters, details, and selections during refresh. Merge Backend and frontend logs without losing new notifications, apply traffic reset to Backend, and improve settings rollback reporting.
+- Isolate shutdown and terminal-lifecycle tests from user sessions. Update Chinese and English usage documentation. Private Backend IPC is now v7; reopen the TUI after upgrading to use the matching Backend.
+
 ## FlClash TUI v0.5.32
 
 - Simplify the SSH page: selecting a profile only moves the highlight; Enter opens its compact tunnel, IP, live-speed, and adaptive traffic view. Capture distinguishes existing local SOCKS from inbound reverse SOCKS without opening a new SSH login.

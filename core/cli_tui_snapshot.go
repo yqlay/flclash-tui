@@ -65,7 +65,7 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 
 	data, err := client.request("GET", "/proxies", nil)
 	if err != nil {
-		snapshot.Status = "Controller unavailable: " + err.Error()
+		snapshot.setStatus(newTUIMessage("ui.5f70908b9e1f", err.Error()))
 		applyTUISSHConnections(snapshot, nil, selectedConnectionID, selectedRequestID)
 		snapshot.UpdatedAt = time.Now()
 		return
@@ -73,7 +73,7 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 
 	var response tuiProxyResponse
 	if err := json.Unmarshal(data, &response); err != nil {
-		snapshot.Status = "Invalid controller response: " + err.Error()
+		snapshot.setStatus(newTUIMessage("ui.e44e826960b3", err.Error()))
 		return
 	}
 
@@ -177,13 +177,13 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 			)
 		} else {
 			if snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Loading..." {
-				snapshot.Status = "Connections refresh failed: invalid controller response"
+				snapshot.setStatus(newTUIMessage("ui.cd1d495d088a"))
 			}
 			applyTUISSHConnections(snapshot, nil, selectedConnectionID, selectedRequestID)
 		}
 	} else {
 		if snapshot.Status == "" || snapshot.Status == "Connected" || snapshot.Status == "Loading..." {
-			snapshot.Status = "Connections refresh failed: " + err.Error()
+			snapshot.setStatus(newTUIMessage("ui.e677d4656ad6", err.Error()))
 		}
 		applyTUISSHConnections(snapshot, nil, selectedConnectionID, selectedRequestID)
 	}
@@ -225,9 +225,8 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 	}
 	if snapshot.Status == "" || snapshot.Status == "Loading..." ||
 		snapshot.Status == "Connected" ||
-		strings.HasPrefix(snapshot.Status, "Controller unavailable:") ||
-		strings.HasPrefix(snapshot.Status, "Invalid controller response:") {
-		snapshot.Status = "Connected"
+		snapshot.controllerError() {
+		snapshot.setStatus(newTUIMessage("ui.22965568d22a"))
 	}
 	snapshot.UpdatedAt = time.Now()
 }
@@ -241,11 +240,12 @@ func applyTUISSHConnections(
 	liveSSH, recentSSH := loadCLISSHRelayConnections()
 	now := time.Now()
 	live := mergeTUITrafficConnections(proxy, liveSSH)
-	snapshot.Requests = rememberClosedSSHHistory(
-		updateTUIRequestHistory(snapshot.Requests, live, now),
-		recentSSH,
-		now,
-	)
+	if !snapshot.ManagedService {
+		snapshot.Requests = rememberClosedSSHHistory(
+			updateTUIRequestHistory(snapshot.Requests, live, now), recentSSH, now,
+			snapshot.SSHHistoryClearedBefore,
+		)
+	}
 	snapshot.Connections = live
 	if selectedConnectionID == "" {
 		snapshot.SelectedConnection = clampTUISelection(
@@ -314,15 +314,12 @@ func updateTUIRequestHistory(
 	return updated
 }
 
-// markTUIRequestHistoryInactive closes the local view of every request when
-// the Core is no longer running. Mihomo cannot keep a connection alive after
-// its listeners stop, so retaining ACTIVE here would misrepresent persisted
-// History after a stop or Backend restart.
+// Stopping Mihomo completes proxy requests, not independent SSH requests.
 func markTUIRequestHistoryInactive(history []tuiRequest) ([]tuiRequest, bool) {
 	updated := append([]tuiRequest(nil), history...)
 	changed := false
 	for index := range updated {
-		if updated[index].Active {
+		if updated[index].Active && tuiConnectionSource(updated[index].TuiConnection) != tuiTrafficSourceSSH {
 			updated[index].Active = false
 			changed = true
 		}
@@ -424,7 +421,7 @@ func refreshTUISSH(snapshot *tuiSnapshot) {
 	views, err := loadCLISSHProfileViews()
 	if err != nil {
 		if snapshot.Page == tuiPageSSH {
-			snapshot.Status = "SSH profiles unavailable: " + err.Error()
+			snapshot.setStatus(newTUIMessage("ui.00b20e67e88d", err.Error()))
 		}
 		return
 	}
@@ -522,7 +519,7 @@ func switchTUIProfile(
 	startListeners bool,
 ) {
 	if !ownsCore {
-		snapshot.Status = "Profile switching requires a core started by this process"
+		snapshot.setStatus(newTUIMessage("ui.e5245ad9e4e2"))
 		return
 	}
 	if snapshot.SelectedRow < 0 || snapshot.SelectedRow >= len(snapshot.Profiles) {
@@ -530,15 +527,15 @@ func switchTUIProfile(
 	}
 	profile := snapshot.Profiles[snapshot.SelectedRow]
 	if profile.Current {
-		snapshot.Status = "Profile is already active"
+		snapshot.setStatus(newTUIMessage("ui.bbe0e38f1b66"))
 		return
 	}
 	if message := cliHub.ValidateConfig(profile.Path); message != "" {
-		snapshot.Status = "Profile invalid: " + message
+		snapshot.setStatus(newTUIMessage("ui.4b591ed16c4b", message))
 		return
 	}
 	if err := ensureTUIFlClashDefaults(profile.Path); err != nil {
-		snapshot.Status = "Profile defaults failed: " + err.Error()
+		snapshot.setStatus(newTUIMessage("ui.2b63917aec6f", err.Error()))
 		return
 	}
 	previousPaths := *paths
@@ -565,7 +562,7 @@ func switchTUIProfile(
 	params := defaultSetupParams()
 	if len(*setupParams) > 0 {
 		if err := UnmarshalJson(*setupParams, params); err != nil {
-			snapshot.Status = "Profile setup failed: " + err.Error()
+			snapshot.setStatus(newTUIMessage("ui.1d24ab690f5a", err.Error()))
 			return
 		}
 	}
@@ -580,27 +577,27 @@ func switchTUIProfile(
 	params.ExternalControllerSecret = &secret
 	newSetupParams, err := json.Marshal(params)
 	if err != nil {
-		snapshot.Status = "Profile setup failed: " + err.Error()
+		snapshot.setStatus(newTUIMessage("ui.1d24ab690f5a", err.Error()))
 		return
 	}
 	initParams, err := json.Marshal(InitParams{
 		HomeDir: paths.HomeDir, ConfigPath: profile.Path, Version: 1,
 	})
 	if err != nil || !cliHub.Init(string(initParams)) {
-		snapshot.Status = "Profile initialization failed"
+		snapshot.setStatus(newTUIMessage("ui.3c8b56cde1d5"))
 		return
 	}
 	if message := cliHub.SetupConfig(newSetupParams); message != "" {
-		snapshot.Status = "Profile load failed: " + message
+		snapshot.setStatus(newTUIMessage("ui.d5fd04df4bd6", message))
 		if rollbackMessage := rollback(); rollbackMessage != "" {
-			snapshot.Status += "; rollback failed: " + rollbackMessage
+			snapshot.appendStatus(newTUIMessage("ui.02f7b1a6eddc", rollbackMessage))
 		}
 		return
 	}
 	if startListeners && !cliHub.StartListener() {
-		snapshot.Status = "Profile listener start failed"
+		snapshot.setStatus(newTUIMessage("ui.13ae19951baf"))
 		if rollbackMessage := rollback(); rollbackMessage != "" {
-			snapshot.Status += "; rollback failed: " + rollbackMessage
+			snapshot.appendStatus(newTUIMessage("ui.02f7b1a6eddc", rollbackMessage))
 		}
 		return
 	}
@@ -608,19 +605,19 @@ func switchTUIProfile(
 	*setupParams = newSetupParams
 	snapshot.GroupOrder = loadTUIProxyGroupOrder(profile.Path)
 	snapshot.ProxyNodeFocus = false
-	snapshot.Status = "Active profile: " + profile.Name
+	snapshot.setStatus(newTUIMessage("ui.09891acf3c0e", profile.Name))
 	if err := rememberTUIActiveProfile(*paths); err != nil {
-		snapshot.Status += "; could not remember profile: " + err.Error()
+		snapshot.appendStatus(newTUIMessage("ui.ae682b899491", err.Error()))
 	}
 	refreshTUISnapshot(snapshot, client)
 	if systemProxyEnabled {
 		enableSystemProxy := snapshot.Settings.MixedPort > 0
 		if err := setLinuxSystemProxy(snapshot.Settings.MixedPort, enableSystemProxy); err != nil {
-			snapshot.Status += "; system proxy update failed: " + err.Error()
+			snapshot.appendStatus(newTUIMessage("ui.d28479c68cfe", err.Error()))
 		} else {
 			snapshot.Settings.SystemProxy = enableSystemProxy
 			if !enableSystemProxy {
-				snapshot.Status += "; System proxy disabled because the profile has no Proxy port"
+				snapshot.appendStatus(newTUIMessage("ui.c6d4399621b0"))
 			}
 		}
 	}
@@ -774,25 +771,25 @@ func selectTUIProxy(
 	homeDir string,
 ) bool {
 	if snapshot.SelectedGroup < 0 || snapshot.SelectedGroup >= len(snapshot.Groups) {
-		snapshot.Status = "Select a proxy group before applying it"
+		snapshot.setStatus(newTUIMessage("ui.c87bc128ca34"))
 		return false
 	}
 	group := snapshot.Groups[snapshot.SelectedGroup]
 	if snapshot.SelectedNode < 0 || snapshot.SelectedNode >= len(group.Nodes) {
-		snapshot.Status = "Select a proxy node before applying it"
+		snapshot.setStatus(newTUIMessage("ui.b93098d46940"))
 		return false
 	}
 	if err := client.setProxy(group.Name, group.Nodes[snapshot.SelectedNode]); err != nil {
-		snapshot.Status = "Switch failed: " + err.Error()
+		snapshot.setStatus(newTUIMessage("ui.0c8dbf711c49", err.Error()))
 		return false
 	}
-	snapshot.Status = fmt.Sprintf("Switched %s to %s", group.Name, group.Nodes[snapshot.SelectedNode])
+	snapshot.setStatus(newTUIMessage("ui.aa3287851430", group.Name, group.Nodes[snapshot.SelectedNode]))
 	if err := rememberTUIProxySelection(
 		homeDir,
 		group.Name,
 		group.Nodes[snapshot.SelectedNode],
 	); err != nil {
-		snapshot.Status += "; selection save failed: " + err.Error()
+		snapshot.appendStatus(newTUIMessage("ui.8eee49703a49", err.Error()))
 	}
 	refreshTUISnapshot(snapshot, client)
 	return true
@@ -800,15 +797,15 @@ func selectTUIProxy(
 
 func updateTUIProvider(snapshot *tuiSnapshot, client controllerClient) {
 	if snapshot.SelectedProvider < 0 || snapshot.SelectedProvider >= len(snapshot.Providers) {
-		snapshot.Status = "Select a provider before updating it"
+		snapshot.setStatus(newTUIMessage("ui.78663835f459"))
 		return
 	}
 	provider := snapshot.Providers[snapshot.SelectedProvider]
 	if err := client.updateProvider(provider.Name); err != nil {
-		snapshot.Status = "Provider update failed: " + err.Error()
+		snapshot.setStatus(newTUIMessage("ui.9e41966fed5a", err.Error()))
 		return
 	}
-	snapshot.Status = "Updated provider " + provider.Name
+	snapshot.setStatus(newTUIMessage("ui.d76875edd495", provider.Name))
 	refreshTUISnapshot(snapshot, client)
 }
 
@@ -832,13 +829,13 @@ func updateTUISettings(snapshot *tuiSnapshot, client controllerClient, key tuiKe
 		patch["log-level"] = levels[wrapTUIIndex(current, 1, len(levels))]
 	case tuiKeyPortUp:
 		if snapshot.Settings.MixedPort >= 65535 {
-			snapshot.Status = "Proxy port is already at 65535"
+			snapshot.setStatus(newTUIMessage("ui.191046cd2be2"))
 			return false
 		}
 		patch["mixed-port"] = snapshot.Settings.MixedPort + 1
 	case tuiKeyPortDown:
 		if snapshot.Settings.MixedPort <= 0 {
-			snapshot.Status = "Proxy port is already at 0"
+			snapshot.setStatus(newTUIMessage("ui.ea6afd7e3bd3"))
 			return false
 		}
 		patch["mixed-port"] = snapshot.Settings.MixedPort - 1
@@ -846,21 +843,21 @@ func updateTUISettings(snapshot *tuiSnapshot, client controllerClient, key tuiKe
 		return false
 	}
 	if err := client.patchConfig(patch); err != nil {
-		snapshot.Status = "Settings update failed: " + err.Error()
+		snapshot.setStatus(newTUIMessage("ui.9e5cd8547732", err.Error()))
 		return false
 	}
-	snapshot.Status = "Settings updated"
+	snapshot.setStatus(newTUIMessage("ui.5cb8b6077bd1"))
 	refreshTUISnapshot(snapshot, client)
 	if (key == tuiKeyPortUp || key == tuiKeyPortDown) && systemProxyEnabled {
 		enableSystemProxy := snapshot.Settings.MixedPort > 0
 		if err := setLinuxSystemProxy(snapshot.Settings.MixedPort, enableSystemProxy); err != nil {
-			snapshot.Status = "Port changed, but system proxy update failed: " + err.Error()
+			snapshot.setStatus(newTUIMessage("ui.f02466390527", err.Error()))
 		} else if !enableSystemProxy {
 			snapshot.Settings.SystemProxy = false
-			snapshot.Status = "Proxy port disabled; System proxy disabled"
+			snapshot.setStatus(newTUIMessage("ui.68ffb476dc93"))
 		} else {
 			snapshot.Settings.SystemProxy = true
-			snapshot.Status = fmt.Sprintf("Proxy port changed to %d", snapshot.Settings.MixedPort)
+			snapshot.setStatus(newTUIMessage("ui.f4f131142040", snapshot.Settings.MixedPort))
 		}
 	}
 	return true
@@ -869,18 +866,18 @@ func updateTUISettings(snapshot *tuiSnapshot, client controllerClient, key tuiKe
 func toggleTUISystemProxy(snapshot *tuiSnapshot) bool {
 	port := snapshot.Settings.MixedPort
 	if port <= 0 {
-		snapshot.Status = "System proxy requires a positive Proxy port"
+		snapshot.setStatus(newTUIMessage("ui.f952727463bf"))
 		return false
 	}
 	enable := !snapshot.Settings.SystemProxy
 	if err := setLinuxSystemProxy(port, enable); err != nil {
-		snapshot.Status = "System proxy update failed: " + err.Error()
+		snapshot.setStatus(newTUIMessage("ui.3e34a530360a", err.Error()))
 		return false
 	}
 	snapshot.Settings.SystemProxy = enable
-	snapshot.Status = "System proxy enabled"
+	snapshot.setStatus(newTUIMessage("ui.6573ed59cf45"))
 	if !enable {
-		snapshot.Status = "System proxy disabled"
+		snapshot.setStatus(newTUIMessage("ui.66f9209bf2ac"))
 	}
 	return true
 }
@@ -908,15 +905,15 @@ func setTUIMixedPort(snapshot *tuiSnapshot, client controllerClient, oldState **
 		return nil
 	})
 	if err != nil {
-		snapshot.Status = "Port change failed: " + err.Error()
+		snapshot.setStatus(newTUIMessage("ui.8d1edacd5553", err.Error()))
 		return
 	}
 	if !changed {
-		snapshot.Status = "Port unchanged"
+		snapshot.setStatus(newTUIMessage("ui.81e30192778f"))
 		return
 	}
 	if err := client.patchConfig(map[string]interface{}{"mixed-port": selectedPort}); err != nil {
-		snapshot.Status = "Port change failed: " + err.Error()
+		snapshot.setStatus(newTUIMessage("ui.8d1edacd5553", err.Error()))
 		return
 	}
 	systemProxyEnabled := snapshot.Settings.SystemProxy
@@ -924,14 +921,14 @@ func setTUIMixedPort(snapshot *tuiSnapshot, client controllerClient, oldState **
 	if systemProxyEnabled {
 		enableSystemProxy := snapshot.Settings.MixedPort > 0
 		if err := setLinuxSystemProxy(snapshot.Settings.MixedPort, enableSystemProxy); err != nil {
-			snapshot.Status = "Port changed, but system proxy update failed: " + err.Error()
+			snapshot.setStatus(newTUIMessage("ui.f02466390527", err.Error()))
 			return
 		}
 		snapshot.Settings.SystemProxy = enableSystemProxy
 		if !enableSystemProxy {
-			snapshot.Status = "Proxy port disabled; System proxy disabled"
+			snapshot.setStatus(newTUIMessage("ui.68ffb476dc93"))
 			return
 		}
 	}
-	snapshot.Status = fmt.Sprintf("Proxy port changed to %d", snapshot.Settings.MixedPort)
+	snapshot.setStatus(newTUIMessage("ui.f4f131142040", snapshot.Settings.MixedPort))
 }

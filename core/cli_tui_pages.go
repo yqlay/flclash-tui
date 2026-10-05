@@ -3,13 +3,15 @@
 package main
 
 import (
+	"core/internal/i18n"
 	"fmt"
 	"strings"
 )
 
-func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
+func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int, language ...string) {
+	tr := tuiTranslator(language...)
 	if snapshot.SelectedGroup < 0 || snapshot.SelectedGroup >= len(snapshot.Groups) {
-		drawTUIEmpty(b, width, "Proxy groups", "No group selected")
+		drawTUIEmpty(b, width, tr("ui.b39dc0586e6b"), tr("ui.d3ffc10982c9"), language...)
 		return
 	}
 	group := snapshot.Groups[snapshot.SelectedGroup]
@@ -17,19 +19,17 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 	groupLimit := minTUI(len(snapshot.Groups), maxTUIWidth(availableRows/3, 1))
 	nodeLimit := maxTUIWidth(availableRows-groupLimit, 1)
 	groupStart, groupEnd := tuiVisibleRange(len(snapshot.Groups), snapshot.SelectedGroup, groupLimit)
-	groupHint := "↑↓/ws group · Enter nodes · d test group · v speed group · [/] view"
+	groupHint := tr("ui.42ce13a42874")
 	if snapshot.ProxyNodeFocus {
-		groupHint = "Esc returns to proxy groups"
+		groupHint = tr("ui.edc5137b9179")
 	}
 	tuiTitle(
-		b,
-		"Proxies  ·  Groups  [1/2]",
-		groupHint,
+		b, tr("ui.5fc01e27a639"), groupHint,
 		width,
 	)
 	for index := groupStart; index < groupEnd; index++ {
 		item := snapshot.Groups[index]
-		row := fmt.Sprintf("%-28s %-12s %s", truncateTUI(item.Name, 28), item.Type, truncateTUI(item.Now, maxTUIWidth(width-48, 10)))
+		row := tuiColumns(width-4, tuiColumn{value: item.Name, width: 28, minimum: 8}, tuiColumn{value: item.Type, width: 12, minimum: 6, optional: true}, tuiColumn{value: item.Now, width: maxTUIWidth(width-48, 10), minimum: 8})
 		tuiRow(
 			b,
 			row,
@@ -42,14 +42,11 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 	}
 	tuiEndPanel(b, width)
 
-	nodeTitle := "Nodes in " + group.Name
+	nodeTitle := tr("ui.b228df86e81b") + group.Name
 	tuiTitle(
 		b,
 		nodeTitle,
-		fmt.Sprintf(
-			"%d nodes · ↑↓/ws select · Enter apply · d delay · v speed · Esc back",
-			len(group.Nodes),
-		),
+		fmt.Sprintf(tr("ui.4888c9c83bed"), len(group.Nodes)),
 		width,
 	)
 	nodeStart, nodeEnd := tuiVisibleRange(len(group.Nodes), snapshot.SelectedNode, nodeLimit)
@@ -57,36 +54,36 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 		node := group.Nodes[index]
 		label := truncateTUI(node, width-24)
 		if node == group.Now {
-			label += "  [current]"
+			label += tr("ui.7092b0d4d1b9")
 		}
 		color := tuiGreen
 		delay, tested := group.Delays[node]
 		switch {
 		case delay.MedianMillis > 0:
-			label += "  " + formatTUIDelay(delay)
+			label += "  " + formatTUIDelay(delay, language...)
 		case delay.Error != "":
-			label += "  Timeout · d retry"
+			label += tr("ui.c5fbceb3cb76")
 			color = tuiDim
 		case delay.Testing:
-			label += "  Testing..."
+			label += tr("ui.ffc70b13c202")
 			color = tuiCyan
 		case !tested:
-			label += "  [d test]"
+			label += tr("ui.cfe0f02ae8da")
 			color = tuiDim
 		}
 		if speed, speedTested := group.Speeds[node]; speedTested {
 			switch {
 			case speed.Testing:
-				label += "  Speed testing..."
+				label += tr("ui.ea93eea5602a")
 				color = tuiCyan
 			case speed.Error != "":
-				label += "  Speed failed · v retry"
+				label += tr("ui.c17146077b24")
 				color = tuiDim
 			case speed.BytesPerSecond > 0:
 				label += "  " + formatTUISpeed(speed)
 			}
 		} else {
-			label += "  [v test]"
+			label += tr("ui.107cc2a4f52f")
 		}
 		tuiRow(
 			b,
@@ -99,20 +96,18 @@ func drawTUIProxies(b *strings.Builder, snapshot tuiSnapshot, width, height int)
 		)
 	}
 	if len(group.Nodes) == 0 {
-		tuiRow(b, "No nodes in this group", width, false, tuiDim)
+		tuiRow(b, tr("ui.cef2c57fe2ed"), width, false, tuiDim)
 	}
 	tuiEndPanel(b, width)
 }
 
-func drawTUIProviders(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
+func drawTUIProviders(b *strings.Builder, snapshot tuiSnapshot, width, height int, language ...string) {
+	tr := tuiTranslator(language...)
 	tuiTitle(
-		b,
-		"Proxies  ·  Providers  [2/2]",
-		"↑↓/ws provider · Enter update · [/] view",
-		width,
+		b, tr("ui.47d771a56f18"), tr("ui.fbd7d7fc72fe"), width,
 	)
 	if len(snapshot.Providers) == 0 {
-		tuiRow(b, "No proxy providers configured", width, false, tuiDim)
+		tuiRow(b, tr("ui.0d41873790c3"), width, false, tuiDim)
 		tuiEndPanel(b, width)
 		return
 	}
@@ -120,48 +115,29 @@ func drawTUIProviders(b *strings.Builder, snapshot tuiSnapshot, width, height in
 	start, end := tuiVisibleRange(len(snapshot.Providers), snapshot.SelectedProvider, limit)
 	for index := start; index < end; index++ {
 		provider := snapshot.Providers[index]
-		row := fmt.Sprintf("%-30s %-10s %4d proxies  %s", truncateTUI(provider.Name, 30), truncateTUI(provider.Type, 10), provider.Count, truncateTUI(provider.UpdatedAt, maxTUIWidth(width-60, 8)))
+		count := strings.TrimSpace(i18n.Count(tuiLanguageCode(language...), "providers.count", provider.Count, provider.Count))
+		row := tuiColumns(width-4, tuiColumn{value: provider.Name, width: 30, minimum: 8}, tuiColumn{value: provider.Type, width: 10, minimum: 6, optional: true}, tuiColumn{value: count, width: tuiDisplayWidth(count), minimum: tuiDisplayWidth(count)}, tuiColumn{value: provider.UpdatedAt, width: maxTUIWidth(width-60, 8), minimum: 8, optional: true})
 		tuiRow(b, row, width, index == snapshot.SelectedProvider && !snapshot.FocusSidebar, "")
 	}
 	tuiEndPanel(b, width)
 }
 
-func drawTUITools(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
-	rows := tuiSettingsRows(snapshot)
+func drawTUITools(b *strings.Builder, snapshot tuiSnapshot, width, height int, language ...string) {
+	tr := tuiTranslator(language...)
+	rows := tuiFieldRows(tuiSettingsFields(snapshot, language...), width)
 	tuiTitle(
-		b,
-		"Settings",
-		"Allow LAN, IPv6, delay, log, TUN scope · daily controls are on Dashboard",
-		width,
+		b, tr("ui.74a883a037bc"), tr("ui.ab01bd8b9453"), width,
 	)
 	limit := maxTUIWidth(height-3, 1)
-	start, end := tuiVisibleRange(len(rows), snapshot.SelectedTool, limit)
-	for index := start; index < end; index++ {
-		tuiRow(
-			b,
-			rows[index],
-			width,
-			index == snapshot.SelectedTool && !snapshot.FocusSidebar,
-			"",
-		)
-	}
+	tuiWriteRows(b, tuiSelectedRows(rows, limit), width)
 	tuiEndPanel(b, width)
 }
 
-func drawTUIMaintenance(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
-	rows := []string{
-		"Config        Edit current YAML in $EDITOR",
-		"Backup        Create timestamped configuration backup",
-		"Restore       Restore newest configuration backup",
-		"Resources     Update Mihomo Geo databases",
-		"Traffic       Reset traffic counters",
-		tuiUpdateRow(snapshot.Update),
-	}
+func drawTUIMaintenance(b *strings.Builder, snapshot tuiSnapshot, width, height int, language ...string) {
+	tr := tuiTranslator(language...)
+	rows := []string{tr("ui.c6d72737d4a1"), tr("ui.a656446a3979"), tr("ui.6861ed14e388"), tr("ui.e051747ccc5b"), tr("ui.207edd6d3339"), tuiUpdateRow(snapshot.Update, language...)}
 	tuiTitle(
-		b,
-		"Maintenance",
-		"Configuration · resources · diagnostics",
-		width,
+		b, tr("ui.17ccfa5b681e"), tr("ui.18d57e8c6aad"), width,
 	)
 	limit := maxTUIWidth(height-3, 1)
 	start, end := tuiVisibleRange(len(rows), snapshot.SelectedMaintenance, limit)
@@ -178,21 +154,19 @@ func drawTUIMaintenance(b *strings.Builder, snapshot tuiSnapshot, width, height 
 	tuiEndPanel(b, width)
 }
 
-func tuiUpdateRow(info tuiUpdateInfo) string {
+func tuiUpdateRow(info tuiUpdateInfo, language ...string) string {
+	tr := tuiTranslator(language...)
 	switch {
 	case info.Loading:
-		return "Update        Checking GitHub Releases..."
+		return tr("ui.0c33e6dba0ca")
 	case info.Error != "":
-		return "Update        Check failed · Enter to retry"
+		return tr("ui.1592dd3705a8")
 	case info.LatestVersion != "" && info.Available:
-		return fmt.Sprintf(
-			"Update        v%s available · run flclash update",
-			info.LatestVersion,
-		)
+		return fmt.Sprintf(tr("ui.5438c6aedc05"), info.LatestVersion)
 	case info.LatestVersion != "":
-		return fmt.Sprintf("Update        v%s is latest · keep it if stable", cliVersion)
+		return fmt.Sprintf(tr("ui.e7751cd9894d"), cliVersion)
 	default:
-		return "Update        Enter checks GitHub · if stable, do not update lightly"
+		return tr("ui.06905c634fe0")
 	}
 }
 
@@ -226,28 +200,14 @@ func tuiVisibleRange(total, selected, limit int) (int, int) {
 	return start, start + limit
 }
 
-func drawTUIHelp(b *strings.Builder, width, height int) {
-	rows := []string{
-		"Navigation     ← sidebar · → content · ↑↓/ws move · Enter opens/applies · Esc back",
-		"Sections       1-9 open directly · Tab changes focus · [/] changes proxy view",
-		"Dashboard      flc Enter opens Proxies · d latency · v speed · n refresh",
-		"Proxies        Enter nodes · d node RTT (5 samples) · v node speed · Esc groups",
-		"Profiles       Enter activate · U refresh · u/F2 rename · e edit · n import · x delete",
-		"SSH            Tab list/details · n add or refresh IPs · a Capture · e edit · u default · Enter tunnel",
-		"History        o source mixed/proxy/ssh · f all/active/completed · x clears (honors source)",
-		"Connections    f source mixed/proxy/ssh · d close selected · x close all (honors source)",
-		"Logs           e exports captured logs · x clears captured logs",
-		"Core           S system proxy (auto-start) · c start/stop · t TUN · m mode",
-		"Settings       Enter applies row · a LAN · v IPv6 · i log · Dashboard has Core/mode/flc/port",
-		"Maintenance    Edit, backup, restore, Geo, traffic reset, and updates",
-		"Notifications  Ctrl+N opens history/details · Enter confirms · Esc closes",
-		"Exit           q exits this TUI only · Ctrl+C shuts down Backend, Core, and SSH",
-	}
+func drawTUIHelp(b *strings.Builder, width, height int, language ...string) {
+	tr := tuiTranslator(language...)
+	rows := []string{tr("ui.c3f444889f5d"), tr("ui.54250fb97a2d"), tr("ui.f94a0d033f3a"), tr("ui.0de43a790d83"), tr("ui.45edd6ebf46d"), tr("ui.eb96c6ea8e4b"), tr("ui.7db9d1a5a715"), tr("ui.be571e2fec86"), tr("ui.f8a5661a2731"), tr("ui.da0b3c3a6c3a"), tr("ui.cdc5f54f1f26"), tr("ui.b6c5f9827d69"), tr("ui.8d0d06e21b22"), tr("ui.8c746c46c476")}
 	if height < 28 {
 		rows = rows[:minTUI(5, len(rows))]
 	}
 	rows = rows[:minTUI(len(rows), maxTUIWidth(height-3, 1))]
-	tuiTitle(b, "Keyboard shortcuts", "press ? to close", width)
+	tuiTitle(b, tr("ui.e9bef0b0f3c2"), tr("ui.aa107e7dba26"), width)
 	for _, row := range rows {
 		tuiRow(b, row, width, false, "")
 	}

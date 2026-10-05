@@ -258,13 +258,17 @@ func TestTUIDashboardRefreshKeepsSilentTUNAndFLCOverlay(t *testing.T) {
 		t.Fatalf("flc outbound was lost: %q", tuiFLCOutboundLabel(model.snapshot))
 	}
 
-	select {
-	case action := <-actions:
-		if action != "status" {
-			t.Fatalf("Dashboard refresh called %q, want status", action)
+	// Status before and after the controller reads must agree, otherwise the
+	// refresh would combine data from two Backend transactions/instances.
+	for range 2 {
+		select {
+		case action := <-actions:
+			if action != "status" {
+				t.Fatalf("Dashboard refresh called %q, want status", action)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Dashboard refresh did not check both Backend revisions")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("Dashboard refresh did not call Backend status")
 	}
 	select {
 	case action := <-actions:
@@ -503,6 +507,7 @@ func TestTUISilentDirtyStagedSettingsRecoverNativeProfileMode(t *testing.T) {
 	state := tuiOperationState{
 		paths:         cliPaths{HomeDir: directory, ConfigPath: configPath},
 		settingsDirty: true,
+		settingsDraft: &tuiSettingsDraftBase{Revision: 20, ConfigPath: configPath},
 		stagedSettings: &tuiSettings{
 			Mode:       tuiSilentMode,
 			MixedPort:  12346,
@@ -1815,9 +1820,9 @@ func TestMergeTUIRefreshSurfacesControllerErrors(t *testing.T) {
 		UpdatedAt: time.Now(),
 	}
 	refreshed := tuiSnapshot{
-		Status:    "Controller unavailable: connection refused",
 		UpdatedAt: time.Now(),
 	}
+	refreshed.setStatus(newTUIMessage("ui.5f70908b9e1f", "connection refused"))
 	merged := mergeTUIRefresh(current, refreshed)
 	if merged.Status != refreshed.Status {
 		t.Fatalf("controller error was hidden by stale action status: %q", merged.Status)

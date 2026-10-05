@@ -18,7 +18,11 @@ func (m *tuiModel) beginInput(mode tuiInputMode) {
 	m.inputValue = m.inputValue[:0]
 	m.inputCursor = 0
 	m.inputSelectAll = false
+	m.inputSettingsDraft = nil
 	if mode == tuiInputMixedPort {
+		if m.service != nil {
+			m.inputSettingsDraft = m.settingsDraftBase()
+		}
 		m.inputValue = []rune(strconv.Itoa(m.snapshot.Settings.MixedPort))
 		m.inputCursor = len(m.inputValue)
 		m.inputSelectAll = true
@@ -54,7 +58,7 @@ func (m *tuiModel) beginModeSelection() {
 	if m.selectedMode < 0 {
 		m.selectedMode = 0
 	}
-	m.snapshot.Status = "Select an outbound mode"
+	m.snapshot.setStatus(newTUIMessage("ui.d656c2b275f4"))
 }
 
 func (m *tuiModel) handleModeSelection(message tea.KeyMsg) tea.Cmd {
@@ -81,7 +85,7 @@ func (m *tuiModel) handleModeSelection(message tea.KeyMsg) tea.Cmd {
 		return m.changeMode(mode)
 	case tuiKeyBack:
 		m.modeSelectionOpen = false
-		m.snapshot.Status = "Mode selection cancelled"
+		m.snapshot.setStatus(newTUIMessage("ui.3e080035d8bf"))
 	case tuiKeyQuit, tuiKeyInterrupt:
 		m.modeSelectionOpen = false
 		return m.handleKey(key)
@@ -92,16 +96,16 @@ func (m *tuiModel) handleModeSelection(message tea.KeyMsg) tea.Cmd {
 func (m *tuiModel) changeMode(mode string) tea.Cmd {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if strings.EqualFold(mode, m.snapshot.Settings.Mode) {
-		m.snapshot.Status = "Mode unchanged: " + mode
+		m.snapshot.setStatus(newTUIMessage("ui.fd457d18e06f", mode))
 		return nil
 	}
 	if m.service == nil {
 		if !m.ownsCore || m.coreRunning {
-			m.snapshot.Status = "Mode changes require the managed backend"
+			m.snapshot.setStatus(newTUIMessage("ui.195ba03e04af"))
 			return nil
 		}
 		if mode == tuiSilentMode {
-			m.snapshot.Status = "Silent mode requires the managed backend"
+			m.snapshot.setStatus(newTUIMessage("ui.1b69b68b5801"))
 			return nil
 		}
 		m.stageTUIMode(mode)
@@ -112,25 +116,25 @@ func (m *tuiModel) changeMode(mode string) tea.Cmd {
 		if !prepareTUIBackendRevision(state, service) {
 			return
 		}
-		status, err := service.setMode(mode, state.backendRevision)
+		status, err := state.service.setMode(mode, state.backendRevision)
 		if err != nil {
-			state.snapshot.Status = "Mode change failed: " + err.Error()
+			state.snapshot.setStatus(newTUIMessage("ui.411e4c2d2669", err.Error()))
 			return
 		}
 		applyTUIOperationServiceStatus(state, status)
 		if status.Mode == tuiSilentMode {
 			if outbound := strings.TrimSpace(status.FLCOutbound); outbound != "" {
-				state.snapshot.Status = "Mode silent · flc follows " + outbound + " · pick nodes in Proxies"
+				state.snapshot.setStatus(newTUIMessage("ui.329b582a5642", outbound))
 			} else {
-				state.snapshot.Status = "Mode silent · pick a node in Proxies for flc"
+				state.snapshot.setStatus(newTUIMessage("ui.1319c99dfaf9"))
 			}
 		} else {
-			state.snapshot.Status = "Mode changed to " + status.Mode
+			state.snapshot.setStatus(newTUIMessage("ui.42be844002c8", status.Mode))
 		}
 		state.networkChanged = true
 	})
 	if command != nil {
-		m.snapshot.Status = "Changing mode to " + mode + "..."
+		m.snapshot.setStatus(newTUIMessage("ui.cc035fe29fdf", mode))
 	}
 	return command
 }
@@ -141,23 +145,23 @@ func (m *tuiModel) stageTUIMode(mode string) {
 	m.pendingMixedPort = &port
 	m.stagedSettings = cloneTUISettings(&m.snapshot.Settings)
 	m.settingsDirty = true
-	m.snapshot.Status = "Mode " + mode +
-		" staged; enable System proxy or start Core to apply"
+	m.snapshot.setStatus(newTUIMessage("ui.46b1badec766", mode))
+
 	m.persistStagedTUISettings()
 }
 
 func (m *tuiModel) beginProfileRename() {
 	if m.snapshot.SelectedRow < 0 {
-		m.snapshot.Status = "Select a profile file before renaming"
+		m.snapshot.setStatus(newTUIMessage("ui.709db27550ea"))
 		return
 	}
 	if m.snapshot.SelectedRow >= len(m.snapshot.Profiles) {
-		m.snapshot.Status = "Selected profile is no longer available"
+		m.snapshot.setStatus(newTUIMessage("ui.e80906eb7605"))
 		return
 	}
 	profile := m.snapshot.Profiles[m.snapshot.SelectedRow]
 	if profile.Current {
-		m.snapshot.Status = "Activate another profile before renaming the current one"
+		m.snapshot.setStatus(newTUIMessage("ui.ad2aef0d810c"))
 		return
 	}
 	m.renameProfilePath = profile.Path
@@ -166,17 +170,17 @@ func (m *tuiModel) beginProfileRename() {
 
 func (m *tuiModel) updateSelectedProfileSubscription() tea.Cmd {
 	if m.snapshot.SelectedRow < 0 {
-		m.snapshot.Status = "Select a profile before updating its subscription"
+		m.snapshot.setStatus(newTUIMessage("ui.a44d9d71b4ca"))
 		return nil
 	}
 	if m.snapshot.SelectedRow >= len(m.snapshot.Profiles) {
-		m.snapshot.Status = "Selected profile is no longer available"
+		m.snapshot.setStatus(newTUIMessage("ui.e80906eb7605"))
 		return nil
 	}
 	profile := m.snapshot.Profiles[m.snapshot.SelectedRow]
 	sourceURL, err := loadTUISubscriptionSource(m.paths.HomeDir, profile.Path)
 	if err != nil {
-		m.snapshot.Status = "Subscription refresh unavailable: " + err.Error()
+		m.snapshot.setStatus(newTUIMessage("ui.e3e0fbf7ea1d", err.Error()))
 		return nil
 	}
 	return m.startProfileSubscriptionUpdate(profile.Path, sourceURL)
@@ -187,38 +191,37 @@ func (m *tuiModel) startProfileSubscriptionUpdate(
 	sourceURL string,
 ) tea.Cmd {
 	if profilePath == "" {
-		m.snapshot.Status = "Update failed: selected profile path is empty"
+		m.snapshot.setStatus(newTUIMessage("ui.80b94c25c4a7"))
 		return nil
 	}
 	if m.service == nil {
-		m.snapshot.Status = "Subscription updates require the managed backend"
+		m.snapshot.setStatus(newTUIMessage("ui.76e6e653315b"))
 		return nil
 	}
 	return m.startOperation(func(state *tuiOperationState) {
 		isActive := filepath.Clean(profilePath) == filepath.Clean(state.paths.ConfigPath)
 		previous, err := os.ReadFile(profilePath)
 		if err != nil {
-			state.snapshot.Status = "Subscription update failed: " + err.Error()
+			state.snapshot.setStatus(newTUIMessage("ui.6e7914e544e9", err.Error()))
 			return
 		}
 		payload, err := fetchTUISubscriptionDetails(sourceURL)
 		if err != nil {
-			state.snapshot.Status = "Subscription update failed: " + err.Error()
+			state.snapshot.setStatus(newTUIMessage("ui.6e7914e544e9", err.Error()))
 			return
 		}
 		updated := payload.Data
 		if previousSettings := loadTUIConfiguredSettings(profilePath, true); previousSettings != nil {
 			updated, err = applyTUISettingsToConfig(updated, *previousSettings)
 			if err != nil {
-				state.snapshot.Status = "Subscription update failed: preserve local settings: " +
-					err.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.dfd52d64e0d9", err.Error()))
 				return
 			}
 		}
 		if !prepareTUIBackendRevision(state, m.service) {
 			return
 		}
-		status, err := m.service.putProfile(
+		status, err := state.service.putProfile(
 			profilePath,
 			updated,
 			tuiBytesSHA256(previous),
@@ -228,17 +231,16 @@ func (m *tuiModel) startProfileSubscriptionUpdate(
 			parseTUISubscriptionInfo(payload.UserInfo),
 		)
 		if err != nil {
-			state.snapshot.Status = "Subscription update failed: " + err.Error()
+			state.snapshot.setStatus(newTUIMessage("ui.6e7914e544e9", err.Error()))
 			return
 		}
 		applyTUIOperationServiceStatus(state, status)
 		if isActive {
-			state.snapshot.Status = "Subscription refreshed and hot-reloaded: " +
-				filepath.Base(profilePath)
+			state.snapshot.setStatus(newTUIMessage("ui.3c7614a4af29", filepath.Base(profilePath)))
 			syncStoppedTUISettings(state)
 			state.networkChanged = true
 		} else {
-			state.snapshot.Status = "Subscription refreshed: " + filepath.Base(profilePath)
+			state.snapshot.setStatus(newTUIMessage("ui.b9ed5c36c15a", filepath.Base(profilePath)))
 		}
 		refreshTUIProfiles(&state.snapshot, state.paths)
 		state.snapshot.SelectedRow = findTUIProfile(
@@ -256,7 +258,7 @@ func (m *tuiModel) handleInput(message tea.KeyMsg) tea.Cmd {
 		return m.handleKey(tuiKeyInterrupt)
 	case tea.KeyEsc:
 		m.resetInput()
-		m.snapshot.Status = "Input cancelled"
+		m.snapshot.setStatus(newTUIMessage("ui.c86a2f40e61a"))
 		return nil
 	case tea.KeyEnter:
 		return m.submitInput()
@@ -266,11 +268,12 @@ func (m *tuiModel) handleInput(message tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 		if m.inputCursor > 0 {
+			previous := tuiPreviousGrapheme(m.inputValue, m.inputCursor)
 			m.inputValue = append(
-				m.inputValue[:m.inputCursor-1],
+				m.inputValue[:previous],
 				m.inputValue[m.inputCursor:]...,
 			)
-			m.inputCursor--
+			m.inputCursor = previous
 		}
 		return nil
 	case tea.KeyDelete:
@@ -281,7 +284,7 @@ func (m *tuiModel) handleInput(message tea.KeyMsg) tea.Cmd {
 		if m.inputCursor < len(m.inputValue) {
 			m.inputValue = append(
 				m.inputValue[:m.inputCursor],
-				m.inputValue[m.inputCursor+1:]...,
+				m.inputValue[tuiNextGrapheme(m.inputValue, m.inputCursor):]...,
 			)
 		}
 		return nil
@@ -290,7 +293,7 @@ func (m *tuiModel) handleInput(message tea.KeyMsg) tea.Cmd {
 			m.inputCursor = 0
 			m.inputSelectAll = false
 		} else if m.inputCursor > 0 {
-			m.inputCursor--
+			m.inputCursor = tuiPreviousGrapheme(m.inputValue, m.inputCursor)
 		}
 		return nil
 	case tea.KeyRight:
@@ -298,7 +301,7 @@ func (m *tuiModel) handleInput(message tea.KeyMsg) tea.Cmd {
 			m.inputCursor = len(m.inputValue)
 			m.inputSelectAll = false
 		} else if m.inputCursor < len(m.inputValue) {
-			m.inputCursor++
+			m.inputCursor = tuiNextGrapheme(m.inputValue, m.inputCursor)
 		}
 		return nil
 	case tea.KeyHome, tea.KeyCtrlA:
@@ -350,6 +353,7 @@ func (m *tuiModel) handleInput(message tea.KeyMsg) tea.Cmd {
 				m.inputCursor++
 			}
 		}
+		m.inputCursor = tuiGraphemeCursor(m.inputValue, m.inputCursor)
 	}
 	return nil
 }
@@ -362,6 +366,7 @@ func (m *tuiModel) clearInputSelection() {
 
 func (m *tuiModel) resetInput() {
 	m.inputMode = tuiInputNone
+	m.inputSettingsDraft = nil
 	m.clearInputSelection()
 	m.renameProfilePath = ""
 }
@@ -370,34 +375,39 @@ func (m *tuiModel) submitInput() tea.Cmd {
 	value := strings.TrimSpace(string(m.inputValue))
 	mode := m.inputMode
 	renameProfilePath := m.renameProfilePath
+	inputDraft := cloneTUISettingsDraft(m.inputSettingsDraft)
+	if mode == tuiInputMixedPort && inputDraft != nil && !inputDraft.matches(m.backendInstanceID, m.backendRevision, m.paths.ConfigPath) {
+		m.snapshot.setStatus(newTUIMessage("settings.draft_conflict"))
+		return nil
+	}
 	m.resetInput()
 	switch mode {
 	case tuiInputHistorySearch:
 		m.snapshot.HistoryQuery = value
 		m.snapshot.SelectedRequest = firstTUIRequestMatch(m.snapshot)
 		m.snapshot.HistoryDetailOpen = false
-		m.snapshot.Status = "History search updated"
+		m.snapshot.setStatus(newTUIMessage("ui.975f997848a0"))
 		return nil
 	case tuiInputConnectionsSearch:
 		m.snapshot.ConnectionsQuery = value
 		m.snapshot.SelectedConnection = firstTUIConnectionMatch(m.snapshot)
 		m.snapshot.ConnectionsDetailOpen = false
-		m.snapshot.Status = "Connections search updated"
+		m.snapshot.setStatus(newTUIMessage("ui.82ea98d32657"))
 		return nil
 	case tuiInputLogsSearch:
 		m.snapshot.LogsQuery = value
 		m.snapshot.SelectedLog = firstTUILogMatch(m.snapshot)
 		m.snapshot.LogDetailOpen = false
-		m.snapshot.Status = "Log search updated"
+		m.snapshot.setStatus(newTUIMessage("ui.ec19157ca54f"))
 		return nil
 	case tuiInputMixedPort:
 		port, err := strconv.Atoi(value)
 		if err != nil || port < 0 || port > 65535 {
-			m.snapshot.Status = "Port change failed: Proxy port must be a number from 0 to 65535"
+			m.snapshot.setStatus(newTUIMessage("ui.cb8c712cf065"))
 			return nil
 		}
 		if port == m.snapshot.Settings.MixedPort {
-			m.snapshot.Status = "Port unchanged"
+			m.snapshot.setStatus(newTUIMessage("ui.81e30192778f"))
 			return nil
 		}
 		if m.service == nil && m.ownsCore && !m.coreRunning {
@@ -405,39 +415,41 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			m.snapshot.Settings.MixedPort = port
 			m.stagedSettings = cloneTUISettings(&m.snapshot.Settings)
 			m.settingsDirty = true
-			m.snapshot.Status = fmt.Sprintf(
-				"Proxy port %d staged; enable System proxy or start Core to apply",
-				port,
-			)
+			m.snapshot.setStatus(newTUIMessage("ui.0301590625fb", port))
+
 			m.persistStagedTUISettings()
 			return nil
 		}
 		if m.service == nil {
-			m.snapshot.Status = "Changing the proxy port requires the managed backend"
+			m.snapshot.setStatus(newTUIMessage("ui.9439f42d3367"))
 			return nil
 		}
 		return m.startOperation(func(state *tuiOperationState) {
+			if inputDraft != nil {
+				state.settingsDraft = inputDraft
+				state.portEdit = &tuiPortEditDraft{Value: value, Base: inputDraft}
+			}
 			settings := state.snapshot.Settings
 			settings.MixedPort = port
 			commitTUIOperationSettings(state, m.service, m.client, settings)
 		})
 	case tuiInputSubscription:
 		if value == "" {
-			m.snapshot.Status = "Profile download cancelled"
+			m.snapshot.setStatus(newTUIMessage("ui.c1fbc05c228e"))
 			return nil
 		}
 		if _, err := newTUISubscriptionRequest(value); err != nil {
-			m.snapshot.Status = "Add profile failed: subscription URL must use http or https"
+			m.snapshot.setStatus(newTUIMessage("ui.12736c770b75"))
 			return nil
 		}
 		if m.service == nil {
-			m.snapshot.Status = "Subscription import requires the managed backend"
+			m.snapshot.setStatus(newTUIMessage("ui.0d5543d6673b"))
 			return nil
 		}
 		return m.startOperation(func(state *tuiOperationState) {
 			payload, err := fetchTUISubscriptionDetails(value)
 			if err != nil {
-				state.snapshot.Status = "Add profile failed: " + err.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.4f89b986ab7e", err.Error()))
 				return
 			}
 			if !prepareTUIBackendRevision(state, m.service) {
@@ -445,10 +457,10 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			}
 			path, err := tuiSubscriptionImportPath(state.paths.HomeDir, payload)
 			if err != nil {
-				state.snapshot.Status = "Add profile failed: " + err.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.4f89b986ab7e", err.Error()))
 				return
 			}
-			status, err := m.service.putProfile(
+			status, err := state.service.putProfile(
 				path,
 				payload.Data,
 				"",
@@ -458,29 +470,29 @@ func (m *tuiModel) submitInput() tea.Cmd {
 				parseTUISubscriptionInfo(payload.UserInfo),
 			)
 			if err != nil {
-				state.snapshot.Status = "Add profile failed: " + err.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.4f89b986ab7e", err.Error()))
 				return
 			}
 			state.backendRevision = status.Revision
 			path = status.ResultPath
-			state.snapshot.Status = "Subscription linked: " + payload.Summary() +
-				" · U refreshes from the saved URL"
+			state.snapshot.setStatus(newTUIMessage("ui.d2d19894e90f", payload.Summary()))
+
 			refreshTUIProfiles(&state.snapshot, state.paths)
 			state.snapshot.SelectedRow = findTUIProfile(state.snapshot.Profiles, path)
 			state.profileSelection = path
 		})
 	case tuiInputProfileFile:
 		if value == "" {
-			m.snapshot.Status = "Local profile import cancelled"
+			m.snapshot.setStatus(newTUIMessage("ui.5fd1abe59250"))
 			return nil
 		}
 		if m.service == nil {
-			m.snapshot.Status = "Local profile import requires the managed backend"
+			m.snapshot.setStatus(newTUIMessage("ui.0db7841f3d56"))
 			return nil
 		}
 		payload, name, err := readTUILocalProfileDetails(value)
 		if err != nil {
-			m.snapshot.Status = "Import local profile failed: " + err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.f680b7ebf12d", err.Error()))
 			appendTUILogEvent("ERROR", m.snapshot.Status)
 			return nil
 		}
@@ -490,10 +502,10 @@ func (m *tuiModel) submitInput() tea.Cmd {
 			}
 			path, err := nextTUIImportedProfilePath(state.paths.HomeDir, name)
 			if err != nil {
-				state.snapshot.Status = "Import local profile failed: " + err.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.f680b7ebf12d", err.Error()))
 				return
 			}
-			status, err := m.service.putProfile(
+			status, err := state.service.putProfile(
 				path,
 				payload.Data,
 				"",
@@ -502,37 +514,37 @@ func (m *tuiModel) submitInput() tea.Cmd {
 				state.backendRevision,
 			)
 			if err != nil {
-				state.snapshot.Status = "Import local profile failed: " + err.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.f680b7ebf12d", err.Error()))
 				return
 			}
 			state.backendRevision = status.Revision
 			path = status.ResultPath
-			state.snapshot.Status = "Local profile imported: " + filepath.Base(path) +
-				" · " + payload.Summary()
+			state.snapshot.setStatus(newTUIMessage("ui.d37c4b3e1e71", filepath.Base(path),
+				payload.Summary()))
 			refreshTUIProfiles(&state.snapshot, state.paths)
 			state.snapshot.SelectedRow = findTUIProfile(state.snapshot.Profiles, path)
 			state.profileSelection = path
 		})
 	case tuiInputProfileName:
 		if value == "" {
-			m.snapshot.Status = "Profile rename cancelled"
+			m.snapshot.setStatus(newTUIMessage("ui.93533c6cd3b0"))
 			return nil
 		}
 		if m.service == nil {
-			m.snapshot.Status = "Profile rename requires the managed backend"
+			m.snapshot.setStatus(newTUIMessage("ui.e2b0ac52190c"))
 			return nil
 		}
 		return m.startOperation(func(state *tuiOperationState) {
 			if !prepareTUIBackendRevision(state, m.service) {
 				return
 			}
-			status, err := m.service.renameProfile(
+			status, err := state.service.renameProfile(
 				renameProfilePath,
 				value,
 				state.backendRevision,
 			)
 			if err != nil {
-				state.snapshot.Status = "Rename failed: " + err.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.f13d0291fb75", err.Error()))
 				return
 			}
 			state.backendRevision = status.Revision
@@ -543,7 +555,7 @@ func (m *tuiModel) submitInput() tea.Cmd {
 				newPath,
 			)
 			state.profileSelection = newPath
-			state.snapshot.Status = "Renamed profile to " + filepath.Base(newPath)
+			state.snapshot.setStatus(newTUIMessage("ui.c4ba8af38efd", filepath.Base(newPath)))
 		})
 	}
 	return nil
@@ -614,23 +626,23 @@ func renameTUIProfile(homeDir, sourcePath, requestedName string) (string, error)
 func applyTUIMixedPort(snapshot *tuiSnapshot, client controllerClient, selectedPort int) bool {
 	systemProxyEnabled := snapshot.Settings.SystemProxy
 	if err := client.patchConfig(map[string]interface{}{"mixed-port": selectedPort}); err != nil {
-		snapshot.Status = "Port change failed: " + err.Error()
+		snapshot.setStatus(newTUIMessage("ui.8d1edacd5553", err.Error()))
 		return false
 	}
 	refreshTUISnapshot(snapshot, client)
 	if systemProxyEnabled {
 		enableSystemProxy := snapshot.Settings.MixedPort > 0
 		if err := setLinuxSystemProxy(snapshot.Settings.MixedPort, enableSystemProxy); err != nil {
-			snapshot.Status = "Port changed, but system proxy update failed: " + err.Error()
+			snapshot.setStatus(newTUIMessage("ui.f02466390527", err.Error()))
 			return true
 		}
 		snapshot.Settings.SystemProxy = enableSystemProxy
 		if !enableSystemProxy {
-			snapshot.Status = "Proxy port disabled; System proxy disabled"
+			snapshot.setStatus(newTUIMessage("ui.68ffb476dc93"))
 			return true
 		}
 	}
-	snapshot.Status = fmt.Sprintf("Proxy port changed to %d", snapshot.Settings.MixedPort)
+	snapshot.setStatus(newTUIMessage("ui.f4f131142040", snapshot.Settings.MixedPort))
 	return true
 }
 

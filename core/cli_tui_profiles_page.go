@@ -8,7 +8,8 @@ import (
 	"time"
 )
 
-func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
+func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int, language ...string) {
+	tr := tuiTranslator(language...)
 	var selectedSubscription *tuiProfile
 	if snapshot.SelectedRow >= 0 && snapshot.SelectedRow < len(snapshot.Profiles) {
 		profile := &snapshot.Profiles[snapshot.SelectedRow]
@@ -17,19 +18,17 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 		}
 	}
 	detailHeight := 0
+	var detail strings.Builder
 	if selectedSubscription != nil {
-		detailHeight = 5
-		if selectedSubscription.SubscriptionInfo != nil {
-			detailHeight = 7
+		drawTUISubscriptionInfo(&detail, *selectedSubscription, width, language...)
+		detailHeight = strings.Count(detail.String(), "\n")
+		if detailHeight+4 > height {
+			selectedSubscription = nil
+			detailHeight = 0
 		}
 	}
 	tuiTitle(
-		b,
-		"Profiles",
-		fmt.Sprintf(
-			"%d available · Enter activate · U refresh linked · e edit · F2/u rename · x delete",
-			len(snapshot.Profiles),
-		),
+		b, tr("ui.535e52e4a261"), fmt.Sprintf(tr("ui.72464fb89303"), len(snapshot.Profiles)),
 		width,
 	)
 	limit := maxTUIWidth(height-3-detailHeight, 1)
@@ -42,9 +41,7 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 	for position := start; position < end; position++ {
 		if position == 0 {
 			tuiRow(
-				b,
-				"+ Import subscription URL",
-				width,
+				b, tr("ui.43ae357e8aa7"), width,
 				snapshot.SelectedRow == tuiProfileImportSubscriptionRow &&
 					!snapshot.FocusSidebar,
 				tuiCyan,
@@ -53,9 +50,7 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 		}
 		if position == 1 {
 			tuiRow(
-				b,
-				"+ Import local profile file",
-				width,
+				b, tr("ui.c3e1844dae7a"), width,
 				snapshot.SelectedRow == tuiProfileImportFileRow &&
 					!snapshot.FocusSidebar,
 				tuiCyan,
@@ -64,27 +59,28 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 		}
 		index := position - tuiProfileImportRowCount
 		profile := snapshot.Profiles[index]
-		label := truncateTUI(profile.Name, width-42)
+		label := ""
 		if profile.Current {
 			if index == snapshot.SelectedRow && !snapshot.FocusSidebar {
 				if profile.SubscriptionURL != "" {
-					label += "  [active · U refresh · e edit · x locked]"
+					label += tr("ui.2595c88775d7")
 				} else {
-					label += "  [active · local · e edit · x locked]"
+					label += tr("ui.4d99215ed3e9")
 				}
 			} else {
-				label += "  [active]"
+				label += tr("ui.372ff0acb440")
 			}
 		} else if index == snapshot.SelectedRow && !snapshot.FocusSidebar {
 			if profile.SubscriptionURL != "" {
-				label += "  [Enter activate · U refresh · e edit · F2 rename · x delete]"
+				label += tr("ui.e0c618bce580")
 			} else {
-				label += "  [Enter activate · local · e edit · F2 rename · x delete]"
+				label += tr("ui.7517b93565f6")
 			}
 		}
 		if index != snapshot.SelectedRow && profile.SubscriptionInfo != nil {
-			label += "  [" + tuiSubscriptionCompact(profile.SubscriptionInfo) + "]"
+			label += "  [" + tuiSubscriptionCompact(profile.SubscriptionInfo, language...) + "]"
 		}
+		label = tuiColumns(width-4, tuiColumn{value: profile.Name, width: maxTUIWidth(width-4-tuiDisplayWidth(label), 12), minimum: 12}, tuiColumn{value: strings.TrimSpace(label), width: tuiDisplayWidth(strings.TrimSpace(label)), minimum: 0, optional: true})
 		tuiRow(
 			b,
 			label,
@@ -95,53 +91,56 @@ func drawTUIProfiles(b *strings.Builder, snapshot tuiSnapshot, width, height int
 	}
 	tuiEndPanel(b, width)
 	if selectedSubscription != nil {
-		drawTUISubscriptionInfo(b, *selectedSubscription, width)
+		b.WriteString(detail.String())
 	}
 }
 
-func tuiSubscriptionCompact(info *tuiSubscriptionInfo) string {
+func tuiSubscriptionCompact(info *tuiSubscriptionInfo, language ...string) string {
+	tr := tuiTranslator(language...)
 	if info.Total != nil && *info.Total == 0 {
-		return "unlimited"
+		return tr("ui.2044fbdb55f9")
 	}
 	if used, known := tuiSubscriptionUsed(info); known && info.Total != nil {
 		return formatBytes(used) + "/" + formatBytes(*info.Total)
 	}
 	if used, known := tuiSubscriptionUsed(info); known {
-		return "used " + formatBytes(used)
+		return tr("ui.93b39383c7ed") + formatBytes(used)
 	}
 	if info.Total != nil {
-		return "limit " + formatBytes(*info.Total)
+		return tr("ui.70792dfe47ec") + formatBytes(*info.Total)
 	}
 	if info.Expire != nil {
-		return "expires " + tuiSubscriptionExpiry(info)
+		return tr("ui.22206a2566e5") + tuiSubscriptionExpiry(info)
 	}
-	return "subscription info"
+	return tr("ui.fe9870f4bb17")
 }
 
-func drawTUISubscriptionInfo(b *strings.Builder, profile tuiProfile, width int) {
-	tuiTitle(b, "Subscription · "+profile.Name, "from provider response · U refresh", width)
+func drawTUISubscriptionInfo(b *strings.Builder, profile tuiProfile, width int, language ...string) {
+	tr := tuiTranslator(language...)
+	tuiTitle(b, tr("ui.429bd45afeeb")+profile.Name, tr("ui.b7c88ba2ac64"), width)
 	info := profile.SubscriptionInfo
 	if info == nil {
-		tuiRow(b, "Usage and expiry not provided by subscription server", width, false, tuiDim)
-		tuiRow(b, "The YAML file alone cannot supply these account details", width, false, tuiDim)
+		tuiRow(b, tr("ui.b62aa03d125c"), width, false, tuiDim)
+		tuiRow(b, tr("ui.33c04a8d8365"), width, false, tuiDim)
 		tuiEndPanel(b, width)
 		return
 	}
 	used, usedKnown := tuiSubscriptionUsed(info)
-	usedLabel := "not provided"
+	usedLabel := tr("ui.1c9e6f54a903")
 	if usedKnown {
 		usedLabel = formatBytes(used)
 	}
 	if info.Upload != nil && info.Download != nil {
-		usedLabel += " (up " + formatBytes(*info.Upload) + " · down " + formatBytes(*info.Download) + ")"
+		usedLabel += tr("ui.45122f2b66c1") + formatBytes(*info.Upload) + tr("ui.dc5b03f829cd") + formatBytes(*info.Download) + ")"
 	}
-	tuiRow(b, "Used      "+usedLabel, width, false, tuiCyan)
-	quota := "not provided"
+	fields := []tuiField{tuiLabelField(tr("ui.ef85e6bc5f5b"), usedLabel)}
+	fields[0].color = tuiCyan
+	quota := tr("ui.1c9e6f54a903")
 	quotaColor := tuiDim
 	if info.Total != nil {
 		quotaColor = tuiGreen
 		if *info.Total == 0 {
-			quota = "unlimited"
+			quota = tr("ui.2044fbdb55f9")
 		} else {
 			quota = formatBytes(*info.Total)
 			if usedKnown {
@@ -149,14 +148,15 @@ func drawTUISubscriptionInfo(b *strings.Builder, profile tuiProfile, width int) 
 				if used < *info.Total {
 					remaining = *info.Total - used
 				}
-				quota += " · " + formatBytes(remaining) + " left"
+				quota += " · " + formatBytes(remaining) + tr("ui.bce319cfa7b7")
 				if remaining == 0 {
 					quotaColor = tuiRed
 				}
 			}
 		}
 	}
-	tuiRow(b, "Quota     "+quota, width, false, quotaColor)
+	fields = append(fields, tuiLabelField(tr("ui.1caf9b0b1b33"), quota))
+	fields[1].color = quotaColor
 	expiry := tuiSubscriptionExpiry(info)
 	expiryColor := tuiDim
 	if info.Expire != nil {
@@ -165,27 +165,32 @@ func drawTUISubscriptionInfo(b *strings.Builder, profile tuiProfile, width int) 
 			expiryColor = tuiRed
 		}
 	}
-	tuiRow(b, "Expires   "+expiry, width, false, expiryColor)
-	checked := "not recorded"
+	fields = append(fields, tuiLabelField(tr("ui.ba568fcde4b2"), expiry))
+	fields[2].color = expiryColor
+	checked := tr("ui.ea80f83bbd64")
 	if !info.FetchedAt.IsZero() {
 		checked = info.FetchedAt.Local().Format("2006-01-02 15:04")
 	}
-	tuiRow(b, "Checked   "+checked, width, false, tuiDim)
+	fields = append(fields, tuiLabelField(tr("ui.c8b88d0ec5d9"), checked))
+	fields[3].color = tuiDim
+	tuiWriteRows(b, tuiFieldRows(fields, width), width)
 	tuiEndPanel(b, width)
 }
 
-func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
+func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int, language ...string) {
+	tr := tuiTranslator(language...)
 	profileLimit := 5
 	if height < 24 {
 		profileLimit = 2
 	} else if height < 33 {
 		profileLimit = 4
 	}
+	if snapshot.SSHDetailName != "" {
+		profileLimit = minTUI(profileLimit, maxTUIWidth(height-7, 1))
+	}
 	tuiTitle(
 		b,
-		fmt.Sprintf("SSH profiles · %d", len(snapshot.SSHProfiles)),
-		"↑↓ select · Enter open/connect · a Capture · n add · e edit · x delete",
-		width,
+		fmt.Sprintf(tr("ui.e0a7eec09c2f"), len(snapshot.SSHProfiles)), tr("ui.79403c9f1ae4"), width,
 	)
 	listLen := len(snapshot.SSHProfiles) + 1
 	visual := snapshot.SelectedSSH + 1
@@ -198,20 +203,35 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 		minTUI(profileLimit, listLen),
 	)
 	listFocused := !snapshot.FocusSidebar && !snapshot.SSHDashboardFocus
+	statusWidth := 12
+	for _, profile := range snapshot.SSHProfiles {
+		statusWidth = maxTUIWidth(statusWidth, tuiDisplayWidth(tuiSSHListStatus(profile, language...)))
+	}
+	if snapshot.SSHCaptureKnown {
+		captureStatus := tr("ui.c627c09c14e5")
+		if snapshot.SSHCaptureFound > 0 {
+			captureStatus = fmt.Sprintf(tr("ui.d0782e498713"), snapshot.SSHCaptureFound)
+		}
+		statusWidth = maxTUIWidth(statusWidth, tuiDisplayWidth(captureStatus))
+	}
 	for visualIndex := start; visualIndex < end; visualIndex++ {
 		if visualIndex == 0 {
 			status := "—"
 			color := tuiCyan
 			if snapshot.SSHCaptureKnown {
 				if snapshot.SSHCaptureFound == 0 {
-					status = "NONE"
+					status = tr("ui.c627c09c14e5")
 					color = tuiDim
 				} else {
-					status = fmt.Sprintf("%d LIVE", snapshot.SSHCaptureFound)
+					status = fmt.Sprintf(tr("ui.d0782e498713"), snapshot.SSHCaptureFound)
 					color = tuiGreen
 				}
 			}
-			row := fmt.Sprintf("%-18s %-12s Enter · SOCKS on THIS machine", "Capture", status)
+			row := tuiColumns(width-4,
+				tuiColumn{value: tr("ui.1900b478a586"), width: 18, minimum: 8},
+				tuiColumn{value: status, width: statusWidth, minimum: statusWidth},
+				tuiColumn{value: tr("layout.capture_hint"), width: 32, minimum: 8, optional: true},
+			)
 			tuiRow(
 				b,
 				row,
@@ -226,31 +246,28 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 			continue
 		}
 		profile := snapshot.SSHProfiles[index]
-		status := "DISCONNECTED"
+		status := tr("ui.5541de951552")
 		endpoint := ""
 		color := tuiDim
 		if profile.NeedsUsername {
-			status = "NEEDS USER"
-			endpoint = " · edit profile before connecting"
+			status = tr("ui.58be0d89a72e")
+			endpoint = tr("ui.80cdfd3e3379")
 			color = tuiYellow
 		} else if profile.Connected && profile.Ready {
-			status = "CONNECTED"
+			status = tr("ui.1f914c4386c0")
 			if profile.Attached {
-				status = "ATTACHED"
+				status = tr("ui.9448242431c8")
 			}
-			endpoint = fmt.Sprintf(" · SOCKS5 127.0.0.1:%d", profile.SocksPort)
+			endpoint = fmt.Sprintf(tr("ui.89f09a77f737"), profile.SocksPort)
 			color = tuiGreen
 		} else if profile.Connected {
-			status = "BROKEN"
-			endpoint = fmt.Sprintf(
-				" · SOCKS5 127.0.0.1:%d unavailable",
-				profile.SocksPort,
-			)
+			status = tr("ui.d84771511dbe")
+			endpoint = fmt.Sprintf(tr("ui.5eec4815da1c"), profile.SocksPort)
 			color = tuiRed
 		} else if profile.LocalPort > 0 {
-			endpoint = fmt.Sprintf(" · local 127.0.0.1:%d", profile.LocalPort)
+			endpoint = fmt.Sprintf(tr("ui.4b8293b7a463"), profile.LocalPort)
 		} else {
-			endpoint = " · local auto"
+			endpoint = tr("ui.d9b076d2ba45")
 		}
 		if profile.LastError != "" && !(profile.Connected && profile.Ready) {
 			endpoint += " · " + truncateTUI(profile.LastError, 36)
@@ -259,13 +276,10 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 		if profile.Default {
 			name = "*" + truncateTUI(profile.Name, 15)
 		}
-		row := fmt.Sprintf(
-			"%-18s %-12s %s:%d%s",
-			name,
-			status,
-			truncateTUI(profile.Destination, 28),
-			profile.Port,
-			endpoint,
+		row := tuiColumns(width-4,
+			tuiColumn{value: name, width: 18, minimum: 8},
+			tuiColumn{value: status, width: statusWidth, minimum: statusWidth},
+			tuiColumn{value: fmt.Sprintf("%s:%d%s", profile.Destination, profile.Port, endpoint), width: maxTUIWidth(width-24-statusWidth, 8), minimum: 8, optional: true},
 		)
 		tuiRow(
 			b,
@@ -276,7 +290,24 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int) {
 		)
 	}
 	tuiEndPanel(b, width)
-	drawTUISSHDashboard(b, snapshot, width, height, end-start)
+	drawTUISSHDashboard(b, snapshot, width, height, end-start, language...)
+}
+
+func tuiSSHListStatus(profile tuiSSHProfile, language ...string) string {
+	tr := tuiTranslator(language...)
+	if profile.NeedsUsername {
+		return tr("ui.58be0d89a72e")
+	}
+	if profile.Connected && profile.Ready {
+		if profile.Attached {
+			return tr("ui.9448242431c8")
+		}
+		return tr("ui.1f914c4386c0")
+	}
+	if profile.Connected {
+		return tr("ui.d84771511dbe")
+	}
+	return tr("ui.5541de951552")
 }
 
 func drawTUISSHDashboard(
@@ -284,7 +315,7 @@ func drawTUISSHDashboard(
 	snapshot tuiSnapshot,
 	width,
 	height,
-	profileRows int,
+	profileRows int, language ...string,
 ) {
 	if snapshot.SSHDetailName == "" {
 		return
@@ -294,89 +325,104 @@ func drawTUISSHDashboard(
 		return
 	}
 	profile := snapshot.SSHProfiles[index]
-	drawTUISSHDetails(b, snapshot, profile, width, height, profileRows)
+	drawTUISSHDetails(b, snapshot, profile, width, height, profileRows, language...)
 }
 
-func tuiSSHTunnelStatus(profile tuiSSHProfile) (string, string) {
-	status := "DISCONNECTED · Enter connect · a Capture"
+func tuiSSHTunnelStatus(profile tuiSSHProfile, language ...string) (string, string) {
+	tr := tuiTranslator(language...)
+	status := tr("ui.3b8f2f48332d")
 	statusColor := tuiDim
 	if profile.NeedsUsername {
-		status = "USERNAME REQUIRED · edit profile before connecting"
+		status = tr("ui.c72289881d00")
 		statusColor = tuiYellow
 	} else if profile.Connected && profile.Ready {
-		status = fmt.Sprintf("CONNECTED · SOCKS5 127.0.0.1:%d · Enter to disconnect", profile.SocksPort)
+		status = fmt.Sprintf(tr("ui.fdc61cb25073"), profile.SocksPort)
 		if profile.Attached {
-			status = fmt.Sprintf("ATTACHED · exit via %s · SOCKS5 127.0.0.1:%d · Enter detach", tuiSSHExitHost(profile), profile.SocksPort)
+			status = fmt.Sprintf(tr("ui.df84bd191b6e"), tuiSSHExitHost(profile, language...), profile.SocksPort)
 		}
 		statusColor = tuiGreen
 	} else if profile.Connected {
-		status = "BROKEN · Enter to reconnect"
+		status = tr("ui.1f1ff003e81e")
 		if profile.LastError != "" {
 			status += " · " + profile.LastError
 		}
 		statusColor = tuiRed
 	} else if profile.LastError != "" {
-		status = "DISCONNECTED · Enter to connect · last error: " + profile.LastError
+		status = tr("ui.b6767700771c") + profile.LastError
 		statusColor = tuiYellow
 	}
 	if profile.Default && !profile.NeedsUsername {
-		status = "DEFAULT · " + status
+		status = tr("ui.ef08eaa198ce") + status
 	}
 	return status, statusColor
 }
 
-func drawTUISSHDetails(b *strings.Builder, snapshot tuiSnapshot, profile tuiSSHProfile, width, height, profileRows int) {
-	status, statusColor := tuiSSHTunnelStatus(profile)
+func drawTUISSHDetails(b *strings.Builder, snapshot tuiSnapshot, profile tuiSSHProfile, width, height, profileRows int, language ...string) {
+	tr := tuiTranslator(language...)
+	status, statusColor := tuiSSHTunnelStatus(profile, language...)
 	focused := !snapshot.FocusSidebar && snapshot.SSHDashboardFocus
-	subtitle := "Tab focus · Enter connect"
+	subtitle := tr("ui.ca79eec78149")
 	if profile.Connected && profile.Ready {
-		subtitle = "Tab focus · Enter tunnel · n refresh"
+		subtitle = tr("ui.1f7f4087d744")
 	}
-	tuiTitle(b, "SSH · "+profile.Name, subtitle, width)
-	tuiRow(b, "Tunnel        "+status, width, focused, statusColor)
+	tuiTitle(b, tr("ui.7be2736a551d")+profile.Name, subtitle, width)
+	fields := []tuiField{tuiLabelField(tr("ui.ead00218114c"), status)}
+	fields[0].selected, fields[0].color = focused, statusColor
 	if !profile.Connected || !profile.Ready {
+		fields[0].truncate = true
+		fields[0].selected = true
+		rows := tuiSelectedRows(tuiFieldRows(fields, width), maxTUIWidth(height-(profileRows+3)-3, 1))
+		for index := range rows {
+			rows[index].selected = focused
+		}
+		tuiWriteRows(b, rows, width)
 		tuiEndPanel(b, width)
 		return
 	}
-	inetIP := tuiSSHRemoteIntranetLabel(snapshot.SSHDirectProbe)
+	inetIP := tuiSSHRemoteIntranetLabel(snapshot.SSHDirectProbe, language...)
 	if profile.SocksOnly {
-		inetIP = "Unavailable · captured SOCKS5"
+		inetIP = tr("ui.b2172a8fc3b3")
 	}
-	tuiRow(b, "Proxy Inet IP  "+inetIP, width, false, tuiGreen)
-	tuiRow(b, "Proxy IP       "+tuiSSHNetworkLabel(snapshot.SSHNetwork, "Not checked · press n"), width, false, tuiCyan)
-	writeTUIAnsiRow(b, fmt.Sprintf(
-		"Speed          %s↓ %s/s%s · %s↑ %s/s%s",
-		tuiTrafficChartDownload,
-		formatBytes(snapshot.SSHTraffic.Down),
-		tuiReset,
-		tuiTrafficChartUpload,
-		formatBytes(snapshot.SSHTraffic.Up),
-		tuiReset,
-	), width)
+	fields = append(fields,
+		tuiLabelField(tr("ui.d0e0f92fa371"), inetIP),
+		tuiLabelField(tr("ui.b5a2eb00c061"), tuiSSHNetworkLabel(snapshot.SSHNetwork, tr("ui.309ee924bee5"), language...)),
+		tuiTemplateField(tr("ui.205b4200a20d"), tuiTrafficChartDownload,
+			formatBytes(snapshot.SSHTraffic.Down),
+			tuiReset,
+			tuiTrafficChartUpload,
+			formatBytes(snapshot.SSHTraffic.Up),
+			tuiReset,
+		))
+	fields[1].color, fields[2].color = tuiGreen, tuiCyan
+	rows := tuiFieldRows(fields, width)
+	limit := maxTUIWidth(height-(profileRows+3)-3, 1)
+	visible := tuiSelectedRows(rows, limit)
+	tuiWriteRows(b, visible, width)
 	tuiEndPanel(b, width)
 
-	chartHeight := height - (profileRows + 3) - 7 - 3
+	chartHeight := height - (profileRows + 3) - (len(visible) + 3) - 3
 	if chartHeight < 1 {
 		return
 	}
 	chart := buildTUITrafficChart(snapshot.SSHTrafficHistory, maxTUIWidth(width-4, 1), chartHeight)
-	tuiTitle(b, "Traffic history", fmt.Sprintf("SSH relay only · peak %s/s · 30 samples", formatBytes(chart.peak)), width)
+	tuiTitle(b, tr("ui.7fa028314fdd"), fmt.Sprintf(tr("ui.3a371c0c2d12"), formatBytes(chart.peak)), width)
 	for _, line := range chart.lines {
 		writeTUIAnsiRow(b, line, width)
 	}
 	tuiEndPanel(b, width)
 }
 
-func tuiSSHExitHost(profile tuiSSHProfile) string {
+func tuiSSHExitHost(profile tuiSSHProfile, language ...string) string {
 	if profile.Reverse {
-		return "SSH client (-R)"
+		return tuiTranslator(language...)("ssh.client")
 	}
-	return "SSH server"
+	return tuiTranslator(language...)("ssh.server")
 }
 
-func tuiSSHNetworkLabel(info tuiNetworkInfo, empty string) string {
+func tuiSSHNetworkLabel(info tuiNetworkInfo, empty string, language ...string) string {
+	tr := tuiTranslator(language...)
 	if info.Loading {
-		return "Checking through SSH exit..."
+		return tr("ui.d2387aecbed3")
 	}
 	if info.PublicIP != "" {
 		value := info.PublicIP
@@ -386,22 +432,23 @@ func tuiSSHNetworkLabel(info tuiNetworkInfo, empty string) string {
 		return value
 	}
 	if info.Error != "" {
-		return "Unavailable · " + info.Error
+		return tr("ui.9203d7df0b44") + info.Error
 	}
 	return empty
 }
 
-func tuiSSHRemoteIntranetLabel(probe cliSSHRemoteProbe) string {
+func tuiSSHRemoteIntranetLabel(probe cliSSHRemoteProbe, language ...string) string {
+	tr := tuiTranslator(language...)
 	if strings.TrimSpace(probe.IntranetIP) != "" {
 		return probe.IntranetIP
 	}
 	if probe.ProtocolVersion == 0 && probe.Reason == "" {
-		return "Not checked · press n"
+		return tr("ui.309ee924bee5")
 	}
 	if probe.Reason != "" {
-		return "Unavailable · " + probe.Reason
+		return tr("ui.9203d7df0b44") + probe.Reason
 	}
-	return "Unavailable · remote FlClash did not report an inet IP"
+	return tr("ui.dce5b6384f60")
 }
 
 func tuiTrafficPeak(history []trafficSnapshot) int64 {
@@ -416,24 +463,7 @@ func truncateTUI(value string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	if tuiDisplayWidth(value) <= width {
-		return value
-	}
-	if width == 1 {
-		return "…"
-	}
-	var b strings.Builder
-	visibleWidth := 0
-	for _, runeValue := range value {
-		runeWidth := tuiRuneWidth(runeValue)
-		if visibleWidth+runeWidth > width-1 {
-			break
-		}
-		b.WriteRune(runeValue)
-		visibleWidth += runeWidth
-	}
-	b.WriteRune('…')
-	return b.String()
+	return tuiTruncateGraphemes(value, width, "…")
 }
 
 func formatBytes(value int64) string {

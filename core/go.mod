@@ -7,6 +7,8 @@ replace github.com/metacubex/mihomo => ./Clash.Meta
 require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/charmbracelet/bubbletea v1.3.4
+	github.com/charmbracelet/x/ansi v0.8.0
+	github.com/clipperhouse/uax29/v2 v2.7.0
 	github.com/metacubex/mihomo v0.0.0-00010101000000-000000000000
 	github.com/sirupsen/logrus v1.9.4
 	golang.org/x/crypto v0.53.0
@@ -15,6 +17,7 @@ require (
 	golang.org/x/sync v0.21.0
 	golang.org/x/sys v0.46.0
 	golang.org/x/term v0.44.0
+	golang.org/x/text v0.39.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -30,7 +33,6 @@ require (
 	github.com/bodgit/plumbing v1.3.0 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/charmbracelet/lipgloss v1.0.0 // indirect
-	github.com/charmbracelet/x/ansi v0.8.0 // indirect
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/coder/websocket v1.8.12 // indirect
 	github.com/coreos/go-iptables v0.8.0 // indirect
@@ -152,7 +154,6 @@ require (
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/oauth2 v0.24.0 // indirect
-	golang.org/x/text v0.39.0 // indirect
 	golang.org/x/time v0.10.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect

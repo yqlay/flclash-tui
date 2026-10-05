@@ -54,11 +54,13 @@ type tuiServiceRuntime struct {
 	actualConfigPath        string
 	flc                     tuiFLCListenerState
 	history                 []tuiRequest
+	sshHistoryClearedBefore time.Time
 	historyUpdateMu         sync.Mutex
 	historyVersion          uint64
 	persistedHistoryVersion uint64
 	historyPersistMu        sync.Mutex
 	revision                uint64
+	instanceID              string
 	changed                 chan struct{}
 	dedup                   map[string]tuiServiceStatus
 	dedupOrder              []string
@@ -92,6 +94,7 @@ func newTUIServiceRuntime(
 		tunScope:         tuiTunScopeUser,
 		actualConfigPath: paths.ConfigPath,
 		revision:         1,
+		instanceID:       newTUIServiceRequestID(),
 		changed:          make(chan struct{}),
 		dedup:            map[string]tuiServiceStatus{},
 		shutdown:         shutdown,
@@ -148,7 +151,7 @@ func (r *tuiServiceRuntime) handle(
 		"close_connection", "close_all_connections",
 		"set_mode", "set_flc_outbound", "select_proxy", "clear_history", "clear_logs", "put_profile",
 		"rename_profile", "delete_profile", "link_profile", "backup_profile",
-		"restore_profile", "shutdown":
+		"restore_profile", "reset_traffic", "shutdown":
 		status = r.mutate(request)
 	default:
 		status = failTUIServiceStatus(
@@ -166,25 +169,27 @@ func (r *tuiServiceRuntime) handle(
 func (r *tuiServiceRuntime) snapshot(requestID string) tuiServiceStatus {
 	r.mu.RLock()
 	status := tuiServiceStatus{
-		ProtocolVersion:     tuiServiceProtocolVersion,
-		RequestID:           requestID,
-		Revision:            r.revision,
-		OK:                  true,
-		PID:                 os.Getpid(),
-		Version:             cliVersion,
-		HomeDir:             r.paths.HomeDir,
-		ConfigPath:          r.paths.ConfigPath,
-		CoreSocket:          r.coreSocket,
-		Running:             r.running,
-		ShuttingDown:        r.shuttingDown,
-		SystemProxy:         r.systemProxy,
-		Mode:                r.trafficMode,
-		ProxyPort:           r.configuredPort,
-		ConfiguredProxyPort: r.configuredPort,
-		ActiveProxyPort:     r.activePort,
-		FLCEnabled:          r.running && r.trafficMode == tuiSilentMode && r.flc.Port > 0,
-		FLCOutbound:         r.flc.Outbound,
-		TunScope:            r.tunScope,
+		ProtocolVersion:         tuiServiceProtocolVersion,
+		RequestID:               requestID,
+		Revision:                r.revision,
+		InstanceID:              r.instanceID,
+		OK:                      true,
+		PID:                     os.Getpid(),
+		Version:                 cliVersion,
+		HomeDir:                 r.paths.HomeDir,
+		ConfigPath:              r.paths.ConfigPath,
+		SSHHistoryClearedBefore: r.sshHistoryClearedBefore,
+		CoreSocket:              r.coreSocket,
+		Running:                 r.running,
+		ShuttingDown:            r.shuttingDown,
+		SystemProxy:             r.systemProxy,
+		Mode:                    r.trafficMode,
+		ProxyPort:               r.configuredPort,
+		ConfiguredProxyPort:     r.configuredPort,
+		ActiveProxyPort:         r.activePort,
+		FLCEnabled:              r.running && r.trafficMode == tuiSilentMode && r.flc.Port > 0,
+		FLCOutbound:             r.flc.Outbound,
+		TunScope:                r.tunScope,
 	}
 	if r.tunEnabled {
 		status.TunState = "on"
@@ -205,9 +210,21 @@ func (r *tuiServiceRuntime) snapshot(requestID string) tuiServiceStatus {
 	return status
 }
 
+func tuiServiceStateChanged(previous, current tuiServiceStatus) bool {
+	// Ignore response metadata, FrontendCount and sampled traffic. These do
+	// not constitute a Backend configuration/lifecycle mutation.
+	return previous.Running != current.Running || previous.ShuttingDown != current.ShuttingDown ||
+		previous.ConfigPath != current.ConfigPath || previous.CoreSocket != current.CoreSocket ||
+		previous.Mode != current.Mode || previous.SystemProxy != current.SystemProxy ||
+		previous.ConfiguredProxyPort != current.ConfiguredProxyPort || previous.ActiveProxyPort != current.ActiveProxyPort ||
+		previous.TunState != current.TunState || previous.TunScope != current.TunScope ||
+		previous.TunOwnerPID != current.TunOwnerPID || previous.FLCEnabled != current.FLCEnabled ||
+		previous.FLCOutbound != current.FLCOutbound || !previous.SSHHistoryClearedBefore.Equal(current.SSHHistoryClearedBefore)
+}
+
 func (r *tuiServiceRuntime) watch(request tuiServiceRequest) tuiServiceStatus {
 	r.mu.RLock()
-	if r.revision > request.AfterRevision {
+	if r.revision > request.AfterRevision || (request.ExpectedInstanceID != "" && request.ExpectedInstanceID != r.instanceID) {
 		r.mu.RUnlock()
 		return r.snapshot(request.RequestID)
 	}
@@ -238,6 +255,10 @@ func (r *tuiServiceRuntime) mutate(
 		}
 	}
 	status := r.snapshot(request.RequestID)
+	if request.ExpectedInstanceID != "" && request.ExpectedInstanceID != status.InstanceID {
+		return r.completeMutation(request, failTUIServiceStatus(status, tuiServiceErrorConflict,
+			"backend instance changed; refresh and retry"))
+	}
 	if status.ShuttingDown {
 		if request.Action == "shutdown" {
 			return r.completeMutation(request, status)
@@ -259,6 +280,11 @@ func (r *tuiServiceRuntime) mutate(
 				status.Revision,
 			),
 		))
+	}
+	if request.Action == "clear_history" || request.Action == "close_connection" || request.Action == "close_all_connections" {
+		if err := validateTrafficSourceFlag(request.Source); err != nil {
+			return r.completeMutation(request, failTUIServiceStatus(status, tuiServiceErrorInvalidRequest, err.Error()))
+		}
 	}
 
 	changed := false
@@ -327,6 +353,9 @@ func (r *tuiServiceRuntime) mutate(
 		changed, resultPath, err = r.backupProfile(request.ConfigPath)
 	case "restore_profile":
 		changed, resultPath, err = r.restoreProfile(request.ConfigPath)
+	case "reset_traffic":
+		cliHub.ResetTraffic()
+		changed = true
 	case "shutdown":
 		changed, err = r.stopCoreAndProxy(status)
 		if err == nil {
@@ -335,6 +364,11 @@ func (r *tuiServiceRuntime) mutate(
 		}
 	}
 	if err != nil {
+		// Some external effects cannot be rolled back. Publish their actual
+		// state rather than hiding it behind an unchanged revision.
+		if changed || tuiServiceStateChanged(status, r.snapshot("")) {
+			r.bumpRevision()
+		}
 		r.logMutation(request, false, err)
 		return r.completeMutation(request, failTUIServiceStatus(
 			r.snapshot(request.RequestID),
@@ -346,6 +380,11 @@ func (r *tuiServiceRuntime) mutate(
 		r.bumpRevision()
 	}
 	status = r.snapshot(request.RequestID)
+	if request.Action == "clear_history" {
+		r.mu.RLock()
+		status.History = append([]tuiRequest(nil), r.history...)
+		r.mu.RUnlock()
+	}
 	if request.Action == "flc_proxy" {
 		r.mu.RLock()
 		status.FLCProxyURL = r.flc.proxyURL()

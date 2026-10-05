@@ -7,135 +7,106 @@ import (
 	"strings"
 )
 
-func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, width, height int) {
-	serviceLabel := tuiServiceLabel(snapshot)
-	systemProxyLabel := tuiSystemProxyLabel(snapshot)
-	controls := []string{
-		fmt.Sprintf("Core          %s", serviceLabel),
-		fmt.Sprintf("System proxy  %s", systemProxyLabel),
-		fmt.Sprintf("TUN           %s", tuiTUNLabel(snapshot)),
-		fmt.Sprintf("Mode          %s", snapshot.Settings.Mode),
-		fmt.Sprintf("flc           %s", tuiFLCOutboundLabel(snapshot)),
-		fmt.Sprintf("Proxy port    %s", tuiProxyPortLabel(snapshot)),
+func tuiDashboardControlFields(snapshot tuiSnapshot, language ...string) []tuiField {
+	tr := tuiTranslator(language...)
+	fields := []tuiField{
+		tuiTemplateField(tr("ui.f18cab8abac0"), tuiServiceLabel(snapshot, language...)),
+		tuiTemplateField(tr("ui.e03730a5c7f3"), tuiSystemProxyLabel(snapshot, language...)),
+		tuiTemplateField(tr("ui.a4d79613e35b"), tuiTUNLabel(snapshot, language...)),
+		tuiTemplateField(tr("ui.9a0dbc8998df"), snapshot.Settings.Mode),
+		tuiTemplateField(tr("ui.1b54c40c04fc"), tuiFLCOutboundLabel(snapshot, language...)),
+		tuiTemplateField(tr("ui.4e7d696cd5d1"), tuiProxyPortLabel(snapshot, language...)),
 	}
-	tuiTitle(
-		b,
-		"Dashboard",
-		"Current state shown first · Enter changes selected item",
-		width,
-	)
-	for index, row := range controls {
-		tuiRow(
-			b,
-			row,
-			width,
-			index == snapshot.SelectedDashboard && !snapshot.FocusSidebar,
-			"",
-		)
+	for index := range fields {
+		fields[index].selected = index == snapshot.SelectedDashboard && !snapshot.FocusSidebar
 	}
-	tuiEndPanel(b, width)
+	return fields
+}
 
-	publicIP := "Checking..."
+func tuiDashboardNetworkFields(snapshot tuiSnapshot, language ...string) []tuiField {
+	tr := tuiTranslator(language...)
+	publicIP := tr("ui.2e5f79bb94a8")
 	if snapshot.Network.PublicIP != "" {
 		publicIP = snapshot.Network.PublicIP
 		if snapshot.Network.Country != "" {
 			publicIP += "  [" + snapshot.Network.Country + "]"
 		}
 		if snapshot.Network.Loading {
-			publicIP += "  refreshing..."
+			publicIP += tr("ui.0651d028ba72")
 		}
 	} else if snapshot.Network.Error != "" && !snapshot.Network.Loading {
-		publicIP = "Unavailable · press n to retry"
+		publicIP = tr("ui.46e48f8fe395")
 	}
 	intranetIP := snapshot.Network.IntranetIP
 	if intranetIP == "" {
+		intranetIP = tr("ui.32bb0437abc1")
 		if snapshot.Network.Loading {
-			intranetIP = "Detecting..."
-		} else {
-			intranetIP = "No active LAN address"
+			intranetIP = tr("ui.5ac197f8103a")
 		}
 	}
+	fields := []tuiField{
+		tuiLabelField(tr("ui.5e24a67e69b7"), publicIP),
+		tuiLabelField(tr("ui.fc5dbbf8f80a"), intranetIP),
+		tuiLabelField(tuiDashboardRouteName(snapshot, language...), tuiDashboardDelayLabel(snapshot.DashboardDelay, language...)),
+		tuiLabelField(tr("ui.2448d6d56590"), tuiSpeedResultLabel(snapshot.DashboardSpeed, language...)),
+	}
+	fields[0].color, fields[1].color = tuiCyan, tuiGreen
+	fields[2].color, fields[3].color = tuiCyan, tuiGreen
+	fields[2].selected = snapshot.SelectedDashboard == tuiDashboardDelayRow && !snapshot.FocusSidebar
+	fields[3].selected = snapshot.SelectedDashboard == tuiDashboardSpeedRow && !snapshot.FocusSidebar
+	return fields
+}
+
+func tuiDashboardOverviewFields(snapshot tuiSnapshot, paths cliPaths, language ...string) []tuiField {
+	tr := tuiTranslator(language...)
+	fields := tuiMemoryFields(snapshot, language...)
+	fields = append(fields,
+		tuiTemplateField(tr("ui.15ae14e3c674"), formatBytes(snapshot.Traffic.Up), formatBytes(snapshot.Traffic.Down)),
+		tuiTemplateField(tr("ui.15e659c979fb"), formatBytes(snapshot.TotalTraffic.Up), formatBytes(snapshot.TotalTraffic.Down)),
+		tuiTemplateField(tr("ui.92f24da40aae"), len(snapshot.Connections), len(snapshot.Requests)),
+		tuiLabelField(tr("ui.41efe1c5e221"), formatCLIFrontendSummary(snapshot.Frontends)),
+		tuiTemplateField(tr("ui.e098301423c6"), paths.ConfigPath),
+	)
+	// Long paths are opaque data, not a reason to consume the entire chart.
+	fields[len(fields)-1].truncate = true
+	return fields
+}
+
+func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, width, height int, language ...string) {
+	tr := tuiTranslator(language...)
+	controls := tuiFieldRows(tuiDashboardControlFields(snapshot, language...), width)
+	network := tuiFieldRows(tuiDashboardNetworkFields(snapshot, language...), width)
+	overview := tuiFieldRows(tuiDashboardOverviewFields(snapshot, paths, language...), width)
+	fixedRows := len(controls) + len(network) + len(overview) + 12
+	if height >= 33 && height < fixedRows+1 {
+		b.WriteString(renderTUICompactDashboard(snapshot, paths, width, height, language...))
+		return
+	}
+	tuiTitle(b, tr("ui.67b696468610"), tr("ui.27c478967b20"), width)
+	tuiWriteRows(b, controls, width)
+	tuiEndPanel(b, width)
 	networkSubtitle := ""
 	if snapshot.Network.Route != "" {
 		networkSubtitle = snapshot.Network.Route + " · "
 	}
-	networkSubtitle += "d " + strings.ToLower(tuiDashboardRouteName(snapshot)) +
-		" RTT×5 · v CF speed · n refresh"
+	networkSubtitle += "d " + strings.ToLower(tuiDashboardRouteName(snapshot, language...)) + tr("ui.1a476d7f86fc")
 	if !snapshot.Network.CheckedAt.IsZero() {
-		networkSubtitle += " · checked " + snapshot.Network.CheckedAt.Format("15:04:05")
+		networkSubtitle += tr("ui.0727957e1df3") + snapshot.Network.CheckedAt.Format("15:04:05")
 	}
-	tuiTitle(b, "Network detection", networkSubtitle, width)
-	tuiRow(b, "Public IP     "+publicIP, width, false, tuiCyan)
-	tuiRow(b, "Intranet IP   "+intranetIP, width, false, tuiGreen)
-	tuiRow(
-		b,
-		tuiPadRight(tuiDashboardRouteName(snapshot), 15)+
-			tuiDashboardDelayLabel(snapshot.DashboardDelay),
-		width,
-		snapshot.SelectedDashboard == tuiDashboardDelayRow &&
-			!snapshot.FocusSidebar,
-		tuiCyan,
-	)
-	tuiRow(
-		b,
-		"Cloudflare DL  "+tuiSpeedResultLabel(snapshot.DashboardSpeed),
-		width,
-		snapshot.SelectedDashboard == tuiDashboardSpeedRow &&
-			!snapshot.FocusSidebar,
-		tuiGreen,
-	)
+	tuiTitle(b, tr("ui.3aae919b1bc0"), networkSubtitle, width)
+	tuiWriteRows(b, network, width)
 	tuiEndPanel(b, width)
-
-	overview := tuiMemoryRows(snapshot)
-	overview = append(overview,
-		fmt.Sprintf(
-			"Network speed ↑ %s/s   ↓ %s/s",
-			formatBytes(snapshot.Traffic.Up),
-			formatBytes(snapshot.Traffic.Down),
-		),
-		fmt.Sprintf(
-			"Traffic total ↑ %s   ↓ %s",
-			formatBytes(snapshot.TotalTraffic.Up),
-			formatBytes(snapshot.TotalTraffic.Down),
-		),
-		fmt.Sprintf(
-			"Activity      %d active · %d history entries",
-			len(snapshot.Connections),
-			len(snapshot.Requests),
-		),
-		"TUI frontends "+formatCLIFrontendSummary(snapshot.Frontends),
-		fmt.Sprintf("Config        %s", paths.ConfigPath),
-	)
-	if height >= 33 {
-		controlRows := len(controls) + 3
-		networkRows := 7
-		overviewRows := len(overview) + 3
-		chartFrameRows := 3
-		plotHeight := height - controlRows - networkRows - overviewRows - chartFrameRows
-		if plotHeight > 0 {
-			chart := buildTUITrafficChart(
-				snapshot.TrafficHistory,
-				maxTUIWidth(width-4, 1),
-				plotHeight,
-			)
-			tuiTrafficTitle(b, snapshot.Traffic, chart.peak, width)
-			for _, line := range chart.lines {
-				writeTUIAnsiRow(b, line, width)
-			}
-			tuiEndPanel(b, width)
+	if height >= 33 && height > fixedRows {
+		chart := buildTUITrafficChart(snapshot.TrafficHistory, maxTUIWidth(width-4, 1), height-fixedRows)
+		tuiTrafficTitle(b, snapshot.Traffic, chart.peak, width, language...)
+		for _, line := range chart.lines {
+			writeTUIAnsiRow(b, line, width)
 		}
+		tuiEndPanel(b, width)
 	}
-
 	if height >= 17 {
-		tuiTitle(
-			b,
-			"Overview",
-			"memory refresh "+tuiMemoryRefreshInterval.String()+" · live status",
-			width,
-		)
-		for _, row := range overview {
-			tuiRow(b, row, width, false, "")
-		}
+		tuiTitle(b, tr("ui.d4b1ea5708dd"), tr("ui.4abac76b607e")+tuiMemoryRefreshInterval.String()+tr("ui.b3db8b20fba3"), width)
+		tuiWriteRows(b, overview, width)
 		tuiEndPanel(b, width)
 	}
 }
@@ -147,189 +118,50 @@ type tuiDashboardCompactRow struct {
 	ansi     bool
 }
 
-func renderTUICompactDashboard(
-	snapshot tuiSnapshot,
-	paths cliPaths,
-	width,
-	height int,
-) string {
-	rows := tuiCompactDashboardRows(snapshot, paths, width, height)
+func renderTUICompactDashboard(snapshot tuiSnapshot, paths cliPaths, width, height int, language ...string) string {
+	tr := tuiTranslator(language...)
+	rows := tuiCompactDashboardRows(snapshot, paths, width, height, language...)
 	limit := maxTUIWidth(height-3, 1)
-	maxStart := maxTUIIndex(len(rows) - limit)
-	start := snapshot.DashboardScroll
-	if start > maxStart {
-		start = maxStart
-	}
-	if start < 0 {
-		start = 0
-	}
+	start := minTUI(maxTUIIndex(snapshot.DashboardScroll), maxTUIIndex(len(rows)-limit))
 	end := minTUI(start+limit, len(rows))
 	var b strings.Builder
-	tuiTitle(
-		&b,
-		"Dashboard",
-		fmt.Sprintf(
-			"rows %d-%d/%d · PgUp/PgDn scroll",
-			start+1,
-			end,
-			len(rows),
-		),
-		width,
-	)
-	for _, row := range rows[start:end] {
-		if row.ansi {
-			writeTUIAnsiRow(&b, row.value, width)
-			continue
-		}
-		tuiRow(
-			&b,
-			row.value,
-			width,
-			row.selected,
-			row.color,
-		)
-	}
+	tuiTitle(&b, tr("ui.67b696468610"), fmt.Sprintf(tr("ui.ed763ad9f535"), start+1, end, len(rows)), width)
+	tuiWriteRows(&b, rows[start:end], width)
 	tuiEndPanel(&b, width)
 	return b.String()
 }
 
-func tuiCompactDashboardRows(
-	snapshot tuiSnapshot,
-	paths cliPaths,
-	width int,
-	height int,
-) []tuiDashboardCompactRow {
-	controls := []string{
-		fmt.Sprintf("Core          %s", tuiServiceLabel(snapshot)),
-		fmt.Sprintf(
-			"System proxy  %s",
-			tuiSystemProxyLabel(snapshot),
-		),
-		fmt.Sprintf("TUN           %s", tuiTUNLabel(snapshot)),
-		fmt.Sprintf("Mode          %s", snapshot.Settings.Mode),
-		fmt.Sprintf("flc           %s", tuiFLCOutboundLabel(snapshot)),
-		fmt.Sprintf("Proxy port    %s", tuiProxyPortLabel(snapshot)),
+func tuiCompactDashboardRows(snapshot tuiSnapshot, paths cliPaths, width, height int, language ...string) []tuiDashboardCompactRow {
+	tr := tuiTranslator(language...)
+	controlFields := tuiDashboardControlFields(snapshot, language...)
+	for index := range controlFields {
+		controlFields[index].truncate = true
 	}
-	rows := make([]tuiDashboardCompactRow, 0, 28)
-	for index, control := range controls {
-		rows = append(rows, tuiDashboardCompactRow{
-			value: control,
-			selected: index == snapshot.SelectedDashboard &&
-				!snapshot.FocusSidebar,
-		})
-	}
-	chartHeight := tuiCompactTrafficChartHeight(height)
-	fixedRows := len(controls) + 1 + 5 + 1 + len(tuiMemoryRows(snapshot)) + 5
-	chartHeight = maxTUIWidth(chartHeight, height-3-fixedRows)
-	chart := buildTUITrafficChart(
-		snapshot.TrafficHistory,
-		maxTUIWidth(width-4, 1),
-		chartHeight,
-	)
+	controls := tuiFieldRows(controlFields, width)
+	network := tuiFieldRows(tuiDashboardNetworkFields(snapshot, language...), width)
+	overview := tuiFieldRows(tuiDashboardOverviewFields(snapshot, paths, language...), width)
+	fixedRows := len(controls) + len(network) + len(overview) + 3
+	chartHeight := maxTUIWidth(tuiCompactTrafficChartHeight(height), height-3-fixedRows)
+	chart := buildTUITrafficChart(snapshot.TrafficHistory, maxTUIWidth(width-4, 1), chartHeight)
+	rows := append([]tuiDashboardCompactRow(nil), controls...)
 	rows = append(rows, tuiDashboardCompactRow{
-		value: tuiCyan + "── Live traffic" + tuiReset + " · " +
-			formatTUITrafficLegend(snapshot.Traffic, chart.peak),
-		ansi: true,
+		value: tuiCyan + tr("ui.43e907bfbc87") + tuiReset + " · " + formatTUITrafficLegend(snapshot.Traffic, chart.peak, language...), ansi: true,
 	})
 	for _, line := range chart.lines {
 		rows = append(rows, tuiDashboardCompactRow{value: line, ansi: true})
 	}
-
-	publicIP := "Checking..."
-	if snapshot.Network.PublicIP != "" {
-		publicIP = snapshot.Network.PublicIP
-		if snapshot.Network.Country != "" {
-			publicIP += " [" + snapshot.Network.Country + "]"
-		}
-	} else if snapshot.Network.Error != "" &&
-		!snapshot.Network.Loading {
-		publicIP = "Unavailable · n retry"
-	}
-	intranetIP := snapshot.Network.IntranetIP
-	if intranetIP == "" {
-		if snapshot.Network.Loading {
-			intranetIP = "Detecting..."
-		} else {
-			intranetIP = "No active LAN address"
-		}
-	}
-	rows = append(
-		rows,
-		tuiDashboardCompactRow{
-			value: "── Network · d " +
-				strings.ToLower(tuiDashboardRouteName(snapshot)) +
-				" latency · v Cloudflare speed · n refresh",
-			color: tuiCyan,
-		},
-		tuiDashboardCompactRow{
-			value: "Public IP     " + publicIP,
-			color: tuiCyan,
-		},
-		tuiDashboardCompactRow{
-			value: "Intranet IP   " + intranetIP,
-			color: tuiGreen,
-		},
-		tuiDashboardCompactRow{
-			value: tuiPadRight(tuiDashboardRouteName(snapshot), 15) +
-				tuiDashboardDelayLabel(snapshot.DashboardDelay),
-			color: tuiCyan,
-			selected: snapshot.SelectedDashboard == tuiDashboardDelayRow &&
-				!snapshot.FocusSidebar,
-		},
-		tuiDashboardCompactRow{
-			value: "Cloudflare DL  " +
-				tuiSpeedResultLabel(snapshot.DashboardSpeed),
-			color: tuiGreen,
-			selected: snapshot.SelectedDashboard == tuiDashboardSpeedRow &&
-				!snapshot.FocusSidebar,
-		},
-		tuiDashboardCompactRow{
-			value: "── Overview · live status",
-			color: tuiCyan,
-		},
-	)
-	for _, row := range tuiMemoryRows(snapshot) {
-		rows = append(rows, tuiDashboardCompactRow{value: row})
-	}
-	rows = append(
-		rows,
-		tuiDashboardCompactRow{
-			value: fmt.Sprintf(
-				"Network speed ↑ %s/s ↓ %s/s",
-				formatBytes(snapshot.Traffic.Up),
-				formatBytes(snapshot.Traffic.Down),
-			),
-		},
-		tuiDashboardCompactRow{
-			value: fmt.Sprintf(
-				"Traffic total ↑ %s ↓ %s",
-				formatBytes(snapshot.TotalTraffic.Up),
-				formatBytes(snapshot.TotalTraffic.Down),
-			),
-		},
-		tuiDashboardCompactRow{
-			value: fmt.Sprintf(
-				"Activity      %d active · %d history entries",
-				len(snapshot.Connections),
-				len(snapshot.Requests),
-			),
-		},
-		tuiDashboardCompactRow{
-			value: "TUI frontends " +
-				formatCLIFrontendSummary(snapshot.Frontends),
-		},
-		tuiDashboardCompactRow{
-			value: "Config        " + paths.ConfigPath,
-		},
-	)
-	return rows
+	rows = append(rows, tuiDashboardCompactRow{value: tr("ui.a8024f5e9c32") + strings.ToLower(tuiDashboardRouteName(snapshot, language...)) + tr("ui.e8595567c19b"), color: tuiCyan})
+	rows = append(rows, network...)
+	rows = append(rows, tuiDashboardCompactRow{value: tr("ui.7f2565a40efe"), color: tuiCyan})
+	return append(rows, overview...)
 }
 
-func tuiDashboardRouteName(snapshot tuiSnapshot) string {
+func tuiDashboardRouteName(snapshot tuiSnapshot, language ...string) string {
+	tr := tuiTranslator(language...)
 	if strings.EqualFold(snapshot.Settings.Mode, tuiSilentMode) {
-		return "Silent route"
+		return tr("ui.148be5b3761c")
 	}
-	return "Rule route"
+	return tr("ui.9f4d9e11fced")
 }
 
 func tuiCompactTrafficChartHeight(height int) int {
@@ -343,53 +175,62 @@ func tuiCompactTrafficChartHeight(height int) int {
 	}
 }
 
-func tuiDashboardDelayLabel(delay tuiDelayResult) string {
+func tuiDashboardDelayLabel(delay tuiDelayResult, language ...string) string {
+	tr := tuiTranslator(language...)
 	switch {
 	case delay.MedianMillis > 0:
-		return formatTUIDelay(delay) + " · d retest"
+		return formatTUIDelay(delay, language...) + tr("ui.e5e2fc4ce8e2")
 	case delay.Error != "":
-		return "Timeout · d retry"
+		return tr("ui.e2943f0d5872")
 	case delay.Testing:
-		return "Testing..."
+		return tr("ui.6c02a28421f8")
 	default:
-		return "Not tested · press d"
+		return tr("ui.e7f06d8fb8b9")
 	}
 }
 
-func formatTUIDelay(result tuiDelayResult) string {
+func formatTUIDelay(result tuiDelayResult, language ...string) string {
+	tr := tuiTranslator(language...)
 	if result.Samples <= 1 {
 		return fmt.Sprintf("%d ms", result.MedianMillis)
 	}
-	return fmt.Sprintf(
-		"%d ms · jitter %d ms · %d samples",
-		result.MedianMillis,
+	return fmt.Sprintf(tr("ui.6bdb453bc521"), result.MedianMillis,
 		result.JitterMillis,
 		result.Samples,
 	)
 }
 
-func tuiSpeedResultLabel(result tuiSpeedResult) string {
+func tuiSpeedResultLabel(result tuiSpeedResult, language ...string) string {
+	tr := tuiTranslator(language...)
 	switch {
 	case result.Testing:
-		return "Testing 4 streams · up to 100 MB/5s..."
+		return tr("ui.b1efed1838b0")
 	case result.Error != "":
-		return "Failed · v retry"
+		return tr("ui.2683b48bf94c")
 	case result.BytesPerSecond > 0:
 		downloaded := float64(result.Bytes) / 1_000_000
 		duration := float64(result.DurationMillis) / 1000
-		return fmt.Sprintf(
-			"%s · %.1f MB in %.2fs · v retest",
-			formatTUISpeed(result),
+		return fmt.Sprintf(tr("ui.f1058f3fb043"), formatTUISpeed(result),
 			downloaded,
 			duration,
 		)
 	default:
-		return "Not tested · press v"
+		return tr("ui.e26c6a34cb5a")
 	}
 }
 
-func tuiMemoryRows(snapshot tuiSnapshot) []string {
-	systemMemory := "Unavailable"
+func tuiMemoryRows(snapshot tuiSnapshot, language ...string) []string {
+	rows := tuiFieldRows(tuiMemoryFields(snapshot, language...), 4096)
+	values := make([]string, len(rows))
+	for index, row := range rows {
+		values[index] = row.value
+	}
+	return values
+}
+
+func tuiMemoryFields(snapshot tuiSnapshot, language ...string) []tuiField {
+	tr := tuiTranslator(language...)
+	systemMemory := tr("ui.ca1844969742")
 	if snapshot.Memory.SystemTotal > 0 {
 		percentage := float64(snapshot.Memory.SystemUsed) /
 			float64(snapshot.Memory.SystemTotal) * 100
@@ -400,43 +241,40 @@ func tuiMemoryRows(snapshot tuiSnapshot) []string {
 			percentage,
 		)
 	}
-	rows := []string{"System memory " + systemMemory}
+	rows := []tuiField{tuiLabelField(tr("ui.bc59b24ffe23"), systemMemory)}
 	if snapshot.ExternalCore || snapshot.ManagedService {
-		processMemory := "Measuring..."
+		processMemory := tr("ui.e7c955a5ec17")
 		if snapshot.Memory.ProcessRSS > 0 {
 			processMemory = formatTUIUintBytes(snapshot.Memory.ProcessRSS)
 		}
-		coreMemory := "Measuring..."
+		coreMemory := tr("ui.e7c955a5ec17")
 		if snapshot.Memory.CoreRSS > 0 {
 			coreMemory = formatTUIUintBytes(snapshot.Memory.CoreRSS)
 		} else if snapshot.Memory.CoreError != "" {
-			coreMemory = "Unavailable · retrying"
+			coreMemory = tr("ui.88b0f6cc37a2")
 		}
 		rows = append(
-			rows,
-			"TUI process   "+processMemory,
-			func() string {
+			rows, tuiLabelField(tr("ui.ed62a0b483ae"), processMemory), func() tuiField {
 				if snapshot.ManagedService {
-					return "Managed Core  " + coreMemory
+					return tuiLabelField(tr("ui.8f9fba6af37b"), coreMemory)
 				}
-				return "External Core " + coreMemory
+				return tuiLabelField(tr("ui.02422146f8b3"), coreMemory)
 			}(),
 		)
 	} else {
-		processMemory := "Measuring..."
+		processMemory := tr("ui.e7c955a5ec17")
 		if snapshot.Memory.ProcessRSS > 0 {
 			processMemory = formatTUIUintBytes(snapshot.Memory.ProcessRSS)
 		}
 		rows = append(
-			rows,
-			"CLI + Mihomo  "+processMemory+" RSS · shared process",
+			rows, tuiLabelField(tr("ui.ff7b6ecc43a2"), processMemory+tr("ui.31f57e0b9ad5")),
 		)
 	}
-	goHeap := "Measuring..."
+	goHeap := tr("ui.e7c955a5ec17")
 	if snapshot.Memory.GoHeap > 0 {
 		goHeap = formatTUIUintBytes(snapshot.Memory.GoHeap)
 	}
-	return append(rows, "Go heap       "+goHeap)
+	return append(rows, tuiLabelField(tr("ui.34dc50a0cfa2"), goHeap))
 }
 
 func formatTUIUintBytes(value uint64) string {

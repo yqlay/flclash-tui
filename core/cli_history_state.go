@@ -18,53 +18,64 @@ const (
 )
 
 type tuiPersistentHistory struct {
-	Version int          `json:"version"`
-	Entries []tuiRequest `json:"entries"`
+	Version         int          `json:"version"`
+	Entries         []tuiRequest `json:"entries"`
+	SSHClosedBefore time.Time    `json:"ssh_closed_before,omitzero"`
 }
 
 func loadTUIHistory(homeDir string) ([]tuiRequest, error) {
+	saved, err := loadTUIPersistentHistory(homeDir)
+	return saved.Entries, err
+}
+
+func loadTUIPersistentHistory(homeDir string) (tuiPersistentHistory, error) {
 	path := filepath.Join(homeDir, tuiHistoryFilename)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return tuiPersistentHistory{}, nil
 		}
-		return nil, err
+		return tuiPersistentHistory{}, err
 	}
 	var saved tuiPersistentHistory
 	if err := json.Unmarshal(data, &saved); err != nil {
-		return nil, fmt.Errorf("parse saved History: %w", err)
+		return tuiPersistentHistory{}, fmt.Errorf("parse saved History: %w", err)
 	}
 	if saved.Version != tuiHistoryVersion {
-		return nil, fmt.Errorf("unsupported History version %d", saved.Version)
+		return tuiPersistentHistory{}, fmt.Errorf("unsupported History version %d", saved.Version)
 	}
 	entries := make([]tuiRequest, 0, minTUI(len(saved.Entries), tuiRequestHistoryLimit))
 	for _, entry := range saved.Entries {
 		if entry.ID == "" || entry.FirstSeen.IsZero() || entry.LastSeen.IsZero() {
 			continue
 		}
-		// No connection survives a Backend restart. A restored entry is recent
-		// history until Mihomo reports the same ID again.
+		// Restored entries become active again only after their source confirms
+		// them. SSH can survive a Backend restart, unlike Mihomo connections.
 		entry.Active = false
 		entries = append(entries, entry)
 		if len(entries) == tuiRequestHistoryLimit {
 			break
 		}
 	}
-	return entries, nil
+	saved.Entries = entries
+	return saved, nil
 }
 
-func saveTUIHistory(homeDir string, entries []tuiRequest) error {
+func saveTUIHistory(homeDir string, entries []tuiRequest, clearedBefore ...time.Time) error {
 	if err := os.MkdirAll(homeDir, 0o700); err != nil {
 		return err
 	}
 	if len(entries) > tuiRequestHistoryLimit {
 		entries = entries[:tuiRequestHistoryLimit]
 	}
-	data, err := json.MarshalIndent(tuiPersistentHistory{
+	saved := tuiPersistentHistory{
 		Version: tuiHistoryVersion,
 		Entries: entries,
-	}, "", "  ")
+	}
+	if len(clearedBefore) > 0 {
+		saved.SSHClosedBefore = clearedBefore[0]
+	}
+	data, err := json.MarshalIndent(saved, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -104,12 +115,13 @@ func (r *tuiServiceRuntime) restoreHistory() error {
 	r.mu.RLock()
 	homeDir := r.paths.HomeDir
 	r.mu.RUnlock()
-	entries, err := loadTUIHistory(homeDir)
+	saved, err := loadTUIPersistentHistory(homeDir)
 	if err != nil {
 		return err
 	}
 	r.mu.Lock()
-	r.history = entries
+	r.history = saved.Entries
+	r.sshHistoryClearedBefore = saved.SSHClosedBefore
 	r.historyVersion = 1
 	r.persistedHistoryVersion = 1
 	r.mu.Unlock()
@@ -127,8 +139,9 @@ func (r *tuiServiceRuntime) persistHistory(force bool) error {
 	}
 	homeDir := r.paths.HomeDir
 	entries := append([]tuiRequest(nil), r.history...)
+	clearedBefore := r.sshHistoryClearedBefore
 	r.mu.RUnlock()
-	if err := saveTUIHistory(homeDir, entries); err != nil {
+	if err := saveTUIHistory(homeDir, entries, clearedBefore); err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -149,20 +162,28 @@ func (r *tuiServiceRuntime) clearPersistentHistoryForSource(source string) (bool
 	defer r.historyUpdateMu.Unlock()
 	r.mu.Lock()
 	previous := append([]tuiRequest(nil), r.history...)
+	previousCutoff := r.sshHistoryClearedBefore
 	next := filterRequestsBySource(previous, inverseTrafficSource(source))
 	if source == tuiTrafficSourceMixed {
 		next = nil
 	}
 	changed := len(next) != len(previous)
+	if trafficSourceMatches(source, tuiTrafficSourceSSH) {
+		// Even an empty History can have completed flows pending in the relay.
+		r.sshHistoryClearedBefore = time.Now().UTC()
+		changed = true
+	}
+	if !changed {
+		r.mu.Unlock()
+		return false, nil
+	}
 	r.history = next
 	r.historyVersion++
 	r.mu.Unlock()
-	if !changed {
-		return false, nil
-	}
 	if err := r.persistHistory(true); err != nil {
 		r.mu.Lock()
 		r.history = previous
+		r.sshHistoryClearedBefore = previousCutoff
 		r.historyVersion++
 		r.mu.Unlock()
 		return false, errors.New("persist cleared History: " + err.Error())

@@ -25,12 +25,14 @@ func (r *tuiServiceRuntime) historyStatus(requestID string) tuiServiceStatus {
 	}
 	r.mu.RLock()
 	previous := append([]tuiRequest(nil), r.history...)
+	clearedBefore := r.sshHistoryClearedBefore
 	r.mu.RUnlock()
 	now := time.Now()
 	updated := rememberClosedSSHHistory(
 		updateTUIRequestHistory(previous, live, now),
 		recentSSH,
 		now,
+		clearedBefore,
 	)
 	r.recordHistoryUpdate(updated)
 	status.History = append([]tuiRequest(nil), updated...)
@@ -49,7 +51,7 @@ func (r *tuiServiceRuntime) connectionsStatus(requestID string) tuiServiceStatus
 
 func (r *tuiServiceRuntime) mergedLiveTraffic(
 	status tuiServiceStatus,
-) (live, recentSSH []tuiConnection, err error) {
+) (live []tuiConnection, recentSSH []tuiRequest, err error) {
 	sshLive, sshRecent := loadCLISSHRelayConnections()
 	if !status.Running {
 		return sshLive, sshRecent, nil
@@ -82,6 +84,9 @@ func closeTUIVisibleConnectionsForSource(
 ) error {
 	id = strings.TrimSpace(id)
 	source = normalizeTrafficSource(source)
+	if id != "" && !trafficSourceMatches(source, tuiConnectionSource(tuiConnection{ID: id})) {
+		return errors.New("connection ID does not match the requested traffic source")
+	}
 	if isSSHConnectionID(id) {
 		return closeCLISSHRelayFlow(id)
 	}

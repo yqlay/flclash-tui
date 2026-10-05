@@ -8,6 +8,8 @@
 
 A Mihomo terminal manager for Linux, SSH, and headless hosts. Run `flclash` for the full-screen TUI. The default mode is **silent**: only `flc COMMAND` uses the proxy.
 
+The TUI defaults to English. In **Settings → Language**, use ↑↓ to highlight, Enter to save and switch immediately, or Esc to cancel. There are 18 language choices, including Simplified/Traditional Chinese and Nigerian Pidgin. Translations are drafts; complex scripts require terminal/font support. **Language / English stays accessible**. Commands and logs remain in English.
+
 ## Can't run Codex / Claude on headless Linux? One `flc` is enough
 
 On many networks, installing Codex or even running `codex` directly just fails.
@@ -41,6 +43,8 @@ curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh |
 
 If GitHub is unstable, download the matching `.deb` or `.tar.gz` from [Releases](https://github.com/yqlay/flclash-tui/releases), copy it over, then `sudo dpkg -i`. Do not pin a version string; always use the latest Release.
 
+Use `flclash update --check` to check for updates. For `.deb` installations, run `flclash update` and confirm; for portable installations, rerun the portable installer above. Upgrades preserve profiles, SSH settings, and the language preference. Reopen the TUI afterwards.
+
 ## Step 2: Import a subscription and pick a node
 
 Run `flclash` to open the TUI. In **Profiles**, import a subscription URL or local file, select it, and press Enter to activate. Then in **Proxies** pick a group and node (press `d` to test delay). Dashboard should stay on `silent` so other programs are left alone. Focus **Core** and press Enter to start it. Other modes also need **System proxy**.
@@ -54,6 +58,8 @@ Run `flclash` to open the TUI. In **Profiles**, import a subscription URL or loc
 </p>
 
 Headless hosts default to `silent`: system proxy and TUN stay off, and only commands you prefix with `flc` use the proxy.
+
+When the subscription provider supplies usage metadata, **Profiles** shows used traffic, quota, and expiry. Local files or subscriptions without that metadata remain unknown; the app does not guess quotas.
 
 ```bash
 flc example_command
@@ -147,6 +153,8 @@ flclash ssh disconnect home        # SSH only; flclash backend stop leaves tunne
 
 With no tunnel up, `flc ssh` connects the default (or only) profile and keeps it persistent. The TUI **SSH** page manages the same profiles; press `u` to star the default. `flc ssh -d` refuses when the remote transparent TUN is on, the state is unknown, or the version is incompatible. Under WSL, do not use a `/mnt/c/...` key that shows mode `0777`; copy it to `~/.ssh/` and `chmod 600` first.
 
+In the SSH profile list, ↑↓ only moves the highlight; Enter connects or switches the dashboard below. SSH speed and traffic measure local forwarding through that tunnel; the main Dashboard measures Mihomo Core separately. Connected profiles can be inspected, but must be disconnected before saving edits.
+
 SSH fields, key passphrases, Jump, and Dashboard probes are documented in [CLI_LINUX.md](CLI_LINUX.md).
 
 ## Common commands
@@ -167,6 +175,14 @@ flclash exit                       # stop frontends, Backend, Core, and SSH
 ```
 
 In the TUI, `q` exits the current frontend only; `Ctrl+C` is a full exit. Dashboard owns Core, mode, flc, proxy port, TUN, and System proxy. `?` lists keys; `Ctrl+N` opens notifications.
+
+## Connections, history, and logs
+
+- **Connections**: `/` searches, `f` selects mixed / proxy / ssh, Enter opens details, `d` closes the selected flow, and `x` closes all flows in the selected source after confirmation. Closing flows does not erase history.
+- **History**: `/` searches, `f` selects all / active / completed, `o` selects the source, Enter opens details, and `x` clears that source's history after confirmation without closing flows. Up to 500 entries persist across restarts.
+- **Logs**: Backend logs and current frontend events are merged. `/` searches, `f` filters levels, Enter opens the complete record, `e` exports, and `x` clears after confirmation. Refreshes preserve filters and detail state.
+
+If another frontend changes the configuration, a conflicting settings draft keeps your input and refuses to overwrite the newer state. Note any values you want to keep, cancel input with Esc, then press uppercase `R` to reload and edit again. Reload discards the old draft.
 
 Profile import accepts Mihomo/Clash YAML, URI lists and Base64 wrappers, SIP008, sing-box/Xray JSON, and common Surge/Quantumult X/Loon proxy lines. An unsupported or malformed node rejects the whole import instead of being dropped silently.
 

@@ -24,6 +24,7 @@ type tuiNotification struct {
 	level        tuiNotificationLevel
 	title        string
 	message      string
+	text         tuiMessage
 	progress     bool
 	updatedAt    time.Time
 	acknowledged bool
@@ -40,11 +41,8 @@ func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *tuiModel) publishStatusNotification(message tea.Msg, previousStatus string) {
 	status := strings.TrimSpace(m.snapshot.Status)
-	if status == "" || status == "Loading..." || status == "Connected" ||
-		strings.HasPrefix(status, "Ready; ") ||
-		strings.HasPrefix(status, "Selecting mode ") ||
-		strings.HasPrefix(status, "Editing input ") ||
-		tuiStatusIsContextHint(status) {
+	text := m.snapshot.currentMessage()
+	if status == "" || text.Info.Kind == "hint" {
 		return
 	}
 	if status == previousStatus {
@@ -53,10 +51,11 @@ func (m *tuiModel) publishStatusNotification(message tea.Msg, previousStatus str
 	if keyMessage, ok := message.(tea.KeyMsg); ok && tuiNotificationNavigationKey(keyMessage) {
 		return
 	}
-	level := tuiNotificationLevelForStatus(status)
-	progress := m.busy || status == "Working..." ||
-		strings.Contains(strings.ToLower(status), "testing") ||
-		strings.Contains(strings.ToLower(status), "in progress")
+	level := tuiNotificationLevel(text.Info.Level)
+	if level == "" {
+		level = tuiNotificationInfo
+	}
+	progress := m.busy || text.Info.Progress
 	operationID := ""
 	if progress || m.hasProgressNotification() {
 		operationID = "operation"
@@ -66,6 +65,7 @@ func (m *tuiModel) publishStatusNotification(message tea.Msg, previousStatus str
 		level:    level,
 		title:    tuiNotificationTitle(level, progress),
 		message:  status,
+		text:     text,
 		progress: progress,
 	})
 }
@@ -73,25 +73,6 @@ func (m *tuiModel) publishStatusNotification(message tea.Msg, previousStatus str
 func (m *tuiModel) hasProgressNotification() bool {
 	for _, notification := range m.notifications {
 		if notification.progress {
-			return true
-		}
-	}
-	return false
-}
-
-func tuiStatusIsContextHint(status string) bool {
-	for _, prefix := range []string{
-		"Proxy groups ·",
-		"Nodes in ",
-		"Providers view ·",
-		"Enter to import ",
-		"Enter to copy ",
-		"Enter activates ·",
-		"Active subscription ·",
-		"Active local profile ·",
-		"Select an outbound mode",
-	} {
-		if strings.HasPrefix(status, prefix) {
 			return true
 		}
 	}
@@ -126,37 +107,6 @@ func tuiNotificationNavigationKey(message tea.KeyMsg) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func tuiNotificationLevelForStatus(status string) tuiNotificationLevel {
-	lower := strings.ToLower(status)
-	switch {
-	case strings.Contains(lower, "failed"),
-		strings.Contains(lower, "error"),
-		strings.Contains(lower, "invalid"),
-		strings.Contains(lower, "unavailable"),
-		strings.Contains(lower, "could not"),
-		strings.Contains(lower, "cannot"),
-		strings.Contains(lower, "timeout"),
-		strings.Contains(lower, "interrupted"):
-		return tuiNotificationError
-	case strings.Contains(lower, "cancel"),
-		strings.Contains(lower, "requires"),
-		strings.Contains(lower, "disabled"),
-		strings.Contains(lower, "stopped"):
-		return tuiNotificationWarning
-	case strings.Contains(lower, "complete"),
-		strings.Contains(lower, "succeeded"),
-		strings.Contains(lower, "saved"),
-		strings.Contains(lower, "updated"),
-		strings.Contains(lower, "enabled"),
-		strings.Contains(lower, "started"),
-		strings.Contains(lower, "switched"),
-		strings.Contains(lower, "reloaded"):
-		return tuiNotificationSuccess
-	default:
-		return tuiNotificationInfo
 	}
 }
 
@@ -196,7 +146,7 @@ func (m *tuiModel) enqueueNotification(notification tuiNotification) {
 		notification.message,
 	)
 	appendTUILogEvent(string(notification.level), logMessage)
-	m.snapshot.Logs = cliLogSnapshot()
+	mergeTUILogBuffers(&m.snapshot, cliLogSnapshot())
 	match := -1
 	for index := range m.notifications {
 		current := m.notifications[index]
@@ -318,7 +268,7 @@ func (m *tuiModel) notificationScrollLimit() int {
 	width, height := m.notificationDetailContentSize()
 	_, visible := tuiNotificationDetailRows(height)
 	lines := tuiNotificationLines(
-		m.notifications[m.notificationSelected].message,
+		m.notifications[m.notificationSelected].displayMessage(m.snapshot.Language),
 		maxTUIWidth(width-4, 1),
 	)
 	return maxTUIWidth(len(lines)-visible, 0)
@@ -331,15 +281,8 @@ func (m *tuiModel) notificationDetailPageSize() int {
 }
 
 func (m *tuiModel) notificationDetailContentSize() (int, int) {
-	if m.width < 40 || m.height < 10 {
-		return maxTUIWidth(m.width, 1), maxTUIWidth(m.height-3, 1)
-	}
-	if m.width < 88 || m.height < 18 {
-		return maxTUIWidth(m.width-2, 1), maxTUIWidth(m.height-2, 1)
-	}
-	sidebarWidth := minTUI(maxTUIWidth(m.width/5, 22), 28)
-	return maxTUIWidth(m.width-sidebarWidth-3, 1),
-		maxTUIWidth(m.height-4, 1)
+	layout := tuiLayoutAtSize(m.width, m.height, m.snapshot.Language)
+	return layout.ContentWidth, layout.PageHeight
 }
 
 func tuiNotificationLines(message string, width int) []string {
@@ -379,17 +322,22 @@ func tuiNotificationSummary(message string) string {
 	return strings.Join(strings.Fields(message), " ")
 }
 
-func tuiNotificationFooter(snapshot tuiSnapshot, left string, width int) string {
+func tuiNotificationFooter(snapshot tuiSnapshot, left string, width int, language ...string) string {
+	tr := tuiTranslator(language...)
 	notification, ok := tuiLatestUnreadNotification(snapshot.Notifications)
 	if !ok || width < 30 {
-		return tuiClampAnsiLine(left, width)
+		return tuiClampAnsiLine(tuiShortFooter(left, width), width)
 	}
 	rightWidth := minTUI(maxTUIWidth(width/2, 30), minTUI(width-2, 58))
 	level := string(notification.level)
-	hint := "Ctrl+N details"
+	hint := tr("ui.c9ca62ce1bf8")
+	if tuiDisplayWidth(level)+tuiDisplayWidth(hint)+7 > width-1 {
+		hint = "Ctrl+N"
+	}
 	fixedWidth := tuiDisplayWidth(level) + tuiDisplayWidth(hint) + 6
+	rightWidth = maxTUIWidth(rightWidth, fixedWidth+1)
 	summary := truncateTUI(
-		tuiNotificationSummary(notification.message),
+		tuiNotificationSummary(notification.displayMessage(tuiLanguageCode(language...))),
 		maxTUIWidth(rightWidth-fixedWidth, 1),
 	)
 	right := tuiNotificationLevelColor(notification.level) + level + " · " +
@@ -397,7 +345,7 @@ func tuiNotificationFooter(snapshot tuiSnapshot, left string, width int) string 
 	rightWidth = tuiDisplayWidth(level) + tuiDisplayWidth(summary) +
 		tuiDisplayWidth(hint) + 6
 	leftWidth := maxTUIWidth(width-rightWidth-1, 0)
-	left = truncateTUI(left, leftWidth)
+	left = truncateTUI(tuiShortFooter(left, leftWidth), leftWidth)
 	line := left + strings.Repeat(
 		" ",
 		maxTUIWidth(width-tuiDisplayWidth(left)-rightWidth, 0),
@@ -405,33 +353,33 @@ func tuiNotificationFooter(snapshot tuiSnapshot, left string, width int) string 
 	return tuiClampAnsiLine(line, width)
 }
 
-func tuiNotificationTinySummary(notification tuiNotification, width int) string {
-	hint := " · Ctrl+N details"
+func tuiNotificationTinySummary(notification tuiNotification, width int, language ...string) string {
+	tr := tuiTranslator(language...)
+	hint := tr("ui.8bf06050b8bb")
 	message := truncateTUI(
-		tuiNotificationSummary(notification.message),
+		tuiNotificationSummary(notification.displayMessage(tuiLanguageCode(language...))),
 		maxTUIWidth(width-tuiDisplayWidth(hint)-2, 1),
 	)
 	return tuiNotificationLevelColor(notification.level) + message +
 		tuiReset + tuiDim + hint + tuiReset
 }
 
-func tuiNotificationTinyDetail(snapshot tuiSnapshot, width int) []string {
+func tuiNotificationTinyDetail(snapshot tuiSnapshot, width int, language ...string) []string {
+	tr := tuiTranslator(language...)
 	if len(snapshot.Notifications) == 0 {
-		return []string{"Notifications", "No notifications yet", "Esc close"}
+		return []string{tr("ui.788011833a5a"), tr("ui.37ecf3603dbf"), tr("ui.0fdf605ea721")}
 	}
 	selected := minTUI(
 		maxTUIWidth(snapshot.NotificationSelected, 0),
 		len(snapshot.Notifications)-1,
 	)
 	notification := snapshot.Notifications[selected]
-	lines := []string{fmt.Sprintf(
-		"Notifications · %s · %d/%d",
-		notification.level,
+	lines := []string{fmt.Sprintf(tr("ui.948d9de89926"), notification.level,
 		selected+1,
 		len(snapshot.Notifications),
 	)}
 	messageLines := tuiNotificationLines(
-		notification.message,
+		notification.displayMessage(tuiLanguageCode(language...)),
 		maxTUIWidth(width, 1),
 	)
 	start := minTUI(
@@ -439,7 +387,7 @@ func tuiNotificationTinyDetail(snapshot tuiSnapshot, width int) []string {
 		maxTUIWidth(len(messageLines)-1, 0),
 	)
 	lines = append(lines, messageLines[start:]...)
-	lines = append(lines, "Enter confirm · Esc close")
+	lines = append(lines, tr("ui.ad2aa287d285"))
 	return lines
 }
 
@@ -453,22 +401,20 @@ func drawTUINotificationDetails(
 	b *strings.Builder,
 	snapshot tuiSnapshot,
 	width,
-	height int,
+	height int, language ...string,
 ) {
+	tr := tuiTranslator(language...)
 	historyRows, bodyRows := tuiNotificationDetailRows(height)
 	tuiTitle(
-		b,
-		"Notifications",
-		"↑↓ select · Enter confirm · Esc close",
-		width,
+		b, tr("ui.788011833a5a"), tr("ui.9a1bd2494b83"), width,
 	)
 	if len(snapshot.Notifications) == 0 {
-		tuiRow(b, "No notifications yet", width, false, tuiDim)
+		tuiRow(b, tr("ui.37ecf3603dbf"), width, false, tuiDim)
 		for row := 1; row < historyRows; row++ {
 			tuiRow(b, "", width, false, "")
 		}
 		tuiEndPanel(b, width)
-		tuiTitle(b, "Details", "Ctrl+N/Esc close", width)
+		tuiTitle(b, tr("ui.45989de49fb7"), tr("ui.4a96199166fd"), width)
 		for row := 0; row < bodyRows; row++ {
 			tuiRow(b, "", width, false, "")
 		}
@@ -501,7 +447,7 @@ func drawTUINotificationDetails(
 			state,
 			timestamp,
 			notification.level,
-			tuiNotificationSummary(notification.message),
+			tuiNotificationSummary(notification.displayMessage(tuiLanguageCode(language...))),
 		)
 		tuiRow(
 			b,
@@ -519,7 +465,7 @@ func drawTUINotificationDetails(
 	notification := snapshot.Notifications[selected]
 	position := ""
 	messageLines := tuiNotificationLines(
-		notification.message,
+		notification.displayMessage(tuiLanguageCode(language...)),
 		maxTUIWidth(width-4, 1),
 	)
 	startLine := minTUI(
@@ -535,8 +481,8 @@ func drawTUINotificationDetails(
 	}
 	tuiTitle(
 		b,
-		notification.title,
-		string(notification.level)+" · PgUp/PgDn scroll"+position,
+		notification.displayTitle(tuiLanguageCode(language...)),
+		string(notification.level)+tr("ui.071e96130496")+position,
 		width,
 	)
 	endLine := minTUI(startLine+bodyRows, len(messageLines))

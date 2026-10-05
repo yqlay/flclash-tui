@@ -3,6 +3,7 @@
 package main
 
 import (
+	"core/internal/i18n"
 	"errors"
 	"fmt"
 	"io"
@@ -110,8 +111,9 @@ func (input *tuiTerminalInput) Name() string {
 }
 
 type tuiServiceWatchMsg struct {
-	status tuiServiceStatus
-	err    error
+	generation uint64
+	status     tuiServiceStatus
+	err        error
 }
 
 type tuiShutdownResultMsg struct {
@@ -136,12 +138,20 @@ type tuiTrafficMsg struct {
 }
 
 type tuiRefreshResultMsg struct {
-	sequence      uint64
-	snapshot      tuiSnapshot
-	serviceStatus *tuiServiceStatus
+	retry              bool
+	backendUnavailable bool
+	generation         uint64
+	sequence           uint64
+	snapshot           tuiSnapshot
+	paths              cliPaths
+	configuredSettings *tuiSettings
+	serviceStatus      *tuiServiceStatus
 }
 
 type tuiOperationState struct {
+	service            *tuiServiceClient
+	backendInstanceID  string
+	backendGeneration  uint64
 	snapshot           tuiSnapshot
 	paths              cliPaths
 	setupParams        []byte
@@ -150,9 +160,13 @@ type tuiOperationState struct {
 	pendingMixedPort   *int
 	stagedSettings     *tuiSettings
 	settingsDirty      bool
+	settingsDraft      *tuiSettingsDraftBase
+	settingsConflict   bool
+	portEdit           *tuiPortEditDraft
 	backendRevision    uint64
 	profileSelection   string
 	networkChanged     bool
+	trafficReset       bool
 }
 
 type tuiOperationResultMsg struct {
@@ -175,6 +189,7 @@ type tuiEditorResultMsg struct {
 type tuiSSHCommandResultMsg struct {
 	action       string
 	status       string
+	text         tuiMessage
 	selectedName string
 	err          error
 }
@@ -271,6 +286,9 @@ type tuiModel struct {
 	inputSelectAll           bool
 	modeSelectionOpen        bool
 	selectedMode             int
+	languageSelectionOpen    bool
+	languageSaving           bool
+	selectedLanguage         int
 	renameProfilePath        string
 	editorPath               string
 	editorTempPath           string
@@ -278,7 +296,12 @@ type tuiModel struct {
 	pendingMixedPort         *int
 	stagedSettings           *tuiSettings
 	settingsDirty            bool
+	settingsDraft            *tuiSettingsDraftBase
+	inputSettingsDraft       *tuiSettingsDraftBase
 	backendRevision          uint64
+	backendInstanceID        string
+	backendGeneration        uint64
+	backendHandshakeActive   bool
 	networkCheckActive       bool
 	memoryRefreshActive      bool
 	coreMemoryUpdates        <-chan tuiCoreMemoryUpdate
@@ -338,8 +361,11 @@ type tuiModel struct {
 	dangerConfirmOpen        bool
 	dangerConfirmTitle       string
 	dangerConfirmMessage     string
+	dangerConfirmTitleText   tuiMessage
+	dangerConfirmBodyText    tuiMessage
 	dangerConfirmKey         tuiKey
 	dangerConfirmTarget      string
+	dangerConfirmSource      string
 	dangerConfirmed          bool
 }
 
@@ -358,8 +384,10 @@ func newTUIModel(
 		port := settings.MixedPort
 		pendingMixedPort = &port
 	}
-	return &tuiModel{
+	preferences, preferencesErr := loadTUIPreferences(paths.HomeDir)
+	model := &tuiModel{
 		snapshot: tuiSnapshot{
+			Language:          preferences.Language,
 			Status:            "Loading...",
 			GroupOrder:        loadTUIProxyGroupOrder(paths.ConfigPath),
 			Settings:          settings,
@@ -380,6 +408,11 @@ func newTUIModel(
 		pendingMixedPort: pendingMixedPort,
 		stagedSettings:   stagedSettings,
 	}
+	if preferencesErr != nil {
+		message := newTUIMessage("language.load_failed", preferencesErr.Error())
+		model.enqueueNotification(tuiNotification{level: tuiNotificationWarning, message: message.text("en"), text: message})
+	}
+	return model
 }
 
 func loadTUIConfiguredSettings(path string, ownsCore bool) *tuiSettings {
@@ -429,6 +462,8 @@ func runTUI(
 	if service != nil {
 		if status, statusErr := service.status(); statusErr == nil {
 			model.backendRevision = status.Revision
+			model.backendInstanceID = status.InstanceID
+			model.snapshot.SSHHistoryClearedBefore = status.SSHHistoryClearedBefore
 			model.snapshot.Settings.SystemProxy = status.SystemProxy
 			model.snapshot.Settings.Mode = status.Mode
 			model.snapshot.Settings.MixedPort = status.ConfiguredProxyPort
@@ -499,19 +534,26 @@ func (m *tuiModel) initializeCoreRuntime(coreRunning bool) {
 	m.pendingMixedPort = nil
 	m.stagedSettings = nil
 	m.settingsDirty = false
+	m.settingsDraft = nil
 	m.snapshot.Settings = tuiSettings{}
 }
 
 // reconcileStoppedCoreState prevents a stopped Core from leaving stale active
 // connections or ACTIVE History rows on screen while an asynchronous refresh
-// is pending. Persistent History remains available, but every entry is closed.
+// is pending. Independent SSH flows are not owned by Mihomo.
 func (m *tuiModel) reconcileStoppedCoreState() {
 	if m.coreRunning {
 		return
 	}
-	m.snapshot.Connections = nil
-	m.snapshot.SelectedConnection = -1
-	m.snapshot.ConnectionsDetailOpen = false
+	selectedID := ""
+	if index := m.snapshot.SelectedConnection; index >= 0 && index < len(m.snapshot.Connections) {
+		selectedID = m.snapshot.Connections[index].ID
+	}
+	m.snapshot.Connections = filterConnectionsBySource(m.snapshot.Connections, tuiTrafficSourceSSH)
+	m.snapshot.SelectedConnection = findTUIConnection(m.snapshot.Connections, selectedID)
+	if m.snapshot.SelectedConnection < 0 {
+		m.snapshot.ConnectionsDetailOpen = false
+	}
 	m.snapshot.Requests, _ = markTUIRequestHistoryInactive(m.snapshot.Requests)
 }
 
@@ -572,9 +614,22 @@ func (m *tuiModel) Init() tea.Cmd {
 
 func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
+	case tuiLanguageSavedMsg:
+		m.languageSaving = false
+		if message.Err != nil {
+			text := newTUIMessage("language.save_failed", message.Err.Error())
+			m.enqueueNotification(tuiNotification{level: tuiNotificationError, message: text.text("en"), text: text})
+			return m, nil
+		}
+		m.snapshot.Language = message.Language
+		m.reflowTUI()
+		text := newTUIMessage("language.saved")
+		m.enqueueNotification(tuiNotification{level: tuiNotificationSuccess, message: text.text("en"), text: text})
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = message.Width
 		m.height = message.Height
+		m.reflowTUI()
 		return m, nil
 	case tuiTickMsg:
 		return m, m.idleTickCommand()
@@ -583,8 +638,11 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tuiTerminalExitSignalMsg:
 		return m, m.handleKey(tuiKeyQuit)
 	case tuiServiceWatchMsg:
+		if message.generation != m.backendGeneration {
+			return m, nil
+		}
 		if message.err != nil {
-			m.snapshot.Status = "Backend watch interrupted: " + message.err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.e257c8d7a2e3", message.err.Error()))
 			retry := m.waitServiceUpdate()
 			return m, tea.Tick(time.Second, func(time.Time) tea.Msg {
 				if retry == nil {
@@ -593,34 +651,48 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return retry()
 			})
 		}
+		if !m.backendStatusCurrent(message.status) {
+			if message.status.InstanceID != m.backendInstanceID {
+				return m, m.startBackendHandshake()
+			}
+			return m, m.waitServiceUpdate()
+		}
 		if message.status.ShuttingDown {
-			m.snapshot.Status = "Backend is shutting down"
+			m.snapshot.setStatus(newTUIMessage("ui.00fe8fa15732"))
 			return m, tea.Quit
 		}
-		m.backendRevision = message.status.Revision
-		m.coreRunning = message.status.Running
-		m.reconcileStoppedCoreState()
-		m.snapshot.Settings.SystemProxy = message.status.SystemProxy
-		m.snapshot.Settings.Mode = message.status.Mode
-		m.snapshot.Settings.MixedPort = message.status.ConfiguredProxyPort
-		m.snapshot.ConfiguredProxyPort = message.status.ConfiguredProxyPort
-		m.snapshot.ActiveProxyPort = message.status.ActiveProxyPort
-		m.snapshot.Settings.TunEnabled = message.status.TunState == "on"
-		m.snapshot.Settings.TunScope = message.status.TunScope
-		if message.status.Mode == tuiSilentMode {
-			m.snapshot.Settings.TunEnabled = false
-		}
-		m.snapshot.FLCEnabled = message.status.FLCEnabled
-		m.snapshot.FLCOutbound = message.status.FLCOutbound
+		m.applyBackendStatus(message.status)
 		m.refreshInFlight = false
+		return m, tea.Batch(m.startRefresh(), m.waitServiceUpdate())
+	case tuiBackendHandshakeMsg:
+		if message.generation != m.backendGeneration {
+			return m, nil
+		}
+		m.backendHandshakeActive = false
+		if message.err != nil {
+			m.snapshot.setStatus(newTUIMessage("ui.e257c8d7a2e3", message.err.Error()))
+			return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return tuiServiceWatchMsg{generation: message.generation, err: message.err} })
+		}
+		if message.status.InstanceID == m.backendInstanceID && message.status.Revision < m.backendRevision {
+			return m, m.waitServiceUpdate()
+		}
+		if message.status.InstanceID != m.backendInstanceID {
+			m.backendGeneration++
+			m.refreshSequence++
+			m.refreshInFlight = false
+		}
+		m.applyBackendStatus(message.status)
+		if message.status.ShuttingDown {
+			return m, tea.Quit
+		}
 		return m, tea.Batch(m.startRefresh(), m.waitServiceUpdate())
 	case tuiShutdownResultMsg:
 		if message.err != nil {
 			m.shutdownRequested = false
-			m.snapshot.Status = "Backend shutdown failed: " + message.err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.ddd39b888d41", message.err.Error()))
 			return m, nil
 		}
-		m.snapshot.Status = "Backend stopped"
+		m.snapshot.setStatus(newTUIMessage("ui.cbc1585806df"))
 		return m, tea.Quit
 	case tuiNetworkResultMsg:
 		m.networkCheckActive = false
@@ -629,9 +701,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.snapshot.Network = message.info
 		if message.info.Error != "" {
-			m.snapshot.Status = "Network detection failed: " + message.info.Error
-		} else if strings.HasPrefix(m.snapshot.Status, "Network detection failed: ") {
-			m.snapshot.Status = "Connected"
+			m.snapshot.setStatus(newTUIMessage("ui.eb22b79546a4", message.info.Error))
+		} else if m.snapshot.currentMessage().Info.Kind == "network_error" {
+			m.snapshot.setStatus(newTUIMessage("ui.22965568d22a"))
 		}
 		return m, nil
 	case tuiMemoryResultMsg:
@@ -682,7 +754,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.sshCaptureSelected = message.selected
 		if len(message.candidates) == 0 {
 			m.sshCaptureOpen = false
-			m.snapshot.Status = formatCLICaptureEmptyHint()
+			m.snapshot.setStatus(newTUIMessage("ui.f684c73cba75", formatCLICaptureEmptyHint()))
 			return m, nil
 		}
 		if len(message.candidates) == 1 {
@@ -736,12 +808,12 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 				if message.direct {
 					prefix = "SSH direct network detection"
 				}
-				m.snapshot.Status = prefix + " failed: " + message.info.Error
+				m.snapshot.setStatus(newTUIMessage("ui.f1b8b539f9bd", prefix, message.info.Error))
 			} else {
 				if message.direct {
-					m.snapshot.Status = "SSH direct exit network refreshed"
+					m.snapshot.setStatus(newTUIMessage("ui.e96114ed7726"))
 				} else {
-					m.snapshot.Status = "SSH managed exit network refreshed"
+					m.snapshot.setStatus(newTUIMessage("ui.9165ca06bb4f"))
 				}
 			}
 		}
@@ -753,14 +825,14 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if message.err != nil {
 			m.snapshot.SSHDirectProbe = cliSSHRemoteProbe{Reason: message.err.Error()}
-			m.snapshot.Status = "SSH proxy inet IP unavailable: " + message.err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.596acf44c1d3", message.err.Error()))
 			return m, nil
 		}
 		m.snapshot.SSHDirectProbe = message.probe
 		if message.probe.IntranetIP == "" {
-			m.snapshot.Status = "SSH proxy inet IP unavailable: " + cliDisplayValue(message.probe.Reason)
+			m.snapshot.setStatus(newTUIMessage("ui.596acf44c1d3", cliDisplayValue(message.probe.Reason)))
 		} else {
-			m.snapshot.Status = "SSH proxy inet IP refreshed"
+			m.snapshot.setStatus(newTUIMessage("ui.22ffcb985ee4"))
 		}
 		return m, nil
 	case tuiSSHDelayResultMsg:
@@ -768,18 +840,18 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if message.err != nil {
 				if message.direct {
 					m.snapshot.SSHDirectDelay = tuiDelayResult{Error: message.err.Error()}
-					m.snapshot.Status = "SSH direct route delay failed: " + message.err.Error()
+					m.snapshot.setStatus(newTUIMessage("ui.e7ff7abe5fa8", message.err.Error()))
 				} else {
 					m.snapshot.SSHDelay = tuiDelayResult{Error: message.err.Error()}
-					m.snapshot.Status = "SSH managed route delay failed: " + message.err.Error()
+					m.snapshot.setStatus(newTUIMessage("ui.138bcf4bcd9e", message.err.Error()))
 				}
 			} else {
 				if message.direct {
 					m.snapshot.SSHDirectDelay = message.result
-					m.snapshot.Status = "SSH direct route delay: " + formatTUIDelay(message.result)
+					m.snapshot.setStatus(newTUIMessage("ui.64e55ebf674c", formatTUIDelay(message.result)))
 				} else {
 					m.snapshot.SSHDelay = message.result
-					m.snapshot.Status = "SSH managed route delay: " + formatTUIDelay(message.result)
+					m.snapshot.setStatus(newTUIMessage("ui.aff3508db959", formatTUIDelay(message.result)))
 				}
 			}
 		}
@@ -789,33 +861,51 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if message.err != nil {
 				if message.direct {
 					m.snapshot.SSHDirectSpeed = tuiSpeedResult{Error: message.err.Error()}
-					m.snapshot.Status = "SSH direct route speed failed: " + message.err.Error()
+					m.snapshot.setStatus(newTUIMessage("ui.fb075c0142ce", message.err.Error()))
 				} else {
 					m.snapshot.SSHSpeed = tuiSpeedResult{Error: message.err.Error()}
-					m.snapshot.Status = "SSH managed route speed failed: " + message.err.Error()
+					m.snapshot.setStatus(newTUIMessage("ui.e917d8a3de8a", message.err.Error()))
 				}
 			} else {
 				if message.direct {
 					m.snapshot.SSHDirectSpeed = message.result
-					m.snapshot.Status = "SSH direct route speed: " + formatTUISpeed(message.result)
+					m.snapshot.setStatus(newTUIMessage("ui.f6569e9ca3e3", formatTUISpeed(message.result)))
 				} else {
 					m.snapshot.SSHSpeed = message.result
-					m.snapshot.Status = "SSH managed route speed: " + formatTUISpeed(message.result)
+					m.snapshot.setStatus(newTUIMessage("ui.970aab5b31cd", formatTUISpeed(message.result)))
 				}
 			}
 		}
 		return m, nil
 	case tuiRefreshResultMsg:
-		if message.sequence != m.refreshSequence {
+		if message.sequence != m.refreshSequence || message.generation != m.backendGeneration {
 			return m, nil
 		}
 		m.refreshInFlight = false
+		if message.retry {
+			return m, m.startRefresh()
+		}
+		if message.serviceStatus != nil && !m.backendStatusCurrent(*message.serviceStatus) {
+			if message.serviceStatus.InstanceID != m.backendInstanceID {
+				return m, m.startBackendHandshake()
+			}
+			return m, m.startRefresh()
+		}
+		if m.service != nil && message.serviceStatus == nil {
+			message.snapshot.Settings = m.snapshot.Settings
+		}
+		if message.backendUnavailable {
+			message.snapshot = mergeTUIUnavailableBackend(m.snapshot, message.snapshot, message.paths, m.paths)
+		}
 		previousSSHIndex := m.sshDetailProfileIndex()
 		var previousSSH tuiSSHProfile
 		if previousSSHIndex >= 0 {
 			previousSSH = m.snapshot.SSHProfiles[previousSSHIndex]
 		}
 		m.snapshot = mergeTUIRefresh(m.snapshot, message.snapshot)
+		if m.snapshot.LogsInitialized {
+			mergeTUILogBuffers(&m.snapshot, cliLogSnapshot())
+		}
 		sshConnectionChanged := false
 		if previousSSHIndex >= 0 {
 			currentSSHIndex := m.sshDetailProfileIndex()
@@ -833,38 +923,21 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.resetSelectedSSHMetrics()
 		}
 		if message.serviceStatus != nil {
-			m.backendRevision = message.serviceStatus.Revision
-			m.coreRunning = message.serviceStatus.Running
-			m.reconcileStoppedCoreState()
-			m.snapshot.Settings.SystemProxy = message.serviceStatus.SystemProxy
-			m.snapshot.Settings.Mode = message.serviceStatus.Mode
-			m.snapshot.Settings.MixedPort = message.serviceStatus.ConfiguredProxyPort
-			m.snapshot.ConfiguredProxyPort = message.serviceStatus.ConfiguredProxyPort
-			m.snapshot.ActiveProxyPort = message.serviceStatus.ActiveProxyPort
-			m.snapshot.Settings.TunEnabled = message.serviceStatus.TunState == "on"
-			m.snapshot.Settings.TunScope = message.serviceStatus.TunScope
-			if message.serviceStatus.Mode == tuiSilentMode {
-				m.snapshot.Settings.TunEnabled = false
-			}
-			m.snapshot.FLCEnabled = message.serviceStatus.FLCEnabled
-			m.snapshot.FLCOutbound = message.serviceStatus.FLCOutbound
-		}
-		if !m.coreRunning && m.stagedSettings != nil {
-			systemProxy := m.snapshot.Settings.SystemProxy
-			m.snapshot.Settings = *m.stagedSettings
-			m.snapshot.Settings.SystemProxy = systemProxy
-			if message.serviceStatus != nil {
-				m.snapshot.Settings.Mode = message.serviceStatus.Mode
-				m.snapshot.Settings.TunEnabled =
-					message.serviceStatus.TunState == "on"
-				m.snapshot.Settings.TunScope = message.serviceStatus.TunScope
-				if message.serviceStatus.Mode == tuiSilentMode {
-					m.snapshot.Settings.TunEnabled = false
+			if !m.settingsDirty {
+				if message.serviceStatus.Running {
+					m.stagedSettings, m.pendingMixedPort = nil, nil
+				} else {
+					m.stagedSettings = cloneTUISettings(message.configuredSettings)
+					if m.stagedSettings == nil {
+						m.stagedSettings = cloneTUISettings(&m.snapshot.Settings)
+					}
 				}
 			}
+			m.applyBackendStatus(*message.serviceStatus)
 		}
+		m.preserveSettingsDraft()
 		if m.ownsCore && !m.coreRunning && m.snapshot.Status == "Connected" {
-			m.snapshot.Status = "Ready; start Core or enable System proxy on Dashboard"
+			m.snapshot.setStatus(newTUIMessage("ui.3e90940acfe9"))
 		}
 		if sshConnectionChanged {
 			return m, m.refreshSelectedSSHDashboard()
@@ -873,7 +946,27 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tuiOperationResultMsg:
 		previousRoute := m.networkCheckRoute()
 		m.busy = false
+		if message.state.settingsConflict && message.state.portEdit != nil && m.inputMode == tuiInputNone {
+			m.inputMode = tuiInputMixedPort
+			m.inputValue = []rune(message.state.portEdit.Value)
+			m.inputCursor = len(m.inputValue)
+			m.inputSelectAll = false
+			m.inputSettingsDraft = cloneTUISettingsDraft(message.state.portEdit.Base)
+		}
+		if message.state.backendGeneration != m.backendGeneration ||
+			(m.backendInstanceID != "" && message.state.backendInstanceID != m.backendInstanceID) ||
+			message.state.backendRevision < m.backendRevision {
+			// Report the operation result without replacing newer live state.
+			m.snapshot.setStatus(message.state.snapshot.currentMessage())
+			return m, m.startRefresh()
+		}
 		m.snapshot = mergeTUIOperation(m.snapshot, message.state.snapshot)
+		if message.state.trafficReset {
+			m.snapshot.TotalTraffic = trafficSnapshot{}
+		}
+		if m.snapshot.LogsInitialized {
+			mergeTUILogBuffers(&m.snapshot, cliLogSnapshot())
+		}
 		m.paths = message.state.paths
 		m.setupParams = append(m.setupParams[:0], message.state.setupParams...)
 		m.coreRunning = message.state.coreRunning
@@ -882,7 +975,13 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingMixedPort = cloneTUIOptionalInt(message.state.pendingMixedPort)
 		m.stagedSettings = cloneTUISettings(message.state.stagedSettings)
 		m.settingsDirty = message.state.settingsDirty
+		m.settingsDraft = nil
+		if m.settingsDirty {
+			m.settingsDraft = cloneTUISettingsDraft(message.state.settingsDraft)
+		}
 		m.backendRevision = message.state.backendRevision
+		m.backendInstanceID = message.state.backendInstanceID
+		m.preserveSettingsDraft()
 		if message.state.profileSelection != "" {
 			m.snapshot.SelectedRow = findTUIProfile(
 				m.snapshot.Profiles,
@@ -907,13 +1006,11 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		)
 		completed := message.total - len(message.remaining)
 		if len(message.remaining) > 0 {
-			m.snapshot.Status = fmt.Sprintf(
-				"%s speed tests: %d/%d complete · testing %s next",
-				message.groupName,
+			m.snapshot.setStatus(newTUIMessage("ui.be8bb45e2eb4", message.groupName,
 				completed,
 				message.total,
-				message.remaining[0],
-			)
+				message.remaining[0]))
+
 			return m, m.testNextProxyGroupSpeed(
 				message.groupName,
 				message.remaining,
@@ -922,12 +1019,10 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			)
 		}
 		m.busy = false
-		m.snapshot.Status = fmt.Sprintf(
-			"%s speed tests complete: %d/%d succeeded",
-			message.groupName,
+		m.snapshot.setStatus(newTUIMessage("ui.9d3927bdfdcb", message.groupName,
 			message.successes,
-			message.total,
-		)
+			message.total))
+
 		return m, m.startRefresh()
 	case tuiEditorResultMsg:
 		m.busy = false
@@ -939,23 +1034,23 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.editorBackup = tuiProfileBackup{}
 		defer os.Remove(editorTempPath)
 		if message.err != nil {
-			m.snapshot.Status = "Editor failed: " + message.err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.d06cf3587589", message.err.Error()))
 			return m, nil
 		}
 		edited, readErr := os.ReadFile(editorTempPath)
 		if readErr != nil {
-			m.snapshot.Status = "Edited configuration could not be read: " + readErr.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.7aa0c57afbd1", readErr.Error()))
 			return m, nil
 		}
 		if validationMessage := validateConfigBytes(edited); validationMessage != "" {
-			m.snapshot.Status = "Edited configuration is invalid: " + validationMessage
+			m.snapshot.setStatus(newTUIMessage("ui.247dfdf7e7d9", validationMessage))
 			return m, nil
 		}
 		return m, m.startOperation(func(state *tuiOperationState) {
 			if !prepareTUIBackendRevision(state, m.service) {
 				return
 			}
-			status, err := m.service.putProfile(
+			status, err := state.service.putProfile(
 				editorPath,
 				edited,
 				tuiBytesSHA256(editorBackup.data),
@@ -964,17 +1059,17 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 				state.backendRevision,
 			)
 			if err != nil {
-				state.snapshot.Status = "Edited configuration was not committed: " + err.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.de7ea2893386", err.Error()))
 				return
 			}
 			applyTUIOperationServiceStatus(state, status)
 			if filepath.Clean(editorPath) == filepath.Clean(state.paths.ConfigPath) {
-				state.snapshot.Status = "Configuration saved and hot-reloaded"
+				state.snapshot.setStatus(newTUIMessage("ui.b432c230f0a1"))
 				syncStoppedTUISettings(state)
 				state.networkChanged = true
 			} else {
-				state.snapshot.Status = "Configuration saved: " + filepath.Base(editorPath) +
-					" · activate it to apply"
+				state.snapshot.setStatus(newTUIMessage("ui.b355b61e5a94", filepath.Base(editorPath)))
+
 			}
 			refreshTUIProfiles(&state.snapshot, state.paths)
 		})
@@ -1010,11 +1105,13 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.resetSelectedSSHMetrics()
 		}
 		if message.err != nil {
-			m.snapshot.Status = "SSH " + message.action + " failed: " + message.err.Error()
+			m.snapshot.setStatus(newTUIMessage("ui.8fffcd5a0b8c", message.action, message.err.Error()))
+		} else if message.text.Key != "" {
+			m.snapshot.setStatus(message.text)
 		} else if message.status != "" {
-			m.snapshot.Status = message.status
+			m.snapshot.setStatus(tuiMessage{Raw: message.status, Info: i18n.SourceInfo{Level: "SUCCESS"}})
 		} else {
-			m.snapshot.Status = "SSH " + message.action + " complete"
+			m.snapshot.setStatus(newTUIMessage("ui.4c6f2ea9605c", message.action))
 		}
 		commands := []tea.Cmd{m.startRefresh()}
 		if message.err == nil &&

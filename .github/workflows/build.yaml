@@ -54,18 +54,38 @@ jobs:
           (cd plugins/proxy && flutter pub get && flutter test --reporter expanded)
           (cd plugins/setup/buildkit/build_tool && dart pub get && dart test --reporter expanded)
 
+      - name: Setup terminal regression tests
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install terminal test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix packaging/terminal-tests
+
       - name: Test Linux CLI
         working-directory: core
+        env:
+          FLCLASH_TUI_REQUIRE_TERMINAL_TESTS: '1'
         run: |
           CGO_ENABLED=0 GOOS=linux go test -tags cli ./...
           CGO_ENABLED=0 GOOS=linux go vet -tags cli ./...
           cli_test_dir="$(mktemp -d)"
           CGO_ENABLED=0 GOOS=linux go build -tags cli -trimpath -o "$cli_test_dir/flclash" .
-          bash ../packaging/tui-exit-test.sh "$cli_test_dir/flclash"
+          sudo unshare --mount --pid --net --fork --mount-proc bash -c '
+            set -euo pipefail
+            mount --make-rprivate /
+            mount -t tmpfs -o mode=755 tmpfs /run/user
+            mkdir -m 700 /run/user/0
+            export XDG_CONFIG_HOME=/run/user/0/test-config
+            export XDG_STATE_HOME=/run/user/0/test-state
+            export FLCLASH_EXIT_TEST_ISOLATED=1
+            ip link set lo up
+            bash "$1" "$2"
+          ' bash ../packaging/tui-exit-test.sh "$cli_test_dir/flclash"
 
       - name: Test installer
         run: |
-          bash -n install.sh packaging/install-script-test.sh packaging/tui-exit-test.sh
+          bash -n install.sh packaging/install-script-test.sh packaging/tui-exit-test.sh packaging/tui-exit-isolated-test.sh
           bash packaging/install-script-test.sh
 
       - name: Test Windows helper

@@ -586,8 +586,8 @@ func TestTUIDashboardAndProxySpeedResultsRender(t *testing.T) {
 	)
 	dashboardText := stripTUIANSI(dashboard.String())
 	for _, expected := range []string{
-		"Rule route     42 ms · jitter 3 ms · 5 samples",
-		"Cloudflare DL  25.00 MB/s · 200.0 Mbps",
+		"Rule route    42 ms · jitter 3 ms · 5 samples",
+		"Cloudflare DL 25.00 MB/s · 200.0 Mbps",
 		"100.0 MB in 4.00s",
 	} {
 		if !strings.Contains(dashboardText, expected) {

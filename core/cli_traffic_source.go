@@ -3,6 +3,7 @@
 package main
 
 import (
+	"sort"
 	"strings"
 	"time"
 )
@@ -129,21 +130,23 @@ func cliSSHRelayFlowConnection(flow cliSSHRelayFlow) tuiConnection {
 	}
 }
 
-func splitCLISSHRelayConnections(flows []cliSSHRelayFlow) (live, recent []tuiConnection) {
+func splitCLISSHRelayConnections(flows []cliSSHRelayFlow) (live []tuiConnection, recent []tuiRequest) {
 	live = make([]tuiConnection, 0, len(flows))
-	recent = make([]tuiConnection, 0, len(flows))
+	recent = make([]tuiRequest, 0, len(flows))
 	for _, flow := range flows {
 		connection := cliSSHRelayFlowConnection(flow)
 		if flow.Active {
 			live = append(live, connection)
 			continue
 		}
-		recent = append(recent, connection)
+		recent = append(recent, tuiRequest{
+			TuiConnection: connection, FirstSeen: flow.StartedAt, LastSeen: flow.LastSeen,
+		})
 	}
 	return live, recent
 }
 
-func loadCLISSHRelayConnections() (live, recent []tuiConnection) {
+func loadCLISSHRelayConnections() (live []tuiConnection, recent []tuiRequest) {
 	return splitCLISSHRelayConnections(loadCLISSHRelayFlows())
 }
 
@@ -153,7 +156,7 @@ func (m *tuiModel) cycleTrafficSource() {
 	m.snapshot.SelectedRequest = firstTUIRequestMatch(m.snapshot)
 	m.snapshot.ConnectionsDetailOpen = false
 	m.snapshot.HistoryDetailOpen = false
-	m.snapshot.Status = "Traffic source: " + normalizeTrafficSource(m.snapshot.TrafficSource)
+	m.snapshot.setStatus(newTUIMessage("traffic.source", normalizeTrafficSource(m.snapshot.TrafficSource)))
 }
 
 func trafficClearConfirmMessage(source, kind string) string {
@@ -178,31 +181,50 @@ func trafficClearConfirmMessage(source, kind string) string {
 
 func rememberClosedSSHHistory(
 	history []tuiRequest,
-	recent []tuiConnection,
+	recent []tuiRequest,
 	now time.Time,
+	clearedBefore ...time.Time,
 ) []tuiRequest {
 	if len(recent) == 0 {
 		return history
 	}
-	known := make(map[string]bool, len(history))
-	for _, entry := range history {
+	cutoff := time.Time{}
+	if len(clearedBefore) > 0 {
+		cutoff = clearedBefore[0]
+	}
+	known := make(map[string]int, len(history))
+	for index, entry := range history {
 		if entry.ID != "" {
-			known[entry.ID] = true
+			known[entry.ID] = index
 		}
 	}
 	updated := append([]tuiRequest(nil), history...)
 	for _, connection := range recent {
-		if connection.ID == "" || known[connection.ID] {
+		if connection.ID == "" || (!cutoff.IsZero() && !connection.LastSeen.After(cutoff)) {
 			continue
 		}
-		known[connection.ID] = true
-		updated = append(updated, tuiRequest{
-			TuiConnection: connection,
-			FirstSeen:     now,
-			LastSeen:      now,
-			Active:        false,
-		})
+		if index, exists := known[connection.ID]; exists {
+			updated[index].TuiConnection = connection.TuiConnection
+			updated[index].Active = false
+			if !connection.FirstSeen.IsZero() {
+				updated[index].FirstSeen = connection.FirstSeen
+			}
+			if !connection.LastSeen.IsZero() {
+				updated[index].LastSeen = connection.LastSeen
+			}
+			continue
+		}
+		if connection.FirstSeen.IsZero() {
+			connection.FirstSeen = now
+		}
+		if connection.LastSeen.IsZero() {
+			connection.LastSeen = now
+		}
+		connection.Active = false
+		known[connection.ID] = len(updated)
+		updated = append(updated, connection)
 	}
+	sort.SliceStable(updated, func(i, j int) bool { return updated[i].LastSeen.After(updated[j].LastSeen) })
 	if len(updated) > tuiRequestHistoryLimit {
 		updated = updated[:tuiRequestHistoryLimit]
 	}

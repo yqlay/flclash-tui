@@ -11,6 +11,14 @@ import (
 	"strings"
 )
 
+var (
+	setTUIServiceSystemProxy     = setLinuxSystemProxy
+	tuiServiceSystemProxyMatches = linuxSystemProxyMatches
+	reloadTUIServiceSettings     = func(r *tuiServiceRuntime, path string) (bool, error) {
+		return r.reloadUnlocked(path, "")
+	}
+)
+
 func validateTUIProxyPortTransition(previousPort, targetPort int) error {
 	if targetPort > 0 && !waitForTUIProxyPortState(
 		targetPort,
@@ -61,86 +69,47 @@ func (r *tuiServiceRuntime) applySettings(
 	if err := persistTUISettings(configPath, settings); err != nil {
 		return false, err
 	}
-	if _, err := r.reloadUnlocked(configPath, ""); err == nil {
+	rollback := func(cause error, restoreProxy bool) (bool, error) {
+		if err := writeTUIProfileAtomically(writePath, original, info.Mode()); err != nil {
+			return true, fmt.Errorf("apply settings: %v; rollback write failed: %w", cause, err)
+		}
+		_, reloadErr := reloadTUIServiceSettings(r, configPath)
+		var proxyErr error
+		if restoreProxy && systemProxy && proxyPort > 0 {
+			proxyErr = setTUIServiceSystemProxy(proxyPort, true)
+			// Query the actual desktop state even after a failed external command.
+			r.setSystemProxyState(tuiServiceSystemProxyMatches(proxyPort), proxyPort)
+		}
+		if reloadErr != nil || proxyErr != nil {
+			return true, fmt.Errorf("apply settings: %v; Core rollback: %v; System proxy rollback: %v", cause, reloadErr, proxyErr)
+		}
+		return false, fmt.Errorf("apply settings: %w; original configuration restored", cause)
+	}
+	if _, err := reloadTUIServiceSettings(r, configPath); err == nil {
 		r.mu.RLock()
 		newActivePort := r.activePort
 		r.mu.RUnlock()
 		if systemProxy && settings.MixedPort <= 0 {
-			if proxyPort > 0 && linuxSystemProxyMatches(proxyPort) {
-				if proxyErr := setLinuxSystemProxy(proxyPort, false); proxyErr != nil {
-					return false, fmt.Errorf(
-						"disable managed system proxy: %w",
-						proxyErr,
-					)
+			if proxyPort > 0 && tuiServiceSystemProxyMatches(proxyPort) {
+				if proxyErr := setTUIServiceSystemProxy(proxyPort, false); proxyErr != nil {
+					return rollback(fmt.Errorf("disable managed system proxy: %w", proxyErr), true)
 				}
 			}
 			r.setSystemProxyState(false, 0)
 			return true, nil
 		}
 		if systemProxy && proxyPort != newActivePort {
-			if proxyPort > 0 && !linuxSystemProxyMatches(proxyPort) {
+			if proxyPort > 0 && !tuiServiceSystemProxyMatches(proxyPort) {
 				r.setSystemProxyState(false, 0)
-			} else if proxyErr := setLinuxSystemProxy(newActivePort, true); proxyErr != nil {
-				if restoreErr := writeTUIProfileAtomically(
-					writePath,
-					original,
-					info.Mode(),
-				); restoreErr != nil {
-					return false, fmt.Errorf(
-						"update managed system proxy: %v; rollback write failed: %w",
-						proxyErr,
-						restoreErr,
-					)
-				}
-				_, reloadErr := r.reloadUnlocked(configPath, "")
-				var proxyRestoreErr error
-				if proxyPort > 0 {
-					proxyRestoreErr = setLinuxSystemProxy(proxyPort, true)
-					if proxyRestoreErr != nil {
-						r.setSystemProxyState(false, 0)
-					}
-				}
-				if reloadErr != nil || proxyRestoreErr != nil {
-					return false, fmt.Errorf(
-						"update managed system proxy: %v; Core rollback: %v; System proxy rollback: %v",
-						proxyErr,
-						reloadErr,
-						proxyRestoreErr,
-					)
-				}
-				return false, fmt.Errorf(
-					"update managed system proxy: %w; configuration restored",
-					proxyErr,
-				)
+			} else if proxyErr := setTUIServiceSystemProxy(newActivePort, true); proxyErr != nil {
+				return rollback(fmt.Errorf("update managed system proxy: %w", proxyErr), true)
 			} else {
 				r.setSystemProxyState(true, newActivePort)
 			}
 		}
 		return true, nil
 	} else {
-		reloadErr := err
-		if restoreErr := writeTUIProfileAtomically(
-			writePath,
-			original,
-			info.Mode(),
-		); restoreErr != nil {
-			return false, fmt.Errorf(
-				"apply settings: %v; rollback write failed: %w",
-				reloadErr,
-				restoreErr,
-			)
-		}
-		if _, rollbackErr := r.reloadUnlocked(configPath, ""); rollbackErr != nil {
-			return false, fmt.Errorf(
-				"apply settings: %v; original profile restored but Core rollback failed: %w",
-				reloadErr,
-				rollbackErr,
-			)
-		}
-		return false, fmt.Errorf(
-			"apply settings: %w; original configuration and Core listener restored",
-			reloadErr,
-		)
+		return rollback(err, false)
 	}
 }
 
@@ -208,6 +177,7 @@ func (r *tuiServiceRuntime) applySystemProxy(enabled bool) (bool, error) {
 		port = proxyPort
 	}
 	if err := setLinuxSystemProxy(port, enabled); err != nil {
+		r.setSystemProxyState(linuxSystemProxyMatches(proxyPort), proxyPort)
 		return false, err
 	}
 	r.setSystemProxyState(enabled, proxyPort)

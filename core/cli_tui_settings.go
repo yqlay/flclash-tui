@@ -19,12 +19,15 @@ func (m *tuiModel) persistStagedTUISettings() {
 		return
 	}
 	if m.service != nil {
+		if m.settingsDraft == nil {
+			m.settingsDraft = m.settingsDraftBase()
+		}
 		m.settingsDirty = true
-		m.snapshot.Status += "; pending backend commit"
+		m.snapshot.appendStatus(newTUIMessage("ui.e029c971c1f2"))
 		return
 	}
 	m.settingsDirty = true
-	m.snapshot.Status += "; not saved without Backend"
+	m.snapshot.appendStatus(newTUIMessage("ui.2bc8b93fe0a6"))
 }
 
 func applyTUIOperationSetting(
@@ -34,7 +37,7 @@ func applyTUIOperationSetting(
 	key tuiKey,
 ) {
 	if service == nil {
-		state.snapshot.Status = "Changing shared settings requires the managed backend"
+		state.snapshot.setStatus(newTUIMessage("ui.1a3c83b35cc5"))
 		return
 	}
 	if key == tuiKeyTun {
@@ -45,23 +48,23 @@ func applyTUIOperationSetting(
 		if scope == "" {
 			scope = tuiTunScopeUser
 		}
-		status, err := service.setTun(
+		status, err := state.service.setTun(
 			!state.snapshot.Settings.TunEnabled,
 			scope,
 			state.backendRevision,
 		)
 		if err != nil {
-			state.snapshot.Status = "TUN update failed: " + err.Error()
+			state.snapshot.setStatus(newTUIMessage("ui.5d86b1ec6313", err.Error()))
 			return
 		}
 		applyTUIOperationServiceStatus(state, status)
-		state.snapshot.Status = "TUN " + strings.ToUpper(status.TunScope) + " " + strings.ToUpper(status.TunState)
+		state.snapshot.setStatus(newTUIMessage("ui.41842b752df0", strings.ToUpper(status.TunScope), strings.ToUpper(status.TunState)))
 		state.networkChanged = true
 		return
 	}
 	settings := state.snapshot.Settings
 	if !changeTUISettingsValue(&settings, key) {
-		state.snapshot.Status = "Setting is already at its limit"
+		state.snapshot.setStatus(newTUIMessage("ui.7c247b59e634"))
 		return
 	}
 	commitTUIOperationSettings(state, service, client, settings)
@@ -69,11 +72,11 @@ func applyTUIOperationSetting(
 
 func applyTUITunScope(state *tuiOperationState, service *tuiServiceClient) {
 	if service == nil {
-		state.snapshot.Status = "Changing TUN scope requires the managed Backend"
+		state.snapshot.setStatus(newTUIMessage("ui.803f9a0ac096"))
 		return
 	}
 	if state.snapshot.Settings.TunEnabled {
-		state.snapshot.Status = "Turn TUN off before changing its scope"
+		state.snapshot.setStatus(newTUIMessage("ui.b58d11c6d993"))
 		return
 	}
 	if !prepareTUIBackendRevision(state, service) {
@@ -85,13 +88,13 @@ func applyTUITunScope(state *tuiOperationState, service *tuiServiceClient) {
 	} else {
 		scope = tuiTunScopeUser
 	}
-	status, err := service.setTun(false, scope, state.backendRevision)
+	status, err := state.service.setTun(false, scope, state.backendRevision)
 	if err != nil {
-		state.snapshot.Status = "TUN scope update failed: " + err.Error()
+		state.snapshot.setStatus(newTUIMessage("ui.b9d29efd3c14", err.Error()))
 		return
 	}
 	applyTUIOperationServiceStatus(state, status)
-	state.snapshot.Status = "TUN scope " + strings.ToUpper(status.TunScope)
+	state.snapshot.setStatus(newTUIMessage("ui.f4894f303d4e", strings.ToUpper(status.TunScope)))
 }
 
 func commitTUIOperationSettings(
@@ -100,27 +103,23 @@ func commitTUIOperationSettings(
 	client controllerClient,
 	settings tuiSettings,
 ) {
-	if !prepareTUIBackendRevision(state, service) {
+	if !prepareTUIBackendRevision(state, service) || !validateTUISettingsDraft(state) {
 		return
 	}
 	profileSettings, err := tuiProfileSettingsForCommit(state, settings)
 	if err != nil {
-		state.snapshot.Status = "Settings commit failed: " + err.Error()
+		state.snapshot.setStatus(newTUIMessage("ui.13f4425a0649", err.Error()))
 		return
 	}
-	status, err := service.applySettings(profileSettings, state.backendRevision)
+	status, err := state.service.applySettings(profileSettings, state.backendRevision)
 	if err != nil {
-		state.snapshot.Status = "Settings commit failed: " + err.Error()
+		reportTUISettingsSaveError(state, err, "ui.13f4425a0649")
 		return
 	}
 	state.snapshot.Settings = profileSettings
-	state.settingsDirty = false
-	state.stagedSettings = nil
-	state.pendingMixedPort = nil
-	state.snapshot.Status = fmt.Sprintf(
-		"Settings committed at revision %d",
-		status.Revision,
-	)
+	clearTUISettingsDraft(state)
+	state.snapshot.setStatus(newTUIMessage("ui.09838b9053bc", status.Revision))
+
 	refreshTUISnapshot(&state.snapshot, client)
 	applyTUIOperationServiceStatus(state, status)
 	state.networkChanged = true
@@ -149,15 +148,23 @@ func prepareTUIBackendRevision(
 	state *tuiOperationState,
 	service *tuiServiceClient,
 ) bool {
+	if state.service == nil {
+		state.service = service.forInstance(state.backendInstanceID)
+	}
 	if state.backendRevision > 0 {
 		return true
 	}
 	status, err := service.status()
 	if err != nil {
-		state.snapshot.Status = "Cannot read backend state: " + err.Error()
+		state.snapshot.setStatus(newTUIMessage("ui.d4946a9140c6", err.Error()))
+		return false
+	}
+	if state.backendInstanceID != "" && state.backendInstanceID != status.InstanceID {
+		state.snapshot.setStatus(newTUIMessage("ui.d4946a9140c6", "backend instance changed; refresh and retry"))
 		return false
 	}
 	applyTUIOperationServiceStatus(state, status)
+	state.service = service.forInstance(status.InstanceID)
 	return true
 }
 
@@ -166,28 +173,12 @@ func applyTUIOperationServiceStatus(
 	status tuiServiceStatus,
 ) {
 	state.backendRevision = status.Revision
+	state.backendInstanceID = status.InstanceID
 	state.coreRunning = status.Running
 	if status.ConfigPath != "" {
 		state.paths.ConfigPath = status.ConfigPath
 	}
-	state.snapshot.Settings.SystemProxy = status.SystemProxy
-	if status.Mode != "" {
-		state.snapshot.Settings.Mode = status.Mode
-	}
-	state.snapshot.Settings.MixedPort = status.ConfiguredProxyPort
-	state.snapshot.ConfiguredProxyPort = status.ConfiguredProxyPort
-	state.snapshot.ActiveProxyPort = status.ActiveProxyPort
-	if status.TunState != "" {
-		state.snapshot.Settings.TunEnabled = status.TunState == "on"
-	}
-	if status.TunScope != "" {
-		state.snapshot.Settings.TunScope = status.TunScope
-	}
-	if status.Mode == tuiSilentMode {
-		state.snapshot.Settings.TunEnabled = false
-	}
-	state.snapshot.FLCEnabled = status.FLCEnabled
-	state.snapshot.FLCOutbound = status.FLCOutbound
+	applyTUIBackendDisplay(&state.snapshot, status)
 }
 
 func changeTUISettingsValue(settings *tuiSettings, key tuiKey) bool {
@@ -223,12 +214,12 @@ func changeTUISettingsValue(settings *tuiSettings, key tuiKey) bool {
 }
 
 func syncStoppedTUISettings(state *tuiOperationState) {
-	if state.coreRunning {
+	if state.coreRunning || state.settingsDirty {
 		return
 	}
 	settings := loadTUIConfiguredSettings(state.paths.ConfigPath, true)
 	if settings == nil {
-		state.snapshot.Status += "; could not reload settings from YAML"
+		state.snapshot.appendStatus(newTUIMessage("ui.356067a4895f"))
 		return
 	}
 	backendMode := state.snapshot.Settings.Mode
@@ -243,6 +234,7 @@ func syncStoppedTUISettings(state *tuiOperationState) {
 	state.snapshot.Settings.TunEnabled = backendTunEnabled
 	state.snapshot.Settings.TunScope = backendTunScope
 	state.settingsDirty = false
+	state.settingsDraft = nil
 	port := settings.MixedPort
 	state.pendingMixedPort = &port
 }
@@ -276,12 +268,12 @@ func reloadTUIOperationConfigExpected(
 		var status tuiServiceStatus
 		var err error
 		if expectedSHA256 == "" {
-			status, err = service.reloadAtRevision(
+			status, err = state.service.reloadAtRevision(
 				state.paths.ConfigPath,
 				state.backendRevision,
 			)
 		} else {
-			status, err = service.reloadAtRevisionWithDigest(
+			status, err = state.service.reloadAtRevisionWithDigest(
 				state.paths.ConfigPath,
 				state.backendRevision,
 				expectedSHA256,
@@ -517,22 +509,22 @@ func startTUIManagedCore(
 	mode := strings.ToLower(state.snapshot.Settings.Mode)
 	if service == nil {
 		if mode == tuiSilentMode {
-			state.snapshot.Status = "Silent mode requires the managed backend"
+			state.snapshot.setStatus(newTUIMessage("ui.1b69b68b5801"))
 			return false
 		}
 		if state.snapshot.Settings.MixedPort <= 0 {
-			state.snapshot.Status = "Choose a positive Proxy port before starting"
+			state.snapshot.setStatus(newTUIMessage("ui.6da98ca12dfd"))
 			return false
 		}
 		if err := ensureTUIProxyPortFree(state.snapshot.Settings.MixedPort); err != nil {
-			state.snapshot.Status = "Cannot start: " + err.Error()
+			state.snapshot.setStatus(newTUIMessage("ui.9ec86520b9dc", err.Error()))
 			return false
 		}
 	}
 	port := state.snapshot.Settings.MixedPort
 	if state.stagedSettings != nil && state.settingsDirty {
 		if service != nil {
-			if !prepareTUIBackendRevision(state, service) {
+			if !prepareTUIBackendRevision(state, service) || !validateTUISettingsDraft(state) {
 				return false
 			}
 			profileSettings, profileErr := tuiProfileSettingsForCommit(
@@ -540,22 +532,23 @@ func startTUIManagedCore(
 				*state.stagedSettings,
 			)
 			if profileErr != nil {
-				state.snapshot.Status = "Cannot commit staged settings: " + profileErr.Error()
+				state.snapshot.setStatus(newTUIMessage("ui.3b3a7b6817d8", profileErr.Error()))
 				return false
 			}
-			status, err := service.applySettings(
+			status, err := state.service.applySettings(
 				profileSettings,
 				state.backendRevision,
 			)
 			if err != nil {
-				state.snapshot.Status = "Cannot commit staged settings: " + err.Error()
+				reportTUISettingsSaveError(state, err, "ui.3b3a7b6817d8")
 				return false
 			}
 			applyTUIOperationServiceStatus(state, status)
+			clearTUISettingsDraft(state)
 		}
 		if service == nil {
 			if message := stageTUICoreSettings(*state.stagedSettings); message != "" {
-				state.snapshot.Status = "Cannot apply staged settings: " + message
+				state.snapshot.setStatus(newTUIMessage("ui.d660ad14fd2f", message))
 				return false
 			}
 		}
@@ -564,28 +557,26 @@ func startTUIManagedCore(
 		if !prepareTUIBackendRevision(state, service) {
 			return false
 		}
-		status, err := service.startAtRevision(state.backendRevision)
+		status, err := state.service.startAtRevision(state.backendRevision)
 		if err != nil {
-			state.snapshot.Status = "Cannot start core listeners: " + err.Error()
+			state.snapshot.setStatus(newTUIMessage("ui.1e770c3711f0", err.Error()))
 			return false
 		}
 		applyTUIOperationServiceStatus(state, status)
 	} else if !cliHub.StartListener() {
-		state.snapshot.Status = "Cannot start core listeners"
+		state.snapshot.setStatus(newTUIMessage("ui.16bf361c146f"))
 		return false
 	}
 	state.coreRunning = true
-	state.pendingMixedPort = nil
-	state.stagedSettings = nil
-	state.settingsDirty = false
+	clearTUISettingsDraft(state)
 	if mode == tuiSilentMode {
 		if outbound := strings.TrimSpace(state.snapshot.FLCOutbound); outbound != "" {
-			state.snapshot.Status = "Core started in silent mode · FLC " + outbound + " · only flc uses the private listener"
+			state.snapshot.setStatus(newTUIMessage("ui.6c3f66b449da", outbound))
 		} else {
-			state.snapshot.Status = "Core started in silent mode; only flc uses the private listener"
+			state.snapshot.setStatus(newTUIMessage("ui.920f28d000fb"))
 		}
 	} else {
-		state.snapshot.Status = fmt.Sprintf("Core listeners started on port %d", port)
+		state.snapshot.setStatus(newTUIMessage("ui.54b76d0e32bc", port))
 	}
 	return true
 }
@@ -601,18 +592,18 @@ func stopTUIManagedCore(
 		if !prepareTUIBackendRevision(state, service) {
 			return false
 		}
-		status, err := service.stopAtRevision(state.backendRevision)
+		status, err := state.service.stopAtRevision(state.backendRevision)
 		if err != nil {
-			state.snapshot.Status = "Cannot stop core listeners: " + err.Error()
+			state.snapshot.setStatus(newTUIMessage("ui.a580272ceef6", err.Error()))
 			return false
 		}
 		applyTUIOperationServiceStatus(state, status)
 	} else if !cliHub.StopListener() {
-		state.snapshot.Status = "Cannot stop core listeners"
+		state.snapshot.setStatus(newTUIMessage("ui.ee456006f3a7"))
 		return false
 	}
 	state.coreRunning = false
-	state.snapshot.Status = "Core listeners stopped"
+	state.snapshot.setStatus(newTUIMessage("ui.d7a2587ef8f5"))
 	syncStoppedTUISettings(state)
 	return true
 }

@@ -166,19 +166,21 @@ func TestTUIRefreshKeepsSelectedLogByContentAfterReordering(t *testing.T) {
 }
 
 func TestTUIRefreshReplacesTransientRefreshErrorsAfterRecovery(t *testing.T) {
-	for _, status := range []string{
-		"Controller unavailable: dial failed",
-		"Invalid controller response: bad JSON",
-		"Connections refresh failed: temporary failure",
-		"Refresh incomplete · History: temporary failure",
-		"SSH profiles unavailable: read config failed",
+	for _, message := range []tuiMessage{
+		newTUIMessage("ui.5f70908b9e1f", "dial failed"),
+		newTUIMessage("ui.e44e826960b3", "bad JSON"),
+		newTUIMessage("ui.e677d4656ad6", "temporary failure"),
+		newTUIMessage("ui.3dbb8b44d1fa", "History: temporary failure"),
+		newTUIMessage("ui.00b20e67e88d", "read config failed"),
 	} {
+		current := tuiSnapshot{}
+		current.setStatus(message)
 		merged := mergeTUIRefresh(
-			tuiSnapshot{Status: status},
+			current,
 			tuiSnapshot{Status: "Connected"},
 		)
 		if merged.Status != "Connected" {
-			t.Fatalf("refresh recovery kept stale %q status as %q", status, merged.Status)
+			t.Fatalf("refresh recovery kept stale %q status as %q", current.Status, merged.Status)
 		}
 	}
 }
@@ -214,17 +216,18 @@ func TestTUIInvalidConnectionsResponseClearsStaleProxyRows(t *testing.T) {
 }
 
 func TestTUIRefreshClearsStaleTransientStatusBeforeCollectingNewData(t *testing.T) {
-	for _, status := range []string{
-		"Controller unavailable: dial failed",
-		"Invalid controller response: bad JSON",
-		"Connections refresh failed: temporary failure",
-		"Refresh incomplete · Logs: temporary failure",
-		"SSH profiles unavailable: read config failed",
+	for _, message := range []tuiMessage{
+		newTUIMessage("ui.5f70908b9e1f", "dial failed"),
+		newTUIMessage("ui.e44e826960b3", "bad JSON"),
+		newTUIMessage("ui.e677d4656ad6", "temporary failure"),
+		newTUIMessage("ui.3dbb8b44d1fa", "Logs: temporary failure"),
+		newTUIMessage("ui.00b20e67e88d", "read config failed"),
 	} {
-		snapshot := tuiSnapshot{Status: status}
+		snapshot := tuiSnapshot{}
+		snapshot.setStatus(message)
 		clearTUITransientRefreshStatus(&snapshot)
 		if snapshot.Status != "Loading..." {
-			t.Fatalf("transient refresh status %q was retained as %q", status, snapshot.Status)
+			t.Fatalf("transient refresh status %q was retained as %q", message.text("en"), snapshot.Status)
 		}
 	}
 
