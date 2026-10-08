@@ -136,6 +136,7 @@ func runTUIService(
 		configuredPort = configuredSettings.MixedPort
 	}
 	trafficMode := loadTUITrafficMode(paths.HomeDir, paths.ConfigPath)
+	trafficMode = resolveTUIRuntimeTrafficMode(trafficMode, configuredSettings)
 	tunScope := loadTUITunScope(paths.HomeDir)
 	tunEnabled := configuredSettings != nil && configuredSettings.TunEnabled && tunScope == tuiTunScopeUser
 	actualPaths := paths
@@ -418,6 +419,14 @@ func reloadTUIServiceConfig(
 	)
 }
 
+type tuiConfigReloadOptions struct {
+	rollbackTunLease   *tuiTunLease
+	targetTunLease     *tuiTunLease
+	refreshTargetTun   bool
+	preparedTargetFD   int
+	acceptPendingTunFD func(int)
+}
+
 func reloadTUIActualConfig(
 	homeDir,
 	previousPath,
@@ -426,7 +435,21 @@ func reloadTUIActualConfig(
 	coreSocket string,
 	previousSetup []byte,
 	running bool,
+	reloadOptions ...tuiConfigReloadOptions,
 ) ([]byte, error) {
+	reloadPolicy := tuiConfigReloadOptions{}
+	if len(reloadOptions) > 0 {
+		reloadPolicy = reloadOptions[0]
+	}
+	// Own the caller's freshly prepared descriptor until SetupConfig accepts
+	// it. In particular, a subsequent rollback can close and reuse its integer,
+	// so the caller must not unconditionally close it after this function errs.
+	ownedTargetFD := reloadPolicy.preparedTargetFD
+	defer func() {
+		if ownedTargetFD > 0 {
+			_ = syscall.Close(ownedTargetFD)
+		}
+	}()
 	previousPath = filepath.Clean(previousPath)
 	configPath = filepath.Clean(configPath)
 	if _, err := tuiProfileStateKey(homeDir, previousPath); err != nil {
@@ -442,16 +465,31 @@ func reloadTUIActualConfig(
 		return nil, errors.New(message)
 	}
 	rollback := func() error {
+		rollbackFD, fdErr := refreshTUIManagedRuntimeTunFD(previousPath, reloadPolicy.rollbackTunLease)
+		if fdErr != nil {
+			return fmt.Errorf("prepare previous TUN runtime: %w", fdErr)
+		}
 		initParams, marshalErr := json.Marshal(InitParams{
 			HomeDir:    homeDir,
 			ConfigPath: previousPath,
 			Version:    1,
 		})
 		if marshalErr != nil || !cliHub.Init(string(initParams)) {
+			if rollbackFD > 0 {
+				_ = syscall.Close(rollbackFD)
+			}
 			return errors.New("restore previous profile initialization failed")
 		}
 		if message := cliHub.SetupConfig(previousSetup); message != "" {
+			if rollbackFD > 0 {
+				_ = syscall.Close(rollbackFD)
+			}
 			return errors.New("restore previous profile failed: " + message)
+		}
+		// The accepted config owns the duplicate. Do not close its integer
+		// after listener cleanup: it may already have been reused.
+		if !running && reloadPolicy.acceptPendingTunFD != nil {
+			reloadPolicy.acceptPendingTunFD(rollbackFD)
 		}
 		if running {
 			cliHub.StartListener()
@@ -459,6 +497,13 @@ func reloadTUIActualConfig(
 			cliHub.StopListener()
 		}
 		return nil
+	}
+	if reloadPolicy.refreshTargetTun {
+		var fdErr error
+		ownedTargetFD, fdErr = refreshTUIManagedRuntimeTunFD(configPath, reloadPolicy.targetTunLease)
+		if fdErr != nil {
+			return nil, fmt.Errorf("prepare rollback TUN target: %w", fdErr)
+		}
 	}
 	initParams, err := json.Marshal(InitParams{
 		HomeDir:    homeDir,
@@ -479,12 +524,22 @@ func reloadTUIActualConfig(
 		return nil, err
 	}
 	if message := cliHub.SetupConfig(setupParams); message != "" {
+		// An errored SetupConfig falls back to the default configuration rather
+		// than accepting the target descriptor (see applyConfig in common.go).
+		if ownedTargetFD > 0 {
+			_ = syscall.Close(ownedTargetFD)
+			ownedTargetFD = 0
+		}
 		rollbackErr := rollback()
 		if rollbackErr != nil {
 			return nil, fmt.Errorf("%s; rollback failed: %w", message, rollbackErr)
 		}
 		return nil, errors.New(message)
 	}
+	if !running && reloadPolicy.acceptPendingTunFD != nil {
+		reloadPolicy.acceptPendingTunFD(ownedTargetFD)
+	}
+	ownedTargetFD = 0
 	if running {
 		cliHub.StartListener()
 	} else {

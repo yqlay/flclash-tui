@@ -90,12 +90,14 @@ func loadTUIFLCOutbound(homeDir string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(state.FLCOutbound)
+	if strings.TrimSpace(state.FLCOutbound) == "" {
+		return ""
+	}
+	return state.FLCOutbound
 }
 
 func rememberTUIFLCOutbound(homeDir, outbound string) error {
-	outbound = strings.TrimSpace(outbound)
-	if outbound == "" {
+	if strings.TrimSpace(outbound) == "" {
 		return errors.New("FLC outbound must not be empty")
 	}
 	return updateTUIState(homeDir, func(state *tuiPersistentState) {

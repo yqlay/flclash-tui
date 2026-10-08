@@ -35,13 +35,18 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 		return nil
 	}
 	name := m.snapshot.SSHProfiles[index].Name
+	operationContext := m.sshOperationContext
+	if operationContext == nil {
+		operationContext = context.Background()
+	}
 	m.busy = true
 	m.snapshot.setStatus(newTUIMessage("ui.013120ffa8f1", action, name))
 	return func() tea.Msg {
 		message := tuiSSHCommandResultMsg{action: action, selectedName: name}
 		switch action {
 		case "connect":
-			state, alreadyConnected, err := connectCLISSHProfileWithCredentials(
+			state, alreadyConnected, err := connectCLISSHProfileWithCredentialsContext(
+				operationContext,
 				name,
 				credentials,
 			)
@@ -68,7 +73,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 				message.text = newTUIMessage(key, state.Name, state.Port)
 			}
 		case "attach":
-			state, alreadyConnected, err := attachCLISSHProfile(name)
+			state, alreadyConnected, err := attachCLISSHProfileContext(operationContext, name)
 			message.err = err
 			if err == nil {
 				prefix := "attached"
@@ -100,7 +105,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 				}
 			}
 		case "test":
-			state, latency, err := testCLISSHProfile(name)
+			state, latency, err := testCLISSHProfileContext(operationContext, name)
 			message.err = err
 			if err == nil {
 				message.status = fmt.Sprintf(
@@ -229,8 +234,12 @@ func (m *tuiModel) attachSSHCaptureCandidate(candidate cliSSHCaptureCandidate) t
 	m.sshCaptureOpen = false
 	m.busy = true
 	m.snapshot.setStatus(newTUIMessage("ui.f34a03e6fb1c", candidate.Name))
+	operationContext := m.sshOperationContext
+	if operationContext == nil {
+		operationContext = context.Background()
+	}
 	return func() tea.Msg {
-		state, already, err := captureCLISSHCandidate(candidate)
+		state, already, err := captureCLISSHCandidateContext(operationContext, candidate)
 		message := tuiSSHCommandResultMsg{
 			action:       "attach",
 			selectedName: candidate.Name,
@@ -464,10 +473,13 @@ func (m *tuiModel) testSelectedSSHDelayFor(direct bool) tea.Cmd {
 	}
 	testURL := m.tuiDelayTestURL()
 	generation := m.sshDetailGeneration
+	index := tuiSSHProbeIndex(direct)
+	m.sshDelaySequence[index]++
+	sequence := m.sshDelaySequence[index]
 	return func() tea.Msg {
 		defer closeClient()
 		result, testErr := runTUIRouteDelayTest(context.Background(), client, testURL)
-		return tuiSSHDelayResultMsg{name: name, generation: generation, direct: direct, result: result, err: testErr}
+		return tuiSSHDelayResultMsg{name: name, generation: generation, direct: direct, sequence: sequence, result: result, err: testErr}
 	}
 }
 
@@ -491,11 +503,21 @@ func (m *tuiModel) testSelectedSSHSpeedFor(direct bool) tea.Cmd {
 		m.snapshot.SSHSpeed = tuiSpeedResult{Testing: true}
 	}
 	generation := m.sshDetailGeneration
+	index := tuiSSHProbeIndex(direct)
+	m.sshSpeedSequence[index]++
+	sequence := m.sshSpeedSequence[index]
 	return func() tea.Msg {
 		defer closeClient()
 		result, testErr := runTUIDownloadSpeedTest(context.Background(), client)
-		return tuiSSHSpeedResultMsg{name: name, generation: generation, direct: direct, result: result, err: testErr}
+		return tuiSSHSpeedResultMsg{name: name, generation: generation, direct: direct, sequence: sequence, result: result, err: testErr}
 	}
+}
+
+func tuiSSHProbeIndex(direct bool) int {
+	if direct {
+		return 1
+	}
+	return 0
 }
 
 func (m *tuiModel) refreshSelectedSSHDirectProbe() tea.Cmd {

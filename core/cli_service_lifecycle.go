@@ -21,16 +21,13 @@ func ensureTUIService(
 ) (*tuiServiceClient, tuiServiceStatus, error) {
 	client := newTUIServiceClient(paths.HomeDir)
 	if status, err := client.compatibleStatus(); err == nil {
+		// Validate the caller's explicit target before changing paths or shutting
+		// down an older Backend. Upgrades must not bypass the per-user guard.
+		if err := validateTUIServiceTarget(paths, status, explicitConfig, explicitDirectory); err != nil {
+			return nil, tuiServiceStatus{}, err
+		}
 		if status.Version == cliVersion &&
 			status.ProtocolVersion == tuiServiceProtocolVersion {
-			if err := validateTUIServiceTarget(
-				paths,
-				status,
-				explicitConfig,
-				explicitDirectory,
-			); err != nil {
-				return nil, tuiServiceStatus{}, err
-			}
 			return client, status, nil
 		}
 		if err := validateTUIServiceUpgradeCandidate(status); err != nil {

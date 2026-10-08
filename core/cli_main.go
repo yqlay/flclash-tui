@@ -14,7 +14,7 @@ import (
 	"syscall"
 )
 
-const cliVersion = "0.5.33"
+const cliVersion = "0.5.34"
 
 type controllerOptions struct {
 	address    string
@@ -32,7 +32,7 @@ func main() {
 			program = "flclash"
 		}
 		if err.Error() != "" {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", program, err)
+			fmt.Fprintf(os.Stderr, "%s: %s\n", program, safeCLITerminalText(err.Error()))
 		}
 		if errors.Is(err, flag.ErrHelp) {
 			return

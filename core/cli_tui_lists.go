@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -16,7 +17,7 @@ import (
 func drawTUIRequests(b *strings.Builder, snapshot tuiSnapshot, width, height int, language ...string) {
 	tr := tuiTranslator(language...)
 	if snapshot.HistoryDetailOpen {
-		drawTUIRequestDetail(b, snapshot, width, language...)
+		drawTUIDetailViewport(b, snapshot, width, height, language...)
 		return
 	}
 	indexes := matchedTUIRequestIndexes(snapshot)
@@ -99,7 +100,7 @@ func drawTUIRequests(b *strings.Builder, snapshot tuiSnapshot, width, height int
 func drawTUIConnections(b *strings.Builder, snapshot tuiSnapshot, width, height int, language ...string) {
 	tr := tuiTranslator(language...)
 	if snapshot.ConnectionsDetailOpen {
-		drawTUIConnectionDetail(b, snapshot, width, language...)
+		drawTUIDetailViewport(b, snapshot, width, height, language...)
 		return
 	}
 	indexes := matchedTUIConnectionIndexes(snapshot)
@@ -156,7 +157,7 @@ func drawTUIConnections(b *strings.Builder, snapshot tuiSnapshot, width, height 
 func drawTUILogs(b *strings.Builder, snapshot tuiSnapshot, width, height int, language ...string) {
 	tr := tuiTranslator(language...)
 	if snapshot.LogDetailOpen {
-		drawTUILogDetail(b, snapshot, width, language...)
+		drawTUIDetailViewport(b, snapshot, width, height, language...)
 		return
 	}
 	indexes := matchedTUILogIndexes(snapshot)
@@ -169,7 +170,7 @@ func drawTUILogs(b *strings.Builder, snapshot tuiSnapshot, width, height int, la
 	start, end := tuiVisibleRange(len(indexes), selectedPosition, limit)
 	for position := start; position < end; position++ {
 		index := indexes[position]
-		tuiRow(b, snapshot.Logs[index], width, index == snapshot.SelectedLog && !snapshot.FocusSidebar, tuiLogLineColor(snapshot.Logs[index]))
+		tuiRow(b, safeCLITerminalLine(snapshot.Logs[index]), width, index == snapshot.SelectedLog && !snapshot.FocusSidebar, tuiLogLineColor(snapshot.Logs[index]))
 	}
 	if len(indexes) == 0 {
 		tuiRow(b, tr("ui.f474c18dfd1d"), width, false, tuiDim)
@@ -238,10 +239,7 @@ func matchedTUILogIndexes(snapshot tuiSnapshot) []int {
 	level := strings.ToUpper(tuiDefaultValue(snapshot.LogsLevel, "ALL"))
 	indexes := make([]int, 0, len(snapshot.Logs))
 	for index, line := range snapshot.Logs {
-		upperLine := strings.ToUpper(line)
-		if level != "ALL" &&
-			!strings.Contains(upperLine, " "+level+" ") &&
-			!strings.Contains(upperLine, "LEVEL="+level) {
+		if level != "ALL" && normalizeTUILogLevel(level) != tuiLogLineLevel(line) {
 			continue
 		}
 		if query == "" || strings.Contains(strings.ToLower(line), query) {
@@ -289,6 +287,7 @@ func moveTUIRequestMatch(snapshot *tuiSnapshot, delta int) {
 		}
 	}
 	snapshot.SelectedRequest = indexes[wrapTUIIndex(position, delta, len(indexes))]
+	snapshot.HistoryDetailScroll = 0
 }
 
 func moveTUIConnectionMatch(snapshot *tuiSnapshot, delta int) {
@@ -305,6 +304,7 @@ func moveTUIConnectionMatch(snapshot *tuiSnapshot, delta int) {
 		}
 	}
 	snapshot.SelectedConnection = indexes[wrapTUIIndex(position, delta, len(indexes))]
+	snapshot.ConnectionsDetailScroll = 0
 }
 
 func moveTUILogMatch(snapshot *tuiSnapshot, delta int) {
@@ -317,16 +317,46 @@ func moveTUILogMatch(snapshot *tuiSnapshot, delta int) {
 		position = len(indexes) - 1
 	}
 	snapshot.SelectedLog = indexes[wrapTUIIndex(position, delta, len(indexes))]
+	snapshot.LogDetailScroll = 0
+}
+
+var tuiLogPrefixLevel = regexp.MustCompile(`(?i)^(?:\[[^]\r\n]+\]\s*|\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+|\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+Z-]+)?\s+)?\[?(ERROR|WARNING|WARN|INFO|DEBUG|TRACE|SUCCESS|FATAL|PANIC)\]?(?:\s|:|$)`)
+var tuiLogStructuredLevel = regexp.MustCompile(`(?i)(?:^|\s)level=(?:"|')?(ERROR|WARNING|WARN|INFO|DEBUG|TRACE|SUCCESS|FATAL|PANIC)(?:"|')?(?:\s|$)`)
+
+func normalizeTUILogLevel(level string) string {
+	level = strings.ToUpper(level)
+	if level == "WARNING" {
+		return "WARN"
+	}
+	return level
+}
+
+func tuiLogLineLevel(line string) string {
+	line = strings.TrimSpace(safeCLITerminalLine(line))
+	if match := tuiLogPrefixLevel.FindStringSubmatch(line); len(match) > 1 {
+		return normalizeTUILogLevel(match[1])
+	}
+	// Logrus metadata is before its message. Never inspect payload text, even
+	// when it contains something resembling an attribute such as LEVEL=ERROR.
+	metadata := line
+	for _, marker := range []string{" msg=", " message=", " payload="} {
+		if index := strings.Index(strings.ToLower(metadata), marker); index >= 0 {
+			metadata = metadata[:index]
+		}
+	}
+	if match := tuiLogStructuredLevel.FindStringSubmatch(metadata); len(match) > 1 {
+		return normalizeTUILogLevel(match[1])
+	}
+	return ""
 }
 
 func tuiLogLineColor(line string) string {
-	upper := strings.ToUpper(line)
-	switch {
-	case strings.Contains(upper, " ERROR ") || strings.Contains(upper, "LEVEL=ERROR"):
+	switch tuiLogLineLevel(line) {
+	case "ERROR", "FATAL", "PANIC":
 		return tuiRed
-	case strings.Contains(upper, " WARN ") || strings.Contains(upper, "LEVEL=WARNING") || strings.Contains(upper, "LEVEL=WARN"):
+	case "WARN":
 		return tuiYellow
-	case strings.Contains(upper, " INFO ") || strings.Contains(upper, "LEVEL=INFO"):
+	case "INFO", "SUCCESS":
 		return tuiCyan
 	default:
 		return tuiDim
@@ -378,7 +408,6 @@ func drawTUIConnectionFields(b *strings.Builder, connection tuiConnection, width
 	}
 	fields[0].color, fields[1].color = tuiCyan, tuiCyan
 	fields[5].color, fields[8].color = tuiDim, tuiDim
-	fields[5].truncate, fields[8].truncate = true, true
 	tuiWriteRows(b, tuiFieldRows(fields, width), width)
 }
 
@@ -390,7 +419,7 @@ func drawTUILogDetail(b *strings.Builder, snapshot tuiSnapshot, width int, langu
 	}
 	line := snapshot.Logs[snapshot.SelectedLog]
 	tuiTitle(b, tr("ui.b6efa3086da6"), tr("ui.4063b5fbde39"), width)
-	for _, wrapped := range tuiWrapText(line, maxTUIWidth(width-4, 1)) {
+	for _, wrapped := range tuiNotificationLines(safeCLITerminalText(line), maxTUIWidth(width-4, 1)) {
 		tuiRow(b, wrapped, width, false, tuiLogLineColor(line))
 	}
 	tuiEndPanel(b, width)
@@ -477,13 +506,13 @@ func tuiSettingsFields(snapshot tuiSnapshot, language ...string) []tuiField {
 
 func tuiFLCOutboundLabel(snapshot tuiSnapshot, language ...string) string {
 	tr := tuiTranslator(language...)
-	group := strings.TrimSpace(snapshot.FLCOutbound)
-	if group == "" {
+	group := snapshot.FLCOutbound
+	if strings.TrimSpace(group) == "" {
 		return tr("ui.5061e6308a55")
 	}
 	value := group
 	for _, candidate := range snapshot.Groups {
-		if strings.EqualFold(candidate.Name, group) && strings.TrimSpace(candidate.Now) != "" {
+		if candidate.Name == group && strings.TrimSpace(candidate.Now) != "" {
 			value = group + " → " + candidate.Now
 			break
 		}

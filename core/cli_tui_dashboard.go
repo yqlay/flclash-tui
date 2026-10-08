@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -59,11 +60,22 @@ func tuiDashboardNetworkFields(snapshot tuiSnapshot, language ...string) []tuiFi
 
 func tuiDashboardOverviewFields(snapshot tuiSnapshot, paths cliPaths, language ...string) []tuiField {
 	tr := tuiTranslator(language...)
+	history := strconv.Itoa(len(snapshot.Requests))
+	if snapshot.ManagedService {
+		history = "?"
+		if snapshot.HistoryCount != nil {
+			history = strconv.Itoa(*snapshot.HistoryCount)
+		}
+	}
+	activityTemplate := tr("ui.92f24da40aae")
+	if index := strings.LastIndex(activityTemplate, "%d"); index >= 0 {
+		activityTemplate = activityTemplate[:index] + "%s" + activityTemplate[index+2:]
+	}
 	fields := tuiMemoryFields(snapshot, language...)
 	fields = append(fields,
 		tuiTemplateField(tr("ui.15ae14e3c674"), formatBytes(snapshot.Traffic.Up), formatBytes(snapshot.Traffic.Down)),
 		tuiTemplateField(tr("ui.15e659c979fb"), formatBytes(snapshot.TotalTraffic.Up), formatBytes(snapshot.TotalTraffic.Down)),
-		tuiTemplateField(tr("ui.92f24da40aae"), len(snapshot.Connections), len(snapshot.Requests)),
+		tuiTemplateField(activityTemplate, len(snapshot.Connections), history),
 		tuiLabelField(tr("ui.41efe1c5e221"), formatCLIFrontendSummary(snapshot.Frontends)),
 		tuiTemplateField(tr("ui.e098301423c6"), paths.ConfigPath),
 	)

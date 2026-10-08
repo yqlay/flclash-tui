@@ -386,18 +386,21 @@ func (m *tuiModel) submitInput() tea.Cmd {
 		m.snapshot.HistoryQuery = value
 		m.snapshot.SelectedRequest = firstTUIRequestMatch(m.snapshot)
 		m.snapshot.HistoryDetailOpen = false
+		m.snapshot.HistoryDetailScroll = 0
 		m.snapshot.setStatus(newTUIMessage("ui.975f997848a0"))
 		return nil
 	case tuiInputConnectionsSearch:
 		m.snapshot.ConnectionsQuery = value
 		m.snapshot.SelectedConnection = firstTUIConnectionMatch(m.snapshot)
 		m.snapshot.ConnectionsDetailOpen = false
+		m.snapshot.ConnectionsDetailScroll = 0
 		m.snapshot.setStatus(newTUIMessage("ui.82ea98d32657"))
 		return nil
 	case tuiInputLogsSearch:
 		m.snapshot.LogsQuery = value
 		m.snapshot.SelectedLog = firstTUILogMatch(m.snapshot)
 		m.snapshot.LogDetailOpen = false
+		m.snapshot.LogDetailScroll = 0
 		m.snapshot.setStatus(newTUIMessage("ui.ec19157ca54f"))
 		return nil
 	case tuiInputMixedPort:

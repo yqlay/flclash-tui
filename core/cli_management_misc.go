@@ -25,6 +25,15 @@ func geoCommand(args []string) error {
 		fmt.Println("Usage: flclash geo status|update")
 		return nil
 	}
+	if args[0] != "status" && args[0] != "update" {
+		return fmt.Errorf("unknown geo command %q", args[0])
+	}
+	if len(args) != 1 {
+		if cliSubcommandHelp(args[1:]) {
+			return geoCommand([]string{"--help"})
+		}
+		return errors.New("usage: flclash geo status|update")
+	}
 	paths, err := activeCLIPaths()
 	if err != nil {
 		return err
@@ -63,11 +72,18 @@ func envCommand(args []string) error {
 		fmt.Println("Usage: flclash env [--json]")
 		return nil
 	}
+	jsonOutput, err := parseCLIJSONFlag("env", args)
+	if errors.Is(err, flag.ErrHelp) {
+		return envCommand([]string{"--help"})
+	}
+	if err != nil {
+		return err
+	}
 	proxyURL, err := activeCLIProxyURL()
 	if err != nil {
 		return err
 	}
-	if len(args) == 1 && args[0] == "--json" {
+	if jsonOutput {
 		return writeCLIJSON(os.Stdout, map[string]string{
 			"HTTP_PROXY": proxyURL, "HTTPS_PROXY": proxyURL, "ALL_PROXY": proxyURL,
 		})
@@ -82,6 +98,17 @@ func doctorCommand(args []string) error {
 	if cliSubcommandHelp(args) {
 		fmt.Println("Usage: flclash doctor [--json]")
 		return nil
+	}
+	jsonOutput, err := parseCLIJSONFlag("doctor", args)
+	if errors.Is(err, flag.ErrHelp) {
+		return doctorCommand([]string{"--help"})
+	}
+	if err != nil {
+		return err
+	}
+	args = nil
+	if jsonOutput {
+		args = []string{"--json"}
 	}
 	checks := map[string]any{"version": cliVersion}
 	client, status, err := currentManagedService()
@@ -113,6 +140,9 @@ func completionCommand(args []string) error {
 		fmt.Println("Usage: flclash completion bash|zsh|fish")
 		return nil
 	}
+	if len(args) != 1 {
+		return errors.New("usage: flclash completion bash|zsh|fish")
+	}
 	commands := "tui core sys tun mode port flc ssh net start stop restart reload status backend shutdown exit profile proxy history connections logs config geo env doctor completion check update run version help"
 	groups := []struct {
 		command string
@@ -130,7 +160,7 @@ func completionCommand(args []string) error {
 		{"status", "--json --watch"},
 		{"backend", "start stop restart status logs clients"},
 		{"profile", "list import import-file current use update rename edit delete link"},
-		{"proxy", "groups nodes select delay speed"},
+		{"proxy", "groups list nodes select delay speed --json --controller --secret --test-url"},
 		{"history", "show clear"},
 		{"connections", "show close"},
 		{"logs", "--follow --lines"},
@@ -220,8 +250,11 @@ func parseManagedPaths(
 	configArg := fs.String("config", "", "path to config.yaml")
 	directoryArg := fs.String("directory", "", "FlClash data directory")
 	testURL := fs.String("test-url", defaultCLITestURL, "proxy delay test URL")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
 		return cliPaths{}, "", false, false, err
+	}
+	if len(fs.Args()) != 0 {
+		return cliPaths{}, "", false, false, fmt.Errorf("usage: flclash %s [--config PATH] [--directory PATH] [--test-url URL]", name)
 	}
 	paths, err := resolvePaths(*configArg, *directoryArg)
 	return paths, *testURL, *configArg != "", *directoryArg != "", err
@@ -411,7 +444,9 @@ func readManagedLogTo(
 		lines = lines[len(lines)-lineCount:]
 	}
 	for _, line := range lines {
-		fmt.Fprintln(output, line)
+		if _, err := fmt.Fprintln(output, safeCLITerminalText(line)); err != nil {
+			return err
+		}
 	}
 	if !follow {
 		return nil
@@ -420,7 +455,7 @@ func readManagedLogTo(
 		if reader != nil {
 			line, readErr := reader.ReadString('\n')
 			if line != "" {
-				if _, err := io.WriteString(output, line); err != nil {
+				if _, err := io.WriteString(output, safeCLITerminalText(line)); err != nil {
 					return err
 				}
 			}

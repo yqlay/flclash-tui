@@ -167,6 +167,9 @@ flclash sys status|on|off
 flclash tun status|user on|system on|off
 flclash profile import URL
 flclash profile import-file /path/to/nodes.txt
+flclash proxy nodes GROUP --json
+flclash proxy select GROUP NODE --json
+flclash proxy delay NODE --json
 flclash logs --lines 100 --follow
 flclash history show --limit 20
 flclash ssh disconnect             # SSH tunnels only
@@ -174,13 +177,17 @@ flclash backend stop               # stop proxy Backend+Core; SSH stays
 flclash exit                       # stop frontends, Backend, Core, and SSH
 ```
 
-In the TUI, `q` exits the current frontend only; `Ctrl+C` is a full exit. Dashboard owns Core, mode, flc, proxy port, TUN, and System proxy. `?` lists keys; `Ctrl+N` opens notifications.
+Proxy groups/list, nodes, select, delay, and speed accept options before or after names and support `--json`; speed requires the local Backend. Run applications using `flc COMMAND`, or `flc ssh COMMAND` for SSH.
+
+In the TUI, `q` exits the current frontend and cancels its unfinished SSH connects, but preserves committed persistent tunnels; `Ctrl+C` is a full exit. Dashboard owns Core, mode, flc, proxy port, TUN, and System proxy. `?` lists keys; `Ctrl+N` opens notifications.
 
 ## Connections, history, and logs
 
 - **Connections**: `/` searches, `f` selects mixed / proxy / ssh, Enter opens details, `d` closes the selected flow, and `x` closes all flows in the selected source after confirmation. Closing flows does not erase history.
 - **History**: `/` searches, `f` selects all / active / completed, `o` selects the source, Enter opens details, and `x` clears that source's history after confirmation without closing flows. Up to 500 entries persist across restarts.
 - **Logs**: Backend logs and current frontend events are merged. `/` searches, `f` filters levels, Enter opens the complete record, `e` exports, and `x` clears after confirmation. Refreshes preserve filters and detail state.
+
+These detail views support PgUp/PgDn and adapt to terminal resizing. Public IP checks run at startup, after route changes, or on manual refresh; latency and speed checks run on demand. Changing the route invalidates old results without starting periodic background speed tests.
 
 If another frontend changes the configuration, a conflicting settings draft keeps your input and refuses to overwrite the newer state. Note any values you want to keep, cancel input with Esc, then press uppercase `R` to reload and edit again. Reload discards the old draft.
 

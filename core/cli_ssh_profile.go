@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -363,7 +364,7 @@ func deleteCLISSHProfile(name string) error {
 	}
 	wasConnected := active && strings.EqualFold(state.Name, name)
 	if wasConnected {
-		if err := stopCLIStateTunnelForOperation(state); err != nil {
+		if err := stopCLISSHForSwitch(state); err != nil {
 			return err
 		}
 	}
@@ -411,7 +412,7 @@ func deleteCLISSHProfileConfigOnly(name string) error {
 }
 
 var (
-	activeCLIPersistentSSHTunnelForOperation = activeCLIPersistentSSHTunnel
+	activeCLIPersistentSSHTunnelForOperation = activeCLIPersistentSSHTunnelLocked
 	startCLIPersistentSSHTunnelForOperation  = startCLIPersistentSSHTunnel
 	stopCLIStateTunnelForOperation           = stopCLIStateTunnel
 	updateCLISSHConfigForOperation           = updateCLISSHConfig
@@ -420,6 +421,11 @@ var (
 )
 
 func cliSSHProfileConnected(name string) (bool, error) {
+	lock, err := lockCLISSHTunnelOperation()
+	if err != nil {
+		return false, err
+	}
+	defer lock.release()
 	state, active, err := activeCLIPersistentSSHTunnelForOperation()
 	if err != nil {
 		return false, err
@@ -435,6 +441,15 @@ func connectCLISSHProfileWithCredentials(
 	name string,
 	credentials cliSSHCredentials,
 ) (cliSSHTunnelState, bool, error) {
+	return connectCLISSHProfileWithCredentialsContext(context.Background(), name, credentials)
+}
+
+func connectCLISSHProfileWithCredentialsContext(parent context.Context, name string, credentials cliSSHCredentials) (cliSSHTunnelState, bool, error) {
+	ctx, finish := beginCLISSHOperation(parent)
+	defer finish()
+	if err := ctx.Err(); err != nil {
+		return cliSSHTunnelState{}, false, err
+	}
 	lock, err := lockCLISSHTunnelOperation()
 	if err != nil {
 		return cliSSHTunnelState{}, false, err
@@ -446,6 +461,7 @@ func connectCLISSHProfileWithCredentials(
 		return cliSSHTunnelState{}, false, err
 	}
 	profile = normalizeCLISSHProfile(profile)
+	profile.operationContext = ctx
 	if err := validateCLISSHProfile(profile); err != nil {
 		_ = saveCLISSHLastError(profile.Name, err.Error())
 		return cliSSHTunnelState{}, false, err
@@ -470,7 +486,10 @@ func connectCLISSHProfileWithCredentials(
 		}
 	}
 	if oldActive && strings.EqualFold(old.Name, profile.Name) {
-		if err := stopCLIStateTunnelForOperation(old); err != nil {
+		if err := ctx.Err(); err != nil {
+			return cliSSHTunnelState{}, false, err
+		}
+		if err := stopCLISSHForSwitch(old); err != nil {
 			_ = saveCLISSHLastError(old.Name, err.Error())
 			return cliSSHTunnelState{}, false,
 				fmt.Errorf("stop broken SSH tunnel %q: %w", old.Name, err)
@@ -494,13 +513,21 @@ func connectCLISSHProfileWithCredentials(
 				err,
 			)
 		}
-		if err := stopCLIStateTunnelForOperation(old); err != nil {
+		if err := ctx.Err(); err != nil {
+			return cliSSHTunnelState{}, false, err
+		}
+		if err := stopCLISSHForSwitch(old); err != nil {
 			return cliSSHTunnelState{}, false,
 				fmt.Errorf("stop previous SSH tunnel %q: %w", old.Name, err)
 		}
 	}
 	state, err := startCLIPersistentSSHTunnelForOperation(profile)
 	if err == nil {
+		if oldActive {
+			if cleanupErr := finishCLISSHSwitch(old, state); cleanupErr != nil {
+				return state, false, cleanupErr
+			}
+		}
 		_ = clearCLISSHLastError(profile.Name)
 		return state, false, nil
 	}
@@ -508,6 +535,10 @@ func connectCLISSHProfileWithCredentials(
 	if !oldActive {
 		return cliSSHTunnelState{}, false, err
 	}
+	if ctx.Err() != nil {
+		return cliSSHTunnelState{}, false, fmt.Errorf("connect SSH profile %q canceled; previous profile retained: %w", profile.Name, err)
+	}
+	oldProfile.operationContext = ctx
 	if restoreErr := restoreCLIPreviousSSHTunnel(old, oldProfile); restoreErr != nil {
 		return cliSSHTunnelState{}, false, fmt.Errorf(
 			"connect SSH profile %q: %v; restore previous tunnel %q: %w",
@@ -523,6 +554,23 @@ func connectCLISSHProfileWithCredentials(
 		err,
 		old.Name,
 	)
+}
+
+// Switching tunnels is a transaction: the previous auto-created Capture
+// profile and its default selection are required if the new connection fails.
+// Explicit disconnect still removes these temporary profiles as before.
+func stopCLISSHForSwitch(state cliSSHTunnelState) error {
+	state.AutoCreated = false
+	return stopCLIStateTunnelForOperation(state)
+}
+
+func finishCLISSHSwitch(old, current cliSSHTunnelState) error {
+	if old.AutoCreated && old.Name != "" && !strings.EqualFold(old.Name, current.Name) {
+		if err := deleteCLISSHProfileConfigOnly(old.Name); err != nil {
+			return fmt.Errorf("new SSH tunnel is connected; remove previous auto-created profile: %w", err)
+		}
+	}
+	return nil
 }
 
 func disconnectCLISSHProfile(name string) (cliSSHTunnelState, bool, error) {
@@ -560,6 +608,30 @@ func testCLISSHProfile(name string) (cliSSHTunnelState, time.Duration, error) {
 	}
 	if err != nil {
 		return cliSSHTunnelState{}, 0, err
+	}
+	if err := probeCLISSHSOCKS(state.Port, 2*time.Second); err != nil {
+		return state, 0, fmt.Errorf("SSH SOCKS5 handshake failed: %w", err)
+	}
+	return state, time.Since(started).Round(time.Millisecond), nil
+}
+
+// The TUI must never fall back to a /dev/tty passphrase prompt. Its credential
+// overlay handles this typed error and its lifetime bounds any newly acquired
+// tunnel; the CLI entry above retains its interactive retry for compatibility.
+func testCLISSHProfileContext(parent context.Context, name string) (cliSSHTunnelState, time.Duration, error) {
+	ctx, cancel := context.WithTimeout(cliSSHOperationContext(parent), cliSSHConnectTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return cliSSHTunnelState{}, 0, err
+	}
+	resolved, err := resolveCLISSHConnectName(name)
+	if err != nil {
+		return cliSSHTunnelState{}, 0, err
+	}
+	started := time.Now()
+	state, _, err := connectCLISSHProfileWithCredentialsContext(ctx, resolved, cliSSHCredentials{})
+	if err != nil {
+		return state, 0, err
 	}
 	if err := probeCLISSHSOCKS(state.Port, 2*time.Second); err != nil {
 		return state, 0, fmt.Errorf("SSH SOCKS5 handshake failed: %w", err)

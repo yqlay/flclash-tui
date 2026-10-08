@@ -169,6 +169,9 @@ flclash sys status|on|off
 flclash tun status|user on|system on|off
 flclash profile import URL
 flclash profile import-file /path/to/nodes.txt
+flclash proxy nodes GROUP --json
+flclash proxy select GROUP NODE --json
+flclash proxy delay NODE --json
 flclash logs --lines 100 --follow
 flclash history show --limit 20
 flclash ssh disconnect             # 只关 SSH 隧道
@@ -176,13 +179,17 @@ flclash backend stop               # 停代理 Backend+Core，SSH 还在
 flclash exit                       # 完全退出前端、Backend、Core 和 SSH
 ```
 
-TUI：`q` 只退当前界面；`Ctrl+C` 全停；Dashboard 管 Core、模式、flc、端口、TUN 和 System proxy；`?` 查看快捷键；`Ctrl+N` 查看通知。
+`proxy groups/list、nodes、select、delay、speed` 支持参数前后放置选项及 `--json`；测速 `speed` 需要本机 Backend。运行应用仍用 `flc COMMAND`，SSH 用 `flc ssh COMMAND`。
+
+TUI：`q` 只退当前界面，并取消尚未完成的 SSH 连接；已连接的持久隧道保留。`Ctrl+C` 全停；Dashboard 管 Core、模式、flc、端口、TUN 和 System proxy；`?` 查看快捷键；`Ctrl+N` 查看通知。
 
 ## 连接、历史和日志
 
 - **Connections**：`/` 搜索，`f` 切换 mixed / proxy / ssh 来源，Enter 查看详情，`d` 关闭选中连接，`x` 关闭当前来源的全部连接（需确认）。关闭连接不会删除历史。
 - **History**：`/` 搜索，`f` 切换全部 / 活跃 / 已结束，`o` 切换来源，Enter 查看详情，`x` 清除当前来源的历史（需确认），不关闭连接。记录持久保存，最多 500 条。
 - **Logs**：合并后端日志和当前前端事件；`/` 搜索，`f` 筛选级别，Enter 查看完整内容，`e` 导出，`x` 确认清空。自动刷新保留搜索条件和详情状态。
+
+上述详情支持 PgUp/PgDn 滚动；调整终端大小时自动适配。公网 IP 在启动、出口变化或手动刷新时检查；延迟和测速由手动操作触发，切换出口后旧结果失效，不会后台周期性测速。
 
 多窗口操作时，如果提示设置草稿冲突，输入会保留，过期修改不会覆盖新配置。先记下需要保留的值，Esc 取消输入，再按大写 `R` 重载当前配置并重新编辑；重载会丢弃旧草稿。
 

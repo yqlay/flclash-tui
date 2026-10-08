@@ -24,6 +24,9 @@ func drawTUIAtSize(w io.Writer, snapshot tuiSnapshot, paths cliPaths, controller
 }
 
 func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress string, ownsCore, coreRunning bool, width, height int) string {
+	snapshot = safeTUISnapshotForRender(snapshot)
+	paths.ConfigPath, paths.HomeDir = safeCLITerminalLine(paths.ConfigPath), safeCLITerminalLine(paths.HomeDir)
+	controllerAddress = safeCLITerminalLine(controllerAddress)
 	language := []string{snapshot.Language}
 	tr := tuiTranslator(language...)
 	layout := tuiLayoutAtSize(width, height, snapshot.Language)

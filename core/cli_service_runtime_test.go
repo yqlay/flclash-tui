@@ -507,10 +507,16 @@ func TestTUIServiceRuntimeSelectProxyValidatesAndRollsBack(t *testing.T) {
 	}
 }
 
-func TestTUIServiceRuntimePatchesNativeModeWithoutReload(t *testing.T) {
+func TestTUIServiceRuntimeReloadsNativeModeWithoutUnsafePatch(t *testing.T) {
+	audit3UseReloadStub(t, "")
 	directory := t.TempDir()
 	configPath := filepath.Join(directory, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(defaultTUIConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settingsWithoutListener := *loadTUIConfiguredSettings(configPath, true)
+	settingsWithoutListener.MixedPort = 0
+	if err := persistTUISettings(configPath, settingsWithoutListener); err != nil {
 		t.Fatal(err)
 	}
 	coreSocket := filepath.Join(directory, "core.sock")
@@ -566,8 +572,11 @@ func TestTUIServiceRuntimePatchesNativeModeWithoutReload(t *testing.T) {
 	patchedModeMu.Lock()
 	mode := patchedMode
 	patchedModeMu.Unlock()
-	if patchCount.Load() != 1 || mode != "global" {
-		t.Fatalf("Core mode patches = %d, last mode %q", patchCount.Load(), mode)
+	if patchCount.Load() != 0 || mode != "" {
+		t.Fatalf("unsafe Core mode patches = %d, last mode %q", patchCount.Load(), mode)
+	}
+	if value := audit3RuntimeYAML(t, runtime); value["mode"] != "rule" {
+		t.Fatalf("native mode must keep Core rule mode: %v", value)
 	}
 	settings := loadTUIConfiguredSettings(configPath, true)
 	if settings == nil || settings.Mode != "global" {
@@ -582,7 +591,8 @@ func TestTUIServiceRuntimePatchesNativeModeWithoutReload(t *testing.T) {
 	}
 }
 
-func TestTUIServiceRuntimeRestoresProfileWhenNativeModePatchFails(t *testing.T) {
+func TestTUIServiceRuntimeRestoresProfileWhenNativeModeReloadFails(t *testing.T) {
+	audit3UseReloadStub(t, "global")
 	directory := t.TempDir()
 	configPath := filepath.Join(directory, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(defaultTUIConfig), 0o600); err != nil {
@@ -723,7 +733,7 @@ func TestTUIServiceRuntimeRejectsActiveTunScopeChange(t *testing.T) {
 		t.Fatalf("active TUN scope change = %t, %v", changed, err)
 	}
 	status := runtime.snapshot("")
-	if status.TunScope != tuiTunScopeUser || status.TunState != "on" {
+	if status.TunScope != tuiTunScopeUser || status.TunState != "off" || !runtime.tunEnabled {
 		t.Fatalf("TUN changed after rejected scope switch: %+v", status)
 	}
 }

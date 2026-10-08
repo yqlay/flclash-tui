@@ -13,11 +13,17 @@ import (
 func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	switch key {
 	case tuiKeyQuit:
+		if m.sshOperationCancel != nil {
+			m.sshOperationCancel()
+		}
 		m.frontendExitRequested = true
 		m.stopCoreMemoryMonitor()
 		m.stopTrafficMonitor()
 		return tea.Quit
 	case tuiKeyInterrupt:
+		if m.sshOperationCancel != nil {
+			m.sshOperationCancel()
+		}
 		if m.shutdownRequested {
 			return nil
 		}
@@ -48,6 +54,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			m.snapshot.FocusSidebar = true
 			m.snapshot.SelectedMenu = int(m.snapshot.Page)
 		}
+		m.reflowTUIDetails()
 		return nil
 	case tuiKeyRefresh:
 		m.refreshInFlight = false
@@ -403,6 +410,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			}
 		}
 	case tuiKeyPageUp:
+		if m.scrollTUIDetail(-1) {
+			return nil
+		}
 		if m.snapshot.Page == tuiPageDashboard {
 			step := maxTUIWidth(m.dashboardViewportLimit()-1, 1)
 			m.snapshot.DashboardScroll = maxTUIIndex(
@@ -410,6 +420,9 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			)
 		}
 	case tuiKeyPageDown:
+		if m.scrollTUIDetail(1) {
+			return nil
+		}
 		if m.snapshot.Page == tuiPageDashboard {
 			limit := m.dashboardViewportLimit()
 			maxScroll := maxTUIIndex(
@@ -519,6 +532,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			})
 		}
 	}
+	m.reflowTUIDetails()
 	return nil
 }
 

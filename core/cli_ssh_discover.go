@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -1017,20 +1018,33 @@ func uniqueCLISSHProfileName(base string) string {
 }
 
 func captureCLISSHCandidate(candidate cliSSHCaptureCandidate) (cliSSHTunnelState, bool, error) {
+	return captureCLISSHCandidateContext(context.Background(), candidate)
+}
+
+func captureCLISSHCandidateContext(parent context.Context, candidate cliSSHCaptureCandidate) (cliSSHTunnelState, bool, error) {
+	ctx, finish := beginCLISSHOperation(parent)
+	defer finish()
+	if err := ctx.Err(); err != nil {
+		return cliSSHTunnelState{}, false, err
+	}
 	profile, wasCreated, err := ensureCLISSHProfileForCapture(candidate)
 	if err != nil {
 		return cliSSHTunnelState{}, false, err
 	}
+	profile.operationContext = ctx
 	switch candidate.Kind {
 	case cliSSHCaptureSOCKSKind, cliSSHCaptureReverseSOCKSKind:
 		autoCreated := candidate.Kind == cliSSHCaptureReverseSOCKSKind && wasCreated
 		state, already, attachErr := attachCLISSHSocksProfile(profile, candidate.SocksPort, autoCreated, candidate.Kind == cliSSHCaptureReverseSOCKSKind)
+		if attachErr != nil && autoCreated {
+			attachErr = errors.Join(attachErr, deleteCLISSHProfileConfigOnly(profile.Name))
+		}
 		return state, already, attachErr
 	default:
 		if candidate.ControlPath != "" {
-			return attachCLISSHProfileAtPath(profile.Name, candidate.ControlPath)
+			return attachCLISSHProfileAtPathContext(ctx, profile.Name, candidate.ControlPath)
 		}
-		return attachCLISSHProfile(profile.Name)
+		return attachCLISSHProfileContext(ctx, profile.Name)
 	}
 }
 

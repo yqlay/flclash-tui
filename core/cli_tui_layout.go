@@ -231,6 +231,7 @@ func tuiPanelHeading(title, subtitle string, width int) string {
 }
 
 func (m *tuiModel) reflowTUI() {
+	m.reflowTUIDetails()
 	layout := tuiLayoutAtSize(m.width, m.height, m.snapshot.Language)
 	if m.snapshot.Page == tuiPageDashboard && !layout.Tiny {
 		rows := tuiCompactDashboardRows(m.snapshot, m.paths, layout.ContentWidth, layout.PageHeight, m.snapshot.Language)

@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -343,10 +344,6 @@ func historyCommand(args []string) error {
 	if len(args) == 0 {
 		args = []string{"show"}
 	}
-	client, status, err := currentManagedService()
-	if err != nil {
-		return err
-	}
 	switch args[0] {
 	case "show", "watch":
 		fs := newCLIFlagSet("history show")
@@ -356,7 +353,10 @@ func historyCommand(args []string) error {
 		stateFilter := fs.String("state", "all", "filter by all, active, or done")
 		search := fs.String("search", "", "match host, process, network, or proxy chain")
 		limit := fs.Int("limit", 0, "maximum matching entries; 0 shows all")
-		if err := fs.Parse(args[1:]); err != nil {
+		if err := parseCLIFlags(fs, args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return historyCommand([]string{"--help"})
+			}
 			return err
 		}
 		if len(fs.Args()) != 0 {
@@ -371,6 +371,10 @@ func historyCommand(args []string) error {
 		}
 		if *limit < 0 || *limit > tuiRequestHistoryLimit {
 			return fmt.Errorf("history limit must be between 0 and %d", tuiRequestHistoryLimit)
+		}
+		client, status, err := currentManagedService()
+		if err != nil {
+			return err
 		}
 		seen := map[string]bool{}
 		interrupt := make(chan os.Signal, 1)
@@ -409,13 +413,20 @@ func historyCommand(args []string) error {
 	case "clear":
 		fs := newCLIFlagSet("history clear")
 		sourceFilter := fs.String("source", tuiTrafficSourceMixed, "clear mixed, proxy, or ssh history")
-		if err := fs.Parse(args[1:]); err != nil {
+		if err := parseCLIFlags(fs, args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return historyCommand([]string{"--help"})
+			}
 			return err
 		}
 		if len(fs.Args()) != 0 {
 			return errors.New("usage: flclash history clear [--source mixed|proxy|ssh]")
 		}
 		if err := validateTrafficSourceFlag(*sourceFilter); err != nil {
+			return err
+		}
+		client, status, err := currentManagedService()
+		if err != nil {
 			return err
 		}
 		status, err = client.clearHistoryForSource(*sourceFilter, status.Revision)
@@ -491,9 +502,9 @@ func printCLIHistory(history []tuiRequest, seen map[string]bool, onlyNew bool) {
 			request.FirstSeen.Format("15:04:05"),
 			tuiConnectionSource(request.TuiConnection),
 			state,
-			strings.ToUpper(request.Network),
-			request.Host,
-			request.Chain,
+			strings.ToUpper(safeCLITerminalLine(request.Network)),
+			safeCLITerminalLine(request.Host),
+			safeCLITerminalLine(request.Chain),
 		)
 		seen[request.ID] = true
 	}
@@ -602,22 +613,25 @@ func connectionsCommand(args []string) error {
 	if len(args) == 0 {
 		args = []string{"show"}
 	}
-	service, status, err := currentManagedService()
-	if err != nil {
-		return err
-	}
 	switch args[0] {
 	case "list", "show":
 		fs := newCLIFlagSet("connections show")
 		jsonOutput := fs.Bool("json", false, "print JSON")
 		sourceFilter := fs.String("source", tuiTrafficSourceMixed, "filter by mixed, proxy, or ssh")
-		if err := fs.Parse(args[1:]); err != nil {
+		if err := parseCLIFlags(fs, args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return connectionsCommand([]string{"--help"})
+			}
 			return err
 		}
 		if len(fs.Args()) != 0 {
 			return errors.New("usage: flclash connections [show [--json] [--source mixed|proxy|ssh]] | close ID|all")
 		}
 		if err := validateTrafficSourceFlag(*sourceFilter); err != nil {
+			return err
+		}
+		service, _, err := currentManagedService()
+		if err != nil {
 			return err
 		}
 		connectionStatus, err := service.connections()
@@ -635,7 +649,10 @@ func connectionsCommand(args []string) error {
 	case "close":
 		fs := newCLIFlagSet("connections close")
 		sourceFilter := fs.String("source", tuiTrafficSourceMixed, "close mixed, proxy, or ssh flows")
-		if err := fs.Parse(args[1:]); err != nil {
+		if err := parseCLIFlags(fs, args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return connectionsCommand([]string{"--help"})
+			}
 			return err
 		}
 		rest := fs.Args()
@@ -643,6 +660,10 @@ func connectionsCommand(args []string) error {
 			return errors.New("usage: flclash connections close ID|all [--source mixed|proxy|ssh]")
 		}
 		if err := validateTrafficSourceFlag(*sourceFilter); err != nil {
+			return err
+		}
+		service, status, err := currentManagedService()
+		if err != nil {
 			return err
 		}
 		if rest[0] == "all" {
@@ -655,6 +676,10 @@ func connectionsCommand(args []string) error {
 		if len(args) != 1 {
 			return errors.New("usage: flclash connections close all")
 		}
+		service, status, err := currentManagedService()
+		if err != nil {
+			return err
+		}
 		_, err = service.closeAllConnectionsManaged(status.Revision)
 		return err
 	default:
@@ -664,7 +689,7 @@ func connectionsCommand(args []string) error {
 
 func printCLIManagedConnections(connections []tuiConnection) error {
 	for _, connection := range connections {
-		fmt.Printf("%s\t%s\t%s\t%s\tUID %d\t%s\n", tuiConnectionSource(connection), connection.ID, connection.Host, connection.Process, connection.UID, connection.Chain)
+		fmt.Printf("%s\t%s\t%s\t%s\tUID %d\t%s\n", tuiConnectionSource(connection), safeCLITerminalLine(connection.ID), safeCLITerminalLine(connection.Host), safeCLITerminalLine(connection.Process), connection.UID, safeCLITerminalLine(connection.Chain))
 	}
 	return nil
 }

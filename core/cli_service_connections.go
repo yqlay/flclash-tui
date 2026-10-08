@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+var reloadTUIServiceActualConfig = reloadTUIActualConfig
+
 func (r *tuiServiceRuntime) historyStatus(requestID string) tuiServiceStatus {
 	r.historyUpdateMu.Lock()
 	defer r.historyUpdateMu.Unlock()
@@ -36,6 +38,8 @@ func (r *tuiServiceRuntime) historyStatus(requestID string) tuiServiceStatus {
 	)
 	r.recordHistoryUpdate(updated)
 	status.History = append([]tuiRequest(nil), updated...)
+	count := len(updated)
+	status.HistoryCount = &count
 	return status
 }
 
@@ -301,8 +305,31 @@ func (r *tuiServiceRuntime) releaseTunLease() {
 	r.mu.Lock()
 	lease := r.tunLease
 	r.tunLease = nil
+	pendingFD := r.pendingTunFD
+	r.pendingTunFD = 0
 	r.mu.Unlock()
+	if pendingFD > 0 {
+		_ = syscall.Close(pendingFD)
+	}
 	lease.release()
+}
+
+func (r *tuiServiceRuntime) replacePendingTunFD(fd int) {
+	r.mu.Lock()
+	previous := r.pendingTunFD
+	r.pendingTunFD = fd
+	r.mu.Unlock()
+	if previous > 0 && previous != fd {
+		_ = syscall.Close(previous)
+	}
+}
+
+func (r *tuiServiceRuntime) takePendingTunFD() int {
+	r.mu.Lock()
+	fd := r.pendingTunFD
+	r.pendingTunFD = 0
+	r.mu.Unlock()
+	return fd
 }
 
 func (r *tuiServiceRuntime) reload(configPath string) (bool, error) {
@@ -439,6 +466,10 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 	tunScope := r.tunScope
 	tunEnabled := r.tunEnabled
 	tunLease := r.tunLease
+	previousTunLease := tunLease
+	if r.rollbackTunLease != nil {
+		previousTunLease = r.rollbackTunLease
+	}
 	activePort := r.activePort
 	previousActualPath := r.actualConfigPath
 	r.mu.RUnlock()
@@ -461,6 +492,34 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 	if settings == nil {
 		return false, errors.New("could not load active settings")
 	}
+	// Resolve the displayed mode before producing its routing rules. A profile
+	// switch must not carry the old MATCH policy into the new profile.
+	mode = resolveTUIRuntimeTrafficMode(mode, settings)
+	if mode != tuiSilentMode {
+		if tunScope == tuiTunScopeUser {
+			tunEnabled = settings.TunEnabled
+		}
+	} else {
+		tunEnabled = false
+	}
+	var acquiredLease *tuiTunLease
+	if tunEnabled && running && tunLease == nil {
+		var leaseErr error
+		acquiredLease, _, leaseErr = acquireTUIServiceTunLease(tunScope)
+		if leaseErr != nil {
+			return false, leaseErr
+		}
+		tunLease = acquiredLease
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			acquiredLease.release()
+		}
+	}()
+	// Stopped settings can save TUN intent without a lease. Startup, however,
+	// preloads TUN with an acquired lease before running becomes true.
+	runtimeTunEnabled := tunEnabled && tunLease != nil
 	actualConfigPath := configPath
 	targetPort := settings.MixedPort
 	tunFD := 0
@@ -485,7 +544,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 				return false, err
 			}
 		}
-		if tunEnabled {
+		if runtimeTunEnabled {
 			var err error
 			tunFD, err = tunLease.duplicateFD()
 			if err != nil {
@@ -499,7 +558,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 			logicalPaths,
 			mode,
 			targetPort,
-			tunEnabled,
+			runtimeTunEnabled,
 			tunScope,
 			tunFD,
 		)
@@ -510,7 +569,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 			return false, err
 		}
 	}
-	reloaded, err := reloadTUIActualConfig(
+	reloaded, err := reloadTUIServiceActualConfig(
 		paths.HomeDir,
 		previousActualPath,
 		actualConfigPath,
@@ -518,11 +577,9 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 		r.coreSocket,
 		setupParams,
 		running,
+		tuiConfigReloadOptions{rollbackTunLease: previousTunLease, preparedTargetFD: tunFD, acceptPendingTunFD: r.replacePendingTunFD},
 	)
 	if err != nil {
-		if tunFD > 0 {
-			_ = syscall.Close(tunFD)
-		}
 		if actualConfigPath != configPath {
 			_ = os.Remove(actualConfigPath)
 		}
@@ -532,7 +589,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 		if err := validateTUIProxyPortTransition(activePort, targetPort); err != nil {
 			validationErr := err
 			if filepath.Clean(actualConfigPath) != filepath.Clean(previousActualPath) {
-				_, rollbackErr := reloadTUIActualConfig(
+				_, rollbackErr := reloadTUIServiceActualConfig(
 					paths.HomeDir,
 					actualConfigPath,
 					previousActualPath,
@@ -540,6 +597,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 					r.coreSocket,
 					reloaded,
 					running,
+					tuiConfigReloadOptions{rollbackTunLease: tunLease, targetTunLease: previousTunLease, refreshTargetTun: true, acceptPendingTunFD: r.replacePendingTunFD},
 				)
 				if rollbackErr == nil {
 					rollbackErr = validateTUIProxyPortTransition(targetPort, activePort)
@@ -562,7 +620,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 	updatedPaths.ConfigPath = configPath
 	if configPath != paths.ConfigPath {
 		if err := rememberTUIActiveProfile(updatedPaths); err != nil {
-			_, rollbackErr := reloadTUIActualConfig(
+			_, rollbackErr := reloadTUIServiceActualConfig(
 				paths.HomeDir,
 				actualConfigPath,
 				previousActualPath,
@@ -570,6 +628,7 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 				r.coreSocket,
 				reloaded,
 				running,
+				tuiConfigReloadOptions{rollbackTunLease: tunLease, targetTunLease: previousTunLease, refreshTargetTun: true, acceptPendingTunFD: r.replacePendingTunFD},
 			)
 			if actualConfigPath != configPath {
 				_ = os.Remove(actualConfigPath)
@@ -589,6 +648,13 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 	r.setupParams = append([]byte(nil), reloaded...)
 	r.actualConfigPath = actualConfigPath
 	r.runtimePort = targetPort
+	detachedTunLease := r.tunLease
+	r.tunEnabled = tunEnabled
+	if runtimeTunEnabled {
+		r.tunLease = tunLease
+	} else {
+		r.tunLease = nil
+	}
 	if settings != nil {
 		r.configuredPort = settings.MixedPort
 		if mode != tuiSilentMode {
@@ -599,6 +665,10 @@ func (r *tuiServiceRuntime) reloadUnlocked(
 		r.activePort = targetPort
 	}
 	r.mu.Unlock()
+	committed = true
+	if !runtimeTunEnabled {
+		detachedTunLease.release()
+	}
 	if mode != tuiSilentMode && settings != nil {
 		_ = rememberTUITrafficMode(paths.HomeDir, settings.Mode)
 	}

@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,9 @@ func startManagedCommand(args []string) error {
 		return nil
 	}
 	paths, testURL, configExplicit, directoryExplicit, err := parseManagedPaths("start", args)
+	if errors.Is(err, flag.ErrHelp) {
+		return startManagedCommand([]string{"--help"})
+	}
 	if err != nil {
 		return err
 	}
@@ -61,6 +65,9 @@ func restartManagedCommand(args []string) error {
 		fmt.Println("Stop and start Core listeners without terminating the backend.")
 		return nil
 	}
+	if len(args) != 0 {
+		return errors.New("usage: flclash restart")
+	}
 	client, status, err := currentManagedService()
 	if err != nil {
 		return err
@@ -87,8 +94,14 @@ func reloadManagedCommand(args []string) error {
 	}
 	fs := newCLIFlagSet("reload")
 	configPath := fs.String("config", "", "profile YAML path")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return reloadManagedCommand([]string{"--help"})
+		}
 		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("usage: flclash reload [--config PATH]")
 	}
 	client, status, err := currentManagedService()
 	if err != nil {
@@ -111,8 +124,14 @@ func statusManagedCommand(args []string) error {
 	fs := newCLIFlagSet("status")
 	jsonOutput := fs.Bool("json", false, "print JSON")
 	watch := fs.Bool("watch", false, "watch revision changes")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return statusManagedCommand([]string{"--help"})
+		}
 		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("usage: flclash status [--json] [--watch]")
 	}
 	client, status, err := currentManagedServiceRaw()
 	if err != nil {
@@ -213,8 +232,14 @@ func logsManagedCommand(args []string) error {
 	fs := newCLIFlagSet("logs")
 	follow := fs.Bool("follow", false, "follow appended log data")
 	lines := fs.Int("lines", 100, "number of trailing lines")
-	if err := fs.Parse(args); err != nil {
+	if err := parseCLIFlags(fs, args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return logsManagedCommand([]string{"--help"})
+		}
 		return err
+	}
+	if len(fs.Args()) != 0 || *lines < 0 {
+		return errors.New("usage: flclash logs [--follow] [--lines N]; N must not be negative")
 	}
 	paths, err := resolvePaths("", "")
 	if err != nil {
@@ -237,12 +262,21 @@ func serviceManagementCommand(args []string) error {
 	if len(args) == 0 {
 		args = []string{"status"}
 	}
+	if (args[0] == "stop" || args[0] == "restart" || args[0] == "clients") && len(args) != 1 {
+		if cliSubcommandHelp(args[1:]) {
+			return serviceManagementCommand([]string{"--help"})
+		}
+		return fmt.Errorf("usage: flclash backend %s", args[0])
+	}
 	switch args[0] {
 	case "start":
 		paths, testURL, configExplicit, directoryExplicit, err := parseManagedPaths(
 			"service start",
 			args[1:],
 		)
+		if errors.Is(err, flag.ErrHelp) {
+			return serviceManagementCommand([]string{"--help"})
+		}
 		if err != nil {
 			return err
 		}
@@ -334,6 +368,17 @@ func configCommand(args []string) error {
 	if len(args) == 0 || cliSubcommandHelp(args) {
 		fmt.Println("Usage: flclash config path|show|validate|edit|backup|restore")
 		return nil
+	}
+	switch args[0] {
+	case "path", "show", "validate", "edit", "backup", "restore":
+	default:
+		return fmt.Errorf("unknown config command %q", args[0])
+	}
+	if len(args) != 1 {
+		if cliSubcommandHelp(args[1:]) {
+			return configCommand([]string{"--help"})
+		}
+		return fmt.Errorf("usage: flclash config %s", args[0])
 	}
 	paths, err := activeCLIPaths()
 	if err != nil {

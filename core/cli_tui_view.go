@@ -149,7 +149,7 @@ func (m *tuiModel) View() string {
 			cursor = len(m.inputValue)
 		}
 		snapshot.InputTitle, snapshot.InputHint = m.inputPresentation()
-		snapshot.InputValue = tuiInputViewport(
+		snapshot.InputValue = tuiSafeInputViewport(
 			m.inputValue,
 			cursor,
 			maxTUIWidth(tuiLayoutAtSize(m.width, m.height, snapshot.Language).ContentWidth-4, 1),
@@ -207,7 +207,7 @@ func (m *tuiModel) sshFormView() tuiSSHFormView {
 		// keeps an empty editing field in the label/value column calculation.
 		view.FieldInput = " "
 		budget := tuiFieldInputWidth(tuiSSHFormFields(view, m.snapshot.Language), tuiLayoutAtSize(m.width, m.height, m.snapshot.Language).ContentWidth)
-		view.FieldInput = tuiInputViewport(
+		view.FieldInput = tuiSafeInputViewport(
 			value,
 			m.sshFormCursor,
 			budget,

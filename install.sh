@@ -132,7 +132,7 @@ prepare_portable_link() {
   fi
 }
 
-install_portable() {
+install_portable() (
   local archive_path=$1
   local version=$2
   local arch=$3
@@ -142,19 +142,66 @@ install_portable() {
   local package_name="flclash-tui_${version}_${arch}"
   local extract_dir="${work_dir}/extract"
   local source_dir="${extract_dir}/${package_name}"
-  local destination="${install_root}/${version}-${arch}"
+  local destination=''
+  local link_stage=''
+  local switched=0
+  local completed=0
 
-  mkdir -p "$extract_dir"
-  tar -xzf "$archive_path" -C "$extract_dir"
+  cleanup_portable_stage() {
+    local rollback_failed=0
+    if [[ "$completed" -eq 0 && "$switched" -eq 1 ]]; then
+      if [[ -L "${link_stage}/old-flclash" ]]; then
+        mv -Tf -- "${link_stage}/old-flclash" "${bin_dir}/flclash" || { log 'could not restore the previous flclash command link'; rollback_failed=1; }
+      else
+        rm -f -- "${bin_dir}/flclash" || { log 'could not remove the uncommitted flclash command link'; rollback_failed=1; }
+      fi
+      if [[ -L "${link_stage}/old-flc" ]]; then
+        mv -Tf -- "${link_stage}/old-flc" "${bin_dir}/flc" || { log 'could not restore the previous flc command link'; rollback_failed=1; }
+      else
+        rm -f -- "${bin_dir}/flc" || { log 'could not remove the uncommitted flc command link'; rollback_failed=1; }
+      fi
+    fi
+    if [[ -n "$link_stage" && -d "$link_stage" ]]; then
+      rm -rf -- "$link_stage"
+    fi
+    if [[ "$completed" -eq 0 && "$rollback_failed" -eq 0 && -n "$destination" && -d "$destination" ]]; then
+      rm -rf -- "$destination"
+    fi
+  }
+  trap cleanup_portable_stage EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  mkdir -p -- "$extract_dir" || die 'could not create extraction directory'
+  tar -xzf "$archive_path" -C "$extract_dir" || die 'could not extract portable archive'
   [[ -x "${source_dir}/flclash" ]] || die "portable archive does not contain ${package_name}/flclash"
+  [[ -x "${source_dir}/flc" ]] || die "portable archive does not contain ${package_name}/flc"
   [[ -d "${source_dir}/data" ]] || die "portable archive does not contain bundled Geo data"
 
   prepare_portable_link "${bin_dir}/flclash"
   prepare_portable_link "${bin_dir}/flc"
-  mkdir -p "$destination" "$bin_dir"
-  cp -a "${source_dir}/." "$destination/"
-  ln -sfn "${destination}/flclash" "${bin_dir}/flclash"
-  ln -sfn "${destination}/flc" "${bin_dir}/flc"
+  mkdir -p -- "$install_root" "$bin_dir" || die 'could not create installation directories'
+  install_root=$(cd -- "$install_root" && pwd -P) || die 'could not resolve installation directory'
+  bin_dir=$(cd -- "$bin_dir" && pwd -P) || die 'could not resolve command directory'
+  # Every installation gets a complete new instance. Never truncate an ELF
+  # that a frontend/backend may still be executing, even for the same version.
+  destination=$(mktemp -d "${install_root}/${version}-${arch}.XXXXXX") || die 'could not create portable instance'
+  cp -a -- "${source_dir}/." "$destination/" || die 'could not stage portable files'
+  link_stage=$(mktemp -d "${bin_dir}/.flclash-links.XXXXXX") || die 'could not stage command links'
+  ln -s -- "${destination}/flclash" "${link_stage}/flclash" || die 'could not stage flclash link'
+  ln -s -- "${destination}/flc" "${link_stage}/flc" || die 'could not stage flc link'
+  if [[ -L "${bin_dir}/flclash" ]]; then
+    ln -s -- "$(readlink "${bin_dir}/flclash")" "${link_stage}/old-flclash" || die 'could not back up flclash link'
+  fi
+  if [[ -L "${bin_dir}/flc" ]]; then
+    ln -s -- "$(readlink "${bin_dir}/flc")" "${link_stage}/old-flc" || die 'could not back up flc link'
+  fi
+  prepare_portable_link "${bin_dir}/flclash"
+  prepare_portable_link "${bin_dir}/flc"
+  switched=1
+  mv -Tf -- "${link_stage}/flclash" "${bin_dir}/flclash" || die 'could not switch flclash command link'
+  mv -Tf -- "${link_stage}/flc" "${bin_dir}/flc" || die 'could not switch flc command link'
+  completed=1
 
   log "installed portable files in $destination"
   log "linked commands in $bin_dir"
@@ -163,7 +210,7 @@ install_portable() {
     *) log "add $bin_dir to PATH before running flclash" ;;
   esac
   log "portable installation does not include the privileged system TUN helper"
-}
+)
 
 main() {
   local requested_version=''

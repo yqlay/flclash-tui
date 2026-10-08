@@ -17,6 +17,7 @@ var (
 	reloadTUIServiceSettings     = func(r *tuiServiceRuntime, path string) (bool, error) {
 		return r.reloadUnlocked(path, "")
 	}
+	acquireTUIServiceTunLease = acquireTUITunLease
 )
 
 func validateTUIProxyPortTransition(previousPort, targetPort int) error {
@@ -210,7 +211,7 @@ func (r *tuiServiceRuntime) applyTun(enabled bool, requestedScope string) (bool,
 	}
 	var replacementLease *tuiTunLease
 	if enabled && running {
-		replacementLease, _, err = acquireTUITunLease(scope)
+		replacementLease, _, err = acquireTUIServiceTunLease(scope)
 		if err != nil {
 			return false, err
 		}
@@ -222,9 +223,15 @@ func (r *tuiServiceRuntime) applyTun(enabled bool, requestedScope string) (bool,
 	r.mu.Lock()
 	previousLease := r.tunLease
 	r.tunScope = scope
-	r.tunEnabled = enabled && running
+	r.tunEnabled = enabled
 	r.tunLease = replacementLease
+	r.rollbackTunLease = previousLease
 	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.rollbackTunLease = nil
+		r.mu.Unlock()
+	}()
 	settings.TunEnabled = enabled && scope == tuiTunScopeUser
 	if _, err := r.applySettings(*settings); err != nil {
 		r.mu.Lock()

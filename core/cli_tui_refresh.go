@@ -13,6 +13,10 @@ import (
 )
 
 func (m *tuiModel) shutdown() {
+	if m.sshOperationCancel != nil {
+		m.sshOperationCancel()
+	}
+	_ = waitCLISSHPendingOperations(6 * time.Second)
 	m.editorBackup.release()
 	if m.editorTempPath != "" {
 		_ = os.Remove(m.editorTempPath)
@@ -49,7 +53,7 @@ func (m *tuiModel) idleTickCommand() tea.Cmd {
 		cmds = append(cmds, m.startMemoryRefresh())
 	}
 	if plan.PollSSH {
-		cmds = append(cmds, m.pollSelectedSSHRelay())
+		cmds = append(cmds, m.startSSHLocalRefresh(), m.pollSelectedSSHRelay())
 	}
 	return tea.Batch(cmds...)
 }
@@ -219,9 +223,14 @@ func (m *tuiModel) startOperation(action func(*tuiOperationState)) tea.Cmd {
 		return nil
 	}
 	m.busy = true
+	m.syncNetworkExit()
+	m.operationSequence++
 	m.refreshInFlight = false
 	m.refreshSequence++
 	state := tuiOperationState{
+		operationID:        m.operationSequence,
+		networkGeneration:  m.networkExitGeneration,
+		testingIndicators:  captureTUIOperationTestingIndicators(m.snapshot),
 		service:            m.service.forInstance(m.backendInstanceID),
 		backendInstanceID:  m.backendInstanceID,
 		backendGeneration:  m.backendGeneration,
@@ -247,6 +256,8 @@ func (m *tuiModel) startOperation(action func(*tuiOperationState)) tea.Cmd {
 // slices/maps with the live model or a concurrent refresh/traffic result.
 func cloneTUISnapshot(source tuiSnapshot) tuiSnapshot {
 	cloned := source
+	cloned.HistoryCount = cloneTUIOptionalInt(source.HistoryCount)
+	cloned.TunRequested = cloneTUIOptionalBool(source.TunRequested)
 	cloned.Groups = append([]tuiGroup(nil), source.Groups...)
 	for index := range cloned.Groups {
 		cloned.Groups[index].Nodes = append([]string(nil), source.Groups[index].Nodes...)
@@ -278,6 +289,14 @@ func cloneTUISnapshot(source tuiSnapshot) tuiSnapshot {
 }
 
 func cloneTUIOptionalInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneTUIOptionalBool(value *bool) *bool {
 	if value == nil {
 		return nil
 	}
@@ -402,11 +421,14 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	updated.HistoryFilter = current.HistoryFilter
 	updated.HistoryQuery = current.HistoryQuery
 	updated.HistoryDetailOpen = current.HistoryDetailOpen
+	updated.HistoryDetailScroll = current.HistoryDetailScroll
 	updated.ConnectionsQuery = current.ConnectionsQuery
 	updated.ConnectionsDetailOpen = current.ConnectionsDetailOpen
+	updated.ConnectionsDetailScroll = current.ConnectionsDetailScroll
 	updated.LogsQuery = current.LogsQuery
 	updated.LogsLevel = current.LogsLevel
 	updated.LogDetailOpen = current.LogDetailOpen
+	updated.LogDetailScroll = current.LogDetailScroll
 	updated.DashboardScroll = current.DashboardScroll
 	if current.Network.Loading ||
 		current.Network.CheckedAt.After(updated.Network.CheckedAt) {
@@ -453,6 +475,9 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	if updated.SelectedConnection < 0 || findTUIInt(matchedTUIConnectionIndexes(updated), updated.SelectedConnection) < 0 {
 		updated.ConnectionsDetailOpen = false
 	}
+	if !updated.ConnectionsDetailOpen {
+		updated.ConnectionsDetailScroll = 0
+	}
 	updated.SelectedRequest = findTUIRequest(updated.Requests, selectedRequestID)
 	if selectedRequestID == "" {
 		updated.SelectedRequest = clampTUISelection(
@@ -466,6 +491,9 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	if updated.SelectedRequest < 0 || findTUIInt(matchedTUIRequestIndexes(updated), updated.SelectedRequest) < 0 {
 		updated.HistoryDetailOpen = false
 	}
+	if !updated.HistoryDetailOpen {
+		updated.HistoryDetailScroll = 0
+	}
 	updated.SelectedLog = findTUILog(updated.Logs, selectedLog)
 	selectedLogFound := updated.SelectedLog >= 0
 	if selectedLog == "" || updated.SelectedLog < 0 {
@@ -475,6 +503,9 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 		updated.SelectedLog < 0 ||
 		findTUIInt(matchedTUILogIndexes(updated), updated.SelectedLog) < 0 {
 		updated.LogDetailOpen = false
+	}
+	if !updated.LogDetailOpen {
+		updated.LogDetailScroll = 0
 	}
 	updated.SelectedProvider = findTUIProvider(updated.Providers, selectedProviderName)
 	if selectedProviderName == "" {
@@ -594,7 +625,10 @@ func mergeTUIGroupDelays(current, updated []tuiGroup) {
 				delays[node] = delay
 			}
 			for node, delay := range previous.Delays {
-				if _, exists := delays[node]; !exists {
+				if findTUIStringExact(updated[index].Nodes, node) < 0 {
+					continue
+				}
+				if next, exists := delays[node]; !exists || !next.Manual && (delay.Manual || delay.Testing || delay.Samples > 1 || delay.Error != "") {
 					delays[node] = delay
 				}
 			}
@@ -609,6 +643,9 @@ func mergeTUIGroupDelays(current, updated []tuiGroup) {
 				speeds[node] = speed
 			}
 			for node, speed := range previous.Speeds {
+				if findTUIStringExact(updated[index].Nodes, node) < 0 {
+					continue
+				}
 				if _, exists := speeds[node]; !exists {
 					speeds[node] = speed
 				}

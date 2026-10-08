@@ -59,7 +59,7 @@ func cliSSHConfigControlPath(sshPath string, profile cliSSHProfile) string {
 		args = append(args, "-o", option)
 	}
 	args = append(args, profile.Host)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(cliSSHOperationContext(profile.operationContext), 3*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, sshPath, args...)
 	command.WaitDelay = time.Second
@@ -126,6 +126,12 @@ func cliSSHMasterCheck(sshPath, controlPath string, profile cliSSHProfile) bool 
 }
 
 func attachCLISSHTunnel(profile cliSSHProfile, controlPath string) (cliSSHTunnelState, error) {
+	ctx, cancel := context.WithTimeout(cliSSHOperationContext(profile.operationContext), cliSSHConnectTimeout)
+	defer cancel()
+	profile.operationContext = ctx
+	if err := ctx.Err(); err != nil {
+		return cliSSHTunnelState{}, err
+	}
 	profile = normalizeCLISSHProfile(profile)
 	if err := validateCLISSHProfile(profile); err != nil {
 		return cliSSHTunnelState{}, err
@@ -148,6 +154,9 @@ func attachCLISSHTunnel(profile cliSSHProfile, controlPath string) (cliSSHTunnel
 		attemptLimit = 1
 	}
 	for attempt := 0; attempt < attemptLimit; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return cliSSHTunnelState{}, err
+		}
 		port := configuredPort
 		if !fixedPort {
 			port, err = allocateCLISSHPort()
@@ -168,13 +177,15 @@ func attachCLISSHTunnel(profile cliSSHProfile, controlPath string) (cliSSHTunnel
 			}
 		}
 		state := cliSSHTunnelState{
-			Name:         profile.Name,
-			Destination:  formatCLISSHDestination(profile.Username, profile.Host),
-			Port:         port,
-			UpstreamPort: upstreamPort,
-			ControlPath:  controlPath,
-			Kind:         cliSSHAttachedKind,
-			StartedAt:    time.Now(),
+			Name:             profile.Name,
+			Destination:      formatCLISSHDestination(profile.Username, profile.Host),
+			Port:             port,
+			UpstreamPort:     upstreamPort,
+			ControlPath:      controlPath,
+			Kind:             cliSSHAttachedKind,
+			StartedAt:        time.Now(),
+			operationContext: ctx,
+			StatePath:        filepath.Join(runtimeDirectory, fmt.Sprintf("%s-%d-%d.json", cliSSHAttachedKind, os.Getpid(), time.Now().UnixNano())),
 		}
 		if !cliSSHMasterAlive(sshPath, state) {
 			return state, fmt.Errorf(
@@ -182,24 +193,28 @@ func attachCLISSHTunnel(profile cliSSHProfile, controlPath string) (cliSSHTunnel
 				state.Destination,
 			)
 		}
+		if err := prepareCLISSHPendingState(&state); err != nil {
+			return state, err
+		}
 		if forwardErr := addCLISSHDynamicForwardForOperation(sshPath, state); forwardErr != nil {
-			_ = cancelCLISSHDynamicForward(sshPath, state)
+			cleanupErr := stopCLIAttachedTunnel(state)
+			if cleanupErr != nil || ctx.Err() != nil {
+				return state, errors.Join(forwardErr, cleanupErr)
+			}
 			if attempt < attemptLimit-1 {
 				continue
 			}
 			return state, fmt.Errorf("configure SSH SOCKS5 forward on existing connection: %w", forwardErr)
 		}
-		state.StatePath = filepath.Join(
-			runtimeDirectory,
-			fmt.Sprintf("%s-%d-%d.json", cliSSHAttachedKind, os.Getpid(), time.Now().UnixNano()),
-		)
 		if err := saveCLISSHTunnelState(state); err != nil {
 			_ = cancelCLISSHDynamicForward(sshPath, state)
 			return state, err
 		}
 		deadline := time.Now().Add(5 * time.Second)
 		for !cliSSHSOCKSReady(state.UpstreamPort) && time.Now().Before(deadline) {
-			time.Sleep(25 * time.Millisecond)
+			if err := waitCLISSHOperation(ctx, 25*time.Millisecond); err != nil {
+				return state, errors.Join(err, stopCLIAttachedTunnel(state))
+			}
 		}
 		if !cliSSHSOCKSReady(state.UpstreamPort) {
 			_ = stopCLIAttachedTunnel(state)
@@ -215,10 +230,13 @@ func attachCLISSHTunnel(profile cliSSHProfile, controlPath string) (cliSSHTunnel
 		}
 		aliveDeadline := time.Now().Add(15 * time.Second)
 		for time.Now().Before(aliveDeadline) {
+			if err := ctx.Err(); err != nil {
+				return state, errors.Join(err, stopCLIAttachedTunnel(state))
+			}
 			if cliSSHTunnelAlive(sshPath, state) {
 				return persistCLISSHTunnelState(state)
 			}
-			time.Sleep(50 * time.Millisecond)
+			_ = waitCLISSHOperation(ctx, 50*time.Millisecond)
 		}
 		_ = stopCLIAttachedTunnel(state)
 		return state, fmt.Errorf("SSH tunnel %q did not become ready", profile.Name)
@@ -257,7 +275,7 @@ func stopCLIAttachedTunnel(state cliSSHTunnelState) error {
 			cancelFailed = true
 		}
 	}
-	if cancelFailed {
+	if cancelFailed || len(cleanupErrors) > 0 {
 		return errors.Join(cleanupErrors...)
 	}
 	if state.StatePath != "" {
@@ -282,6 +300,9 @@ func restoreCLIPreviousSSHTunnel(old cliSSHTunnelState, oldProfile cliSSHProfile
 }
 
 func persistCLISSHTunnelState(state cliSSHTunnelState) (cliSSHTunnelState, error) {
+	if err := cliSSHOperationContext(state.operationContext).Err(); err != nil {
+		return state, errors.Join(err, stopCLIStateTunnel(state))
+	}
 	runtimeDirectory, err := ensureCLISSHRuntimeDirectory()
 	if err != nil {
 		return cliSSHTunnelState{}, errors.Join(err, stopCLIStateTunnel(state))
@@ -294,6 +315,9 @@ func persistCLISSHTunnelState(state cliSSHTunnelState) (cliSSHTunnelState, error
 		return cliSSHTunnelState{}, errors.Join(err, stopCLIStateTunnel(state))
 	}
 	state.StatePath = persistentPath
+	state.Pending = false
+	state.HelperPID, state.HelperStart, state.AskpassPath = 0, "", ""
+	state.operationContext = nil
 	if err := saveCLISSHTunnelState(state); err != nil {
 		return cliSSHTunnelState{}, errors.Join(err, stopCLIStateTunnel(state))
 	}
@@ -301,6 +325,15 @@ func persistCLISSHTunnelState(state cliSSHTunnelState) (cliSSHTunnelState, error
 }
 
 func attachCLISSHProfile(name string) (cliSSHTunnelState, bool, error) {
+	return attachCLISSHProfileContext(context.Background(), name)
+}
+
+func attachCLISSHProfileContext(parent context.Context, name string) (cliSSHTunnelState, bool, error) {
+	ctx, finish := beginCLISSHOperation(parent)
+	defer finish()
+	if err := ctx.Err(); err != nil {
+		return cliSSHTunnelState{}, false, err
+	}
 	lock, err := lockCLISSHTunnelOperation()
 	if err != nil {
 		return cliSSHTunnelState{}, false, err
@@ -311,6 +344,7 @@ func attachCLISSHProfile(name string) (cliSSHTunnelState, bool, error) {
 		_ = saveCLISSHLastError(name, err.Error())
 		return cliSSHTunnelState{}, false, err
 	}
+	profile.operationContext = ctx
 	old, oldActive, err := activeCLIPersistentSSHTunnelForOperation()
 	if err != nil {
 		return cliSSHTunnelState{}, false, err
@@ -358,7 +392,11 @@ func attachCLISSHMasterLocked(
 		if err != nil {
 			return cliSSHTunnelState{}, false, fmt.Errorf("cannot restore current SSH profile: %w", err)
 		}
-		if err := stopCLIStateTunnelForOperation(old); err != nil {
+		oldProfile.operationContext = profile.operationContext
+		if err := cliSSHOperationContext(profile.operationContext).Err(); err != nil {
+			return cliSSHTunnelState{}, false, err
+		}
+		if err := stopCLISSHForSwitch(old); err != nil {
 			_ = saveCLISSHLastError(old.Name, err.Error())
 			return cliSSHTunnelState{}, false,
 				fmt.Errorf("stop previous SSH tunnel %q: %w", old.Name, err)
@@ -368,12 +406,20 @@ func attachCLISSHMasterLocked(
 	if err != nil {
 		_ = saveCLISSHLastError(profile.Name, err.Error())
 		if oldActive {
+			if cliSSHOperationContext(profile.operationContext).Err() != nil {
+				return cliSSHTunnelState{}, false, err
+			}
 			if restoreErr := restoreCLIPreviousSSHTunnel(old, oldProfile); restoreErr != nil {
 				return cliSSHTunnelState{}, false, fmt.Errorf("capture SSH: %v; restore previous tunnel %q: %w", err, old.Name, restoreErr)
 			}
 			return cliSSHTunnelState{}, false, fmt.Errorf("capture SSH: %w; previous tunnel %q restored", err, old.Name)
 		}
 		return cliSSHTunnelState{}, false, err
+	}
+	if oldActive {
+		if cleanupErr := finishCLISSHSwitch(old, state); cleanupErr != nil {
+			return state, false, cleanupErr
+		}
 	}
 	_ = clearCLISSHLastError(profile.Name)
 	return state, false, nil
@@ -396,7 +442,11 @@ func attachCLISSHSocksLocked(
 		if err != nil {
 			return cliSSHTunnelState{}, false, fmt.Errorf("cannot restore current SSH profile: %w", err)
 		}
-		if err := stopCLIStateTunnelForOperation(old); err != nil {
+		oldProfile.operationContext = profile.operationContext
+		if err := cliSSHOperationContext(profile.operationContext).Err(); err != nil {
+			return cliSSHTunnelState{}, false, err
+		}
+		if err := stopCLISSHForSwitch(old); err != nil {
 			_ = saveCLISSHLastError(old.Name, err.Error())
 			return cliSSHTunnelState{}, false,
 				fmt.Errorf("stop previous SSH tunnel %q: %w", old.Name, err)
@@ -406,6 +456,9 @@ func attachCLISSHSocksLocked(
 	if err != nil {
 		_ = saveCLISSHLastError(profile.Name, err.Error())
 		if oldActive {
+			if cliSSHOperationContext(profile.operationContext).Err() != nil {
+				return cliSSHTunnelState{}, false, err
+			}
 			if restoreErr := restoreCLIPreviousSSHTunnel(old, oldProfile); restoreErr != nil {
 				return cliSSHTunnelState{}, false, fmt.Errorf("capture SSH: %v; restore previous tunnel %q: %w", err, old.Name, restoreErr)
 			}
@@ -413,11 +466,19 @@ func attachCLISSHSocksLocked(
 		}
 		return cliSSHTunnelState{}, false, err
 	}
+	if oldActive {
+		if cleanupErr := finishCLISSHSwitch(old, state); cleanupErr != nil {
+			return state, false, cleanupErr
+		}
+	}
 	_ = clearCLISSHLastError(profile.Name)
 	return state, false, nil
 }
 
 func attachCLISSHSocksTunnel(profile cliSSHProfile, socksPort int, autoCreated ...bool) (cliSSHTunnelState, error) {
+	if err := cliSSHOperationContext(profile.operationContext).Err(); err != nil {
+		return cliSSHTunnelState{}, err
+	}
 	profile = normalizeCLISSHProfile(profile)
 	if err := validateCLISSHProfile(profile); err != nil {
 		return cliSSHTunnelState{}, err
@@ -452,20 +513,21 @@ func attachCLISSHSocksTunnel(profile cliSSHProfile, socksPort int, autoCreated .
 	isAutoCreated := len(autoCreated) > 0 && autoCreated[0]
 	isReverse := len(autoCreated) > 1 && autoCreated[1]
 	state := cliSSHTunnelState{
-		Name:         profile.Name,
-		Destination:  formatCLISSHDestination(profile.Username, profile.Host),
-		Port:         port,
-		UpstreamPort: socksPort,
-		Kind:         cliSSHAttachedSOCKSKind,
-		AutoCreated:  isAutoCreated,
-		Reverse:      isReverse,
-		StartedAt:    time.Now(),
+		Name:             profile.Name,
+		Destination:      formatCLISSHDestination(profile.Username, profile.Host),
+		Port:             port,
+		UpstreamPort:     socksPort,
+		Kind:             cliSSHAttachedSOCKSKind,
+		AutoCreated:      isAutoCreated,
+		Reverse:          isReverse,
+		StartedAt:        time.Now(),
+		operationContext: profile.operationContext,
 		StatePath: filepath.Join(
 			runtimeDirectory,
 			fmt.Sprintf("%s-%d-%d.json", cliSSHAttachedSOCKSKind, os.Getpid(), time.Now().UnixNano()),
 		),
 	}
-	if err := saveCLISSHTunnelState(state); err != nil {
+	if err := prepareCLISSHPendingState(&state); err != nil {
 		return state, err
 	}
 	if relayErr := startCLISSHRelayForOperation(&state); relayErr != nil {
@@ -488,6 +550,7 @@ func stopCLISSHAttachedSOCKS(state cliSSHTunnelState) error {
 	relayErr := stopCLISSHRelay(state)
 	if relayErr != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("stop SSH traffic meter: %w", relayErr))
+		return errors.Join(cleanupErrors...)
 	}
 	if state.StatePath != "" {
 		if err := os.Remove(state.StatePath); err != nil && !os.IsNotExist(err) {
@@ -527,6 +590,15 @@ func findCLILiveSSHSocks(profile cliSSHProfile) (int, bool) {
 }
 
 func attachCLISSHProfileAtPath(name, controlPath string) (cliSSHTunnelState, bool, error) {
+	return attachCLISSHProfileAtPathContext(context.Background(), name, controlPath)
+}
+
+func attachCLISSHProfileAtPathContext(parent context.Context, name, controlPath string) (cliSSHTunnelState, bool, error) {
+	ctx, finish := beginCLISSHOperation(parent)
+	defer finish()
+	if err := ctx.Err(); err != nil {
+		return cliSSHTunnelState{}, false, err
+	}
 	lock, err := lockCLISSHTunnelOperation()
 	if err != nil {
 		return cliSSHTunnelState{}, false, err
@@ -536,6 +608,7 @@ func attachCLISSHProfileAtPath(name, controlPath string) (cliSSHTunnelState, boo
 	if err != nil {
 		return cliSSHTunnelState{}, false, err
 	}
+	profile.operationContext = ctx
 	old, oldActive, err := activeCLIPersistentSSHTunnelForOperation()
 	if err != nil {
 		return cliSSHTunnelState{}, false, err

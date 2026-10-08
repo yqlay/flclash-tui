@@ -107,6 +107,7 @@ type TuiServiceStatus struct {
 	ActiveProxyPort         int             `json:"active_proxy_port,omitempty"`
 	TunScope                string          `json:"tun_scope,omitempty"`
 	TunState                string          `json:"tun_state,omitempty"`
+	TunRequested            *bool           `json:"tun_requested,omitempty"`
 	TunOwnerUID             uint32          `json:"tun_owner_uid,omitempty"`
 	TunOwnerPID             int             `json:"tun_owner_pid,omitempty"`
 	FLCEnabled              bool            `json:"flc_enabled,omitempty"`
@@ -114,6 +115,7 @@ type TuiServiceStatus struct {
 	FLCProxyURL             string          `json:"flc_proxy_url,omitempty"`
 	ResultPath              string          `json:"result_path,omitempty"`
 	History                 []TuiRequest    `json:"history,omitempty"`
+	HistoryCount            *int            `json:"history_count,omitempty"`
 	SSHHistoryClearedBefore time.Time       `json:"ssh_history_cleared_before,omitzero"`
 	Connections             []TuiConnection `json:"connections,omitempty"`
 	Logs                    []string        `json:"logs,omitempty"`

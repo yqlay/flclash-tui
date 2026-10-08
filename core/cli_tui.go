@@ -74,6 +74,7 @@ type tuiDelayResult struct {
 	Samples      int    `json:"samples"`
 	Testing      bool   `json:"-"`
 	Error        string `json:"-"`
+	Manual       bool   `json:"-"`
 }
 
 type tuiUpdateInfo struct {
@@ -275,12 +276,15 @@ type tuiSnapshot struct {
 	HistoryQuery            string
 	HistoryFilter           string
 	HistoryDetailOpen       bool
+	HistoryDetailScroll     int
 	ConnectionsQuery        string
 	ConnectionsDetailOpen   bool
+	ConnectionsDetailScroll int
 	TrafficSource           string
 	LogsQuery               string
 	LogsLevel               string
 	LogDetailOpen           bool
+	LogDetailScroll         int
 	SelectedLog             int
 	DangerConfirmOpen       bool
 	DangerConfirmTitle      string
@@ -323,6 +327,8 @@ type tuiSnapshot struct {
 	FLCOutbound             string
 	ConfiguredProxyPort     int
 	ActiveProxyPort         int
+	HistoryCount            *int
+	TunRequested            *bool
 	Frontends               []cliProcessOwner
 	InputTitle              string
 	InputValue              string

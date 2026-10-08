@@ -12,6 +12,8 @@ make cli-linux
 
 `dist/flclash` is the manager and `dist/flc` is the command-wrapper entry point. Keep `dist/data/` beside a portable build. Debian packages install `/usr/bin/flclash`, `/usr/bin/flc`, documentation, and bundled Geo data.
 
+Portable installs accept relative directory arguments but store absolute command-link targets. Reinstalling even the same version stages a complete fresh instance and switches command links atomically; old instances remain available to running processes. Failed staging or link switches preserve/restore the previous commands.
+
 ## TUI language
 
 In **Settings → Language**, ↑↓ highlights a language; Enter saves and switches this frontend immediately; Esc cancels. English is the default and the first choice. The Settings row always includes the English word **Language**.
@@ -20,7 +22,7 @@ Choices: English (`en`), Simplified Chinese (`zh-Hans`), Traditional Chinese (`z
 
 The setting is stored separately in `.flclash-tui-preferences.json` under the data directory (`--home`), with atomic writes and mode `0600`. It does not change subscription YAML, restart Core/SSH, or trigger network probes. Other frontends keep their current language until restarted. Unknown/missing language settings fall back to English; malformed preferences generate a warning and are not silently overwritten.
 
-Shortcuts, layout direction, commands/help, JSON, names/paths/IPs, and raw log/error data remain unchanged. Combining characters and emoji use grapheme-safe clipping/editing. Arabic, Persian, Urdu, and other complex scripts remain in logical Unicode order: correct bidirectional display and shaping depend on your terminal and font. If display is unreadable, choose **Language → English**.
+Shortcuts, layout direction, commands/help, JSON, and stored names/paths/IPs/logs remain unchanged. Terminal displays remove untrusted control sequences; API identifiers retain their original bytes. Combining characters and emoji use grapheme-safe clipping/editing. Arabic, Persian, Urdu, and other complex scripts remain in logical Unicode order: correct bidirectional display and shaping depend on your terminal and font. If display is unreadable, choose **Language → English**.
 
 ## Process model
 
@@ -33,6 +35,8 @@ Shortcuts, layout direction, commands/help, JSON, names/paths/IPs, and raw log/e
 CLI and TUI frontends submit revisioned transactions to Backend over a private Unix socket. Backend validates, writes atomically, reloads Core, and rolls back on failure. Multiple TUI frontends may attach to the same Backend, but only one Backend is allowed per user.
 
 Managed proxy listeners accept only loopback sockets owned by the Backend UID. Each user therefore sees and closes only connections accepted by that user's Core. Port conflicts do not prevent a second user from starting: Backend keeps the configured port as the preference and selects a free runtime port.
+
+Managed Core keeps rule execution enabled in every mode so the UID guard cannot be bypassed: `global` and `direct` are implemented as outbound policies; switching back to `rule` restores the subscription rules. TUN status reports the actual active lease. A stopped Core can retain a requested TUN setting for its next start (`tun_requested` in Backend IPC), without claiming that TUN is currently running.
 
 Lifecycle keys and commands:
 
@@ -117,9 +121,9 @@ Proxy state, History, and connections:
 ```bash
 flclash proxy groups [--json]
 flclash proxy nodes GROUP [--json]
-flclash proxy select GROUP NODE
-flclash proxy delay NODE [--test-url URL]
-flclash proxy speed NODE
+flclash proxy select GROUP NODE [--json]
+flclash proxy delay NODE [--test-url URL] [--json]
+flclash proxy speed NODE [--json]
 
 flclash history show [--follow] [--json] [--source mixed|proxy|ssh] [--state all|active|done] [--search TEXT] [--limit N]
 flclash history clear [--source mixed|proxy|ssh]
@@ -127,6 +131,10 @@ flclash connections show [--json] [--source mixed|proxy|ssh]
 flclash connections close ID
 flclash connections close all [--source mixed|proxy|ssh]
 ```
+
+Proxy options can precede or follow names (`proxy nodes GROUP --json`, `proxy select GROUP NODE --json`); `--` ends option parsing for names beginning with `-`. `proxy list` remains an alias for `groups`. Invalid commands, arguments, and options fail before contacting Backend. Use `flclash proxy COMMAND --help` for subcommand usage.
+
+`--json` writes JSON only to stdout; failures go to stderr. Groups keeps the controller's `/proxies` response and nodes keeps `{group, now, nodes}`. Select returns `{group, node}` (managed selection also returns `revision` and `flc_outbound`); delay returns `node`, `median_millis`, `jitter_millis`, `min_millis`, `max_millis`, `samples`; speed returns `node`, `bytes`, `duration_millis`, `bytes_per_second`, `complete`. Managed selection uses Backend's revision-checked transaction. `--controller URL --secret SECRET` targets only that explicit controller; external-controller speed tests are not supported. Run applications through `flc COMMAND` or `flc ssh COMMAND`, not `flclash proxy curl`.
 
 History is Backend's shared, persistent, up-to-500-entry record. It contains active and recently completed **proxy** (Mihomo) and **ssh** (independent reverse-proxy) flows, not HTTP bodies. Filter with `--source mixed|proxy|ssh` (default mixed). Backend reloads it after restart; restored entries begin as completed until they are seen active again. `history clear` clears matching memory and disk entries without closing connections; `connections close all` closes matching live flows and does not erase History. Close an `ssh:` id through the SSH relay; other ids go to Mihomo. TUI Connections uses `f` for source; History keeps `f` for all/active/completed and uses `o` for source.
 
@@ -257,8 +265,16 @@ closes it afterwards; an existing persistent tunnel remains open. Commands must
 support proxy environment variables and SOCKS5. Tunnel setup is fail-closed, so
 a failed SSH connection never runs the command directly. `flclash ssh import`
 copies concrete OpenSSH `Host` entries from `~/.ssh/config`. `--jump HOST`
-sets ProxyJump without burying it in raw OpenSSH options. Connects time out in
-15 seconds unless a profile option overrides `ConnectTimeout`.
+sets ProxyJump without burying it in raw OpenSSH options. OpenSSH's TCP connection
+timeout defaults to 15 seconds (`ConnectTimeout` can override it), while the whole
+connect operation has a 30-second deadline, including authentication and forwarding.
+Control helpers are bounded to 5 seconds; remote probes to 10 seconds.
+
+Quitting a frontend cancels its unfinished connects and cleans up owned helpers
+and askpass files, but does not disconnect already committed persistent tunnels
+or terminate captured external SSH masters. If a fixed-port switch has already
+stopped the old tunnel before cancellation, its configuration/default are retained;
+reconnect explicitly instead of expecting a new login during frontend shutdown.
 
 `--user` is required for new profiles; the compatibility form `user@host` is
 still accepted and split into Username and Host. Legacy bare-host profiles are

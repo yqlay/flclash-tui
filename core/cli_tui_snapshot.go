@@ -625,8 +625,7 @@ func switchTUIProfile(
 }
 
 func tuiProxyGroupNow(controller controllerClient, group string) string {
-	group = strings.TrimSpace(group)
-	if group == "" {
+	if strings.TrimSpace(group) == "" {
 		return ""
 	}
 	data, err := controller.request(nethttp.MethodGet, "/proxies", nil)
@@ -641,12 +640,15 @@ func tuiProxyGroupNow(controller controllerClient, group string) string {
 	if !ok {
 		return ""
 	}
-	return strings.TrimSpace(proxy.Now)
+	if strings.TrimSpace(proxy.Now) == "" {
+		return ""
+	}
+	return proxy.Now
 }
 
 func formatCLIFLCOutbound(status tuiServiceStatus) string {
-	group := strings.TrimSpace(status.FLCOutbound)
-	if group == "" {
+	group := status.FLCOutbound
+	if strings.TrimSpace(group) == "" {
 		return cliDisplayValue(group)
 	}
 	if node := tuiProxyGroupNow(managedController(status), group); node != "" {

@@ -10,6 +10,13 @@ import (
 	"strings"
 )
 
+func resolveTUIRuntimeTrafficMode(policy string, settings *tuiSettings) string {
+	if policy == tuiSilentMode || settings == nil {
+		return policy
+	}
+	return strings.ToLower(settings.Mode)
+}
+
 func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode != tuiSilentMode && mode != "rule" && mode != "global" && mode != "direct" {
@@ -62,7 +69,13 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 		r.flc = flc
 		r.tunEnabled = false
 		r.tunLease = nil
+		r.rollbackTunLease = oldTunLease
 		r.mu.Unlock()
+		defer func() {
+			r.mu.Lock()
+			r.rollbackTunLease = nil
+			r.mu.Unlock()
+		}()
 		if _, err := r.reloadUnlocked(paths.ConfigPath, ""); err != nil {
 			r.mu.Lock()
 			r.trafficMode = currentMode
@@ -110,11 +123,8 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	if currentMode != tuiSilentMode {
 		return r.applyNativeTrafficMode(
 			mode,
-			currentMode,
 			paths,
-			oldFLC,
 			*oldSettings,
-			running,
 		)
 	}
 
@@ -135,7 +145,7 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 	r.mu.Unlock()
 	var restoredTunLease *tuiTunLease
 	if restoreUserTun && running {
-		restoredTunLease, _, err = acquireTUITunLease(tuiTunScopeUser)
+		restoredTunLease, _, err = acquireTUIServiceTunLease(tuiTunScopeUser)
 		if err != nil {
 			r.mu.Lock()
 			r.trafficMode = currentMode
@@ -205,12 +215,9 @@ func (r *tuiServiceRuntime) applyTrafficMode(mode string) (bool, error) {
 }
 
 func (r *tuiServiceRuntime) applyNativeTrafficMode(
-	mode,
-	currentMode string,
+	mode string,
 	paths cliPaths,
-	oldFLC tuiFLCListenerState,
 	oldSettings tuiSettings,
-	running bool,
 ) (bool, error) {
 	lease, err := acquireTUIProfileLocks(paths.HomeDir, paths.ConfigPath)
 	if err != nil {
@@ -233,25 +240,18 @@ func (r *tuiServiceRuntime) applyNativeTrafficMode(
 		}
 	}
 
-	controller := r.coreController
-	if running {
-		if err := controller.patchConfig(map[string]interface{}{"mode": mode}); err != nil {
-			if !profileChanged {
-				return false, fmt.Errorf("switch Core mode: %w", err)
-			}
-			if rollbackErr := writeTUIProfileAtomically(
-				writePath,
-				originalProfile,
-				profileInfo.Mode(),
-			); rollbackErr != nil {
-				return false, fmt.Errorf(
-					"switch Core mode: %v; profile rollback failed: %w",
-					err,
-					rollbackErr,
-				)
-			}
-			return false, fmt.Errorf("switch Core mode: %w; profile restored", err)
+	// Native global/direct are outbound policies, not Mihomo execution modes.
+	// Reload the managed rule-mode configuration so its UID guard always runs
+	// and rule mode restores the profile's original rules. This is needed even
+	// while stopped: the next listener start must use the new policy.
+	if _, err := r.reloadUnlocked(paths.ConfigPath, ""); err != nil {
+		if !profileChanged {
+			return false, fmt.Errorf("switch Core routing: %w", err)
 		}
+		if rollbackErr := writeTUIProfileAtomically(writePath, originalProfile, profileInfo.Mode()); rollbackErr != nil {
+			return false, fmt.Errorf("switch Core routing: %v; profile rollback failed: %w", err, rollbackErr)
+		}
+		return false, fmt.Errorf("switch Core routing: %w; profile restored", err)
 	}
 
 	if err := rememberTUITrafficMode(paths.HomeDir, mode); err != nil {
@@ -263,12 +263,7 @@ func (r *tuiServiceRuntime) applyNativeTrafficMode(
 				profileInfo.Mode(),
 			)
 		}
-		var coreRollbackErr error
-		if running {
-			coreRollbackErr = controller.patchConfig(
-				map[string]interface{}{"mode": currentMode},
-			)
-		}
+		_, coreRollbackErr := r.reloadUnlocked(paths.ConfigPath, "")
 		if profileRollbackErr != nil || coreRollbackErr != nil {
 			return false, fmt.Errorf(
 				"save mode: %v; profile rollback: %v; Core rollback: %v",
@@ -280,16 +275,11 @@ func (r *tuiServiceRuntime) applyNativeTrafficMode(
 		return false, fmt.Errorf("save mode: %w; previous mode restored", err)
 	}
 
-	r.mu.Lock()
-	r.trafficMode = mode
-	r.flc = tuiFLCListenerState{Outbound: oldFLC.Outbound}
-	r.mu.Unlock()
 	return true, nil
 }
 
 func (r *tuiServiceRuntime) applyFLCOutbound(outbound string) (bool, error) {
-	outbound = strings.TrimSpace(outbound)
-	if outbound == "" {
+	if strings.TrimSpace(outbound) == "" {
 		return false, errors.New("FLC outbound must not be empty")
 	}
 	r.mu.RLock()
@@ -351,9 +341,7 @@ func (r *tuiServiceRuntime) applyFLCOutbound(outbound string) (bool, error) {
 }
 
 func (r *tuiServiceRuntime) selectProxy(group, proxy string) (bool, error) {
-	group = strings.TrimSpace(group)
-	proxy = strings.TrimSpace(proxy)
-	if group == "" || proxy == "" {
+	if strings.TrimSpace(group) == "" || strings.TrimSpace(proxy) == "" {
 		return false, errors.New("proxy group and node must not be empty")
 	}
 	r.mu.RLock()
@@ -412,14 +400,13 @@ func (r *tuiServiceRuntime) selectProxy(group, proxy string) (bool, error) {
 }
 
 func (r *tuiServiceRuntime) followFLCOutboundGroup(group string) (bool, error) {
-	group = strings.TrimSpace(group)
-	if group == "" {
+	if strings.TrimSpace(group) == "" {
 		return false, nil
 	}
 	r.mu.RLock()
-	current := strings.TrimSpace(r.flc.Outbound)
+	current := r.flc.Outbound
 	r.mu.RUnlock()
-	if strings.EqualFold(current, group) {
+	if current == group {
 		return false, nil
 	}
 	return r.applyFLCOutbound(group)

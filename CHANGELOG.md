@@ -1,3 +1,14 @@
+## FlClash TUI v0.5.34
+
+- Fix managed Core mode transitions and TUN intent/runtime separation. Keep UID guard rules effective in global/direct modes, restore subscription rules in rule mode, and roll back owned TUN resources on failed starts.
+- Harden SSH authentication with saved passwords, private keys, and key passphrases. Bound connection/control probes, cancel frontend-owned pending operations, clean up helper processes, and leave captured external SSH sessions untouched.
+- Preserve SSH relay final traffic counters and make Capture switching/deletion transactional. Isolate regression-test runtime state from live user sessions.
+- Prevent stale asynchronous network results from replacing the currently opened route. Coalesce public-IP checks, preserve manual delay samples, and keep idle SSH refresh local-only.
+- Improve History, Connections, and Logs detail scrolling, resize behavior, selection retention, and log-level filtering. Sanitize untrusted terminal control sequences without changing stored identities, API data, or trusted chart colors.
+- Complete proxy CLI compatibility: flags before/after names, `--key=value`, `--`, subcommand help, command validation before side effects, real JSON output, explicit controller boundaries, and exact group/node names.
+- Make portable upgrades atomic, including same-version reinstalls. Preserve running executables, verify complete archives, and recover command links safely on failed installs.
+- Add Go, installer, SSH lifecycle, and multilingual terminal regressions; update concise Chinese/English usage documentation. Backend IPC remains v7; restart the Backend after upgrading to load these backend fixes.
+
 ## FlClash TUI v0.5.33
 
 - Add 18 offline TUI language choices in Settings, defaulting to English. Keep Language / English accessible; CLI commands and diagnostic logs remain in English. Translations are initial drafts.

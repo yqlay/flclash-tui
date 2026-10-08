@@ -33,6 +33,7 @@ func (m *tuiModel) applyBackendStatus(status tuiServiceStatus) {
 	}
 	m.preserveSettingsDraft()
 	m.reconcileStoppedCoreState()
+	m.syncNetworkExit()
 }
 
 func applyTUIBackendDisplay(snapshot *tuiSnapshot, status tuiServiceStatus) {
@@ -55,6 +56,8 @@ func applyTUIBackendDisplay(snapshot *tuiSnapshot, status tuiServiceStatus) {
 	snapshot.FLCEnabled = status.FLCEnabled
 	snapshot.FLCOutbound = status.FLCOutbound
 	snapshot.SSHHistoryClearedBefore = status.SSHHistoryClearedBefore
+	snapshot.HistoryCount = cloneTUIOptionalInt(status.HistoryCount)
+	snapshot.TunRequested = cloneTUIOptionalBool(status.TunRequested)
 }
 
 func (m *tuiModel) startBackendHandshake() tea.Cmd {

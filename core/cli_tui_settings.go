@@ -49,7 +49,7 @@ func applyTUIOperationSetting(
 			scope = tuiTunScopeUser
 		}
 		status, err := state.service.setTun(
-			!state.snapshot.Settings.TunEnabled,
+			!tuiRequestedTun(state.snapshot),
 			scope,
 			state.backendRevision,
 		)
@@ -75,7 +75,7 @@ func applyTUITunScope(state *tuiOperationState, service *tuiServiceClient) {
 		state.snapshot.setStatus(newTUIMessage("ui.803f9a0ac096"))
 		return
 	}
-	if state.snapshot.Settings.TunEnabled {
+	if tuiRequestedTun(state.snapshot) {
 		state.snapshot.setStatus(newTUIMessage("ui.b58d11c6d993"))
 		return
 	}
@@ -95,6 +95,13 @@ func applyTUITunScope(state *tuiOperationState, service *tuiServiceClient) {
 	}
 	applyTUIOperationServiceStatus(state, status)
 	state.snapshot.setStatus(newTUIMessage("ui.f4894f303d4e", strings.ToUpper(status.TunScope)))
+}
+
+func tuiRequestedTun(snapshot tuiSnapshot) bool {
+	if snapshot.TunRequested != nil {
+		return *snapshot.TunRequested
+	}
+	return snapshot.Settings.TunEnabled
 }
 
 func commitTUIOperationSettings(

@@ -72,6 +72,8 @@ type cliSSHRelayFlowState struct {
 	host      string
 	chain     string
 	client    net.Conn
+	upstream  net.Conn
+	closeOnce sync.Once
 	upload    atomic.Int64
 	download  atomic.Int64
 	startedAt time.Time
@@ -121,8 +123,12 @@ func runCLISSHRelayCommand(args []string) error {
 	upstreamPort := fs.Int("upstream-port", 0, "OpenSSH SOCKS5 port")
 	controlPath := fs.String("control", "", "private control socket")
 	profile := fs.String("profile", "", "SSH profile name")
+	guardState := fs.String("guard-state", "", "pending SSH ownership record")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *guardState != "" && fs.NArg() == 0 {
+		return runCLISSHPendingGuard(*guardState)
 	}
 	if fs.NArg() != 0 || *listenPort < 1 || *listenPort > 65535 ||
 		*upstreamPort < 1 || *upstreamPort > 65535 || *listenPort == *upstreamPort {
@@ -193,6 +199,7 @@ func (r *cliSSHRelay) run() error {
 func (r *cliSSHRelay) stop() {
 	r.shutdownOnce.Do(func() {
 		close(r.shutdown)
+		_ = r.closeFlows("all")
 		if r.listener != nil {
 			_ = r.listener.Close()
 		}
@@ -280,7 +287,7 @@ func (r *cliSSHRelay) serveSOCKS(client net.Conn) {
 	}
 	_ = client.SetDeadline(time.Time{})
 	_ = upstream.SetDeadline(time.Time{})
-	flow := r.beginFlow(client, target)
+	flow := r.beginFlow(client, target, upstream)
 	defer r.endFlow(flow)
 	r.connections.Add(1)
 	defer r.connections.Add(-1)
@@ -319,7 +326,7 @@ func cliSSHRelayChain(profile string) string {
 	return "SSH · " + profile
 }
 
-func (r *cliSSHRelay) beginFlow(client net.Conn, host string) *cliSSHRelayFlowState {
+func (r *cliSSHRelay) beginFlow(client net.Conn, host string, upstream ...net.Conn) *cliSSHRelayFlowState {
 	flow := &cliSSHRelayFlowState{
 		id: fmt.Sprintf(
 			"%s%d-%d",
@@ -331,6 +338,9 @@ func (r *cliSSHRelay) beginFlow(client net.Conn, host string) *cliSSHRelayFlowSt
 		chain:     cliSSHRelayChain(r.profile),
 		client:    client,
 		startedAt: time.Now(),
+	}
+	if len(upstream) > 0 {
+		flow.upstream = upstream[0]
 	}
 	r.flowsMu.Lock()
 	if r.active == nil {
@@ -404,9 +414,14 @@ func (r *cliSSHRelay) closeFlows(id string) error {
 		return fmt.Errorf("SSH flow %q is not active", id)
 	}
 	for _, flow := range targets {
-		if flow.client != nil {
-			_ = flow.client.Close()
-		}
+		flow.closeOnce.Do(func() {
+			if flow.client != nil {
+				_ = flow.client.Close()
+			}
+			if flow.upstream != nil {
+				_ = flow.upstream.Close()
+			}
+		})
 	}
 	return nil
 }
@@ -502,6 +517,10 @@ func writeCLISOCKS5Reply(connection net.Conn, code byte) error {
 }
 
 func startCLISSHRelay(state *cliSSHTunnelState) error {
+	ctx := cliSSHOperationContext(state.operationContext)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		return err
@@ -534,15 +553,23 @@ func startCLISSHRelay(state *cliSSHTunnelState) error {
 		return err
 	}
 	state.RelayPID = command.Process.Pid
-	_ = command.Process.Release()
+	if err := saveCLISSHTunnelState(*state); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return err
+	}
+	go func() { _ = command.Wait() }()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(err, stopCLISSHRelay(*state))
+		}
 		stats, statusErr := queryCLISSHRelay(*state, "status")
 		if statusErr == nil && stats.OK && stats.PID == state.RelayPID &&
 			stats.ListenPort == state.Port && stats.UpstreamPort == state.UpstreamPort {
 			return nil
 		}
-		time.Sleep(25 * time.Millisecond)
+		_ = waitCLISSHOperation(ctx, 25*time.Millisecond)
 	}
 	_ = stopCLISSHRelay(*state)
 	return errors.New("SSH traffic meter did not become ready")
@@ -641,23 +668,42 @@ func stopCLISSHRelay(state cliSSHTunnelState) error {
 	}
 	_, requestErr := queryCLISSHRelay(state, "shutdown")
 	deadline := time.Now().Add(time.Second)
-	for cliProcessRunning(state.RelayPID) && time.Now().Before(deadline) {
+	for cliSSHRelayProcessAlive(state.RelayPID) && time.Now().Before(deadline) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	var stopErr error
-	if cliProcessRunning(state.RelayPID) && cliSSHRelayProcessMatches(state) {
+	if cliSSHRelayProcessAlive(state.RelayPID) && cliSSHRelayProcessMatches(state) {
 		if err := syscall.Kill(state.RelayPID, syscall.SIGTERM); err != nil &&
 			!errors.Is(err, syscall.ESRCH) {
 			stopErr = err
+		}
+		deadline = time.Now().Add(time.Second)
+		for cliSSHRelayProcessAlive(state.RelayPID) && cliSSHRelayProcessMatches(state) && time.Now().Before(deadline) {
+			time.Sleep(25 * time.Millisecond)
+		}
+		if cliSSHRelayProcessAlive(state.RelayPID) && cliSSHRelayProcessMatches(state) {
+			_ = syscall.Kill(state.RelayPID, syscall.SIGKILL)
+			deadline = time.Now().Add(time.Second)
+			for cliSSHRelayProcessAlive(state.RelayPID) && cliSSHRelayProcessMatches(state) && time.Now().Before(deadline) {
+				time.Sleep(25 * time.Millisecond)
+			}
+		}
+		if cliSSHRelayProcessAlive(state.RelayPID) && cliSSHRelayProcessMatches(state) {
+			return errors.Join(stopErr, requestErr, errors.New("SSH traffic meter did not stop; runtime ownership retained"))
 		}
 	}
 	if err := os.Remove(state.RelayControl); err != nil && !os.IsNotExist(err) {
 		stopErr = errors.Join(stopErr, err)
 	}
-	if requestErr != nil && cliProcessRunning(state.RelayPID) {
+	if requestErr != nil && cliSSHRelayProcessAlive(state.RelayPID) {
 		stopErr = errors.Join(stopErr, requestErr)
 	}
 	return stopErr
+}
+
+func cliSSHRelayProcessAlive(pid int) bool {
+	start, err := linuxProcessStartTime(pid)
+	return err == nil && cliSSHRecordedProcessAlive(pid, start)
 }
 
 func cliSSHRelayProcessMatches(state cliSSHTunnelState) bool {

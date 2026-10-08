@@ -49,8 +49,10 @@ type tuiServiceRuntime struct {
 	runtimePort             int
 	activePort              int
 	tunScope                string
-	tunEnabled              bool
+	tunEnabled              bool // Desired enablement; the lease and running state determine actual TUN activity.
 	tunLease                *tuiTunLease
+	rollbackTunLease        *tuiTunLease // Retained only during an in-flight mode/TUN transaction.
+	pendingTunFD            int          // Backend-owned until StartListener consumes a stopped preload.
 	actualConfigPath        string
 	flc                     tuiFLCListenerState
 	history                 []tuiRequest
@@ -168,6 +170,8 @@ func (r *tuiServiceRuntime) handle(
 
 func (r *tuiServiceRuntime) snapshot(requestID string) tuiServiceStatus {
 	r.mu.RLock()
+	historyCount := len(r.history)
+	tunRequested := r.tunEnabled && r.trafficMode != tuiSilentMode
 	status := tuiServiceStatus{
 		ProtocolVersion:         tuiServiceProtocolVersion,
 		RequestID:               requestID,
@@ -178,6 +182,7 @@ func (r *tuiServiceRuntime) snapshot(requestID string) tuiServiceStatus {
 		Version:                 cliVersion,
 		HomeDir:                 r.paths.HomeDir,
 		ConfigPath:              r.paths.ConfigPath,
+		HistoryCount:            &historyCount,
 		SSHHistoryClearedBefore: r.sshHistoryClearedBefore,
 		CoreSocket:              r.coreSocket,
 		Running:                 r.running,
@@ -190,8 +195,9 @@ func (r *tuiServiceRuntime) snapshot(requestID string) tuiServiceStatus {
 		FLCEnabled:              r.running && r.trafficMode == tuiSilentMode && r.flc.Port > 0,
 		FLCOutbound:             r.flc.Outbound,
 		TunScope:                r.tunScope,
+		TunRequested:            &tunRequested,
 	}
-	if r.tunEnabled {
+	if r.running && r.tunEnabled && r.tunLease != nil && r.trafficMode != tuiSilentMode {
 		status.TunState = "on"
 		if r.tunLease != nil {
 			status.TunOwnerUID = uint32(os.Getuid())
@@ -218,8 +224,16 @@ func tuiServiceStateChanged(previous, current tuiServiceStatus) bool {
 		previous.Mode != current.Mode || previous.SystemProxy != current.SystemProxy ||
 		previous.ConfiguredProxyPort != current.ConfiguredProxyPort || previous.ActiveProxyPort != current.ActiveProxyPort ||
 		previous.TunState != current.TunState || previous.TunScope != current.TunScope ||
+		!equalTUIOptionalBool(previous.TunRequested, current.TunRequested) ||
 		previous.TunOwnerPID != current.TunOwnerPID || previous.FLCEnabled != current.FLCEnabled ||
 		previous.FLCOutbound != current.FLCOutbound || !previous.SSHHistoryClearedBefore.Equal(current.SSHHistoryClearedBefore)
+}
+
+func equalTUIOptionalBool(left, right *bool) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func (r *tuiServiceRuntime) watch(request tuiServiceRequest) tuiServiceStatus {
@@ -498,7 +512,7 @@ func (r *tuiServiceRuntime) startCoreListeners() (bool, error) {
 	systemProxyPort := r.proxyPort
 	r.mu.RUnlock()
 	if tunEnabled && tunLease == nil {
-		lease, _, leaseErr := acquireTUITunLease(tunScope)
+		lease, _, leaseErr := acquireTUIServiceTunLease(tunScope)
 		if leaseErr != nil {
 			return false, leaseErr
 		}
@@ -542,6 +556,9 @@ func (r *tuiServiceRuntime) startCoreListeners() (bool, error) {
 			}
 		}
 	}
+	// A stopped preload's descriptor becomes Core-owned once listener startup
+	// is attempted; do not close its integer after that transfer.
+	r.takePendingTunFD()
 	if !startTUIServiceCoreListeners() {
 		return false, errors.New("start proxy listeners failed")
 	}
@@ -645,14 +662,14 @@ func (r *tuiServiceRuntime) ensureFLCProxy() (bool, error) {
 func (r *tuiServiceRuntime) repairFLCOutbound() (bool, error) {
 	r.mu.RLock()
 	mode := r.trafficMode
-	outbound := strings.TrimSpace(r.flc.Outbound)
+	outbound := r.flc.Outbound
 	incomplete := r.flc.proxyURL() == ""
 	configPath := r.paths.ConfigPath
 	r.mu.RUnlock()
 	if mode != tuiSilentMode {
 		return false, nil
 	}
-	if outbound != "" {
+	if strings.TrimSpace(outbound) != "" {
 		if err := validateTUIFLCOutbound(r.coreController, outbound); err == nil {
 			if !incomplete {
 				return false, nil

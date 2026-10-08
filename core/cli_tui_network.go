@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,10 +59,15 @@ type tuiNetworkRoute struct {
 // change the selected network exit. It deliberately has no timer: rendering
 // and local status refreshes must not continuously contact public IP services.
 func (m *tuiModel) startNetworkCheck() tea.Cmd {
+	m.syncNetworkExit()
 	if m.networkCheckActive {
+		m.networkCheckPending = true
 		return nil
 	}
 	m.networkCheckActive = true
+	m.networkCheckPending = false
+	m.networkCheckSequence++
+	sequence, generation := m.networkCheckSequence, m.networkExitGeneration
 	m.snapshot.Network.Loading = true
 	route := m.networkRoute()
 	coreRunning := m.coreRunning
@@ -75,7 +82,8 @@ func (m *tuiModel) startNetworkCheck() tea.Cmd {
 						Route:      "SILENT · Core stopped",
 						CheckedAt:  time.Now(),
 					},
-					route: resolved.key,
+					route:      resolved.key,
+					generation: generation, sequence: sequence,
 				}
 			}
 			if resolved.service == nil {
@@ -86,7 +94,8 @@ func (m *tuiModel) startNetworkCheck() tea.Cmd {
 						Error:      "silent network detection requires the managed Backend",
 						CheckedAt:  time.Now(),
 					},
-					route: resolved.key,
+					route:      resolved.key,
+					generation: generation, sequence: sequence,
 				}
 			}
 			status, err := resolved.service.flcProxy()
@@ -98,7 +107,8 @@ func (m *tuiModel) startNetworkCheck() tea.Cmd {
 						Error:      err.Error(),
 						CheckedAt:  time.Now(),
 					},
-					route: resolved.key,
+					route:      resolved.key,
+					generation: generation, sequence: sequence,
 				}
 			}
 			resolved.proxyURL = status.FLCProxyURL
@@ -106,8 +116,53 @@ func (m *tuiModel) startNetworkCheck() tea.Cmd {
 			resolved.label = "SILENT · " + cliDisplayValue(status.FLCOutbound)
 		}
 		return tuiNetworkResultMsg{
-			info:  detectTUINetworkRoute(resolved.proxyURL, resolved.label),
-			route: resolved.key,
+			info:       detectTUINetworkRoute(resolved.proxyURL, resolved.label),
+			route:      resolved.key,
+			generation: generation, sequence: sequence,
+		}
+	}
+}
+
+func (m *tuiModel) networkExitFingerprint() (string, string) {
+	configKey := m.backendInstanceID + ":" + filepath.Clean(m.paths.ConfigPath)
+	if info, err := os.Stat(m.paths.ConfigPath); err == nil {
+		configKey += fmt.Sprintf(":%d:%d", info.Size(), info.ModTime().UnixNano())
+	}
+	groups := make([]string, 0, len(m.snapshot.Groups))
+	for _, group := range m.snapshot.Groups {
+		groups = append(groups, fmt.Sprintf("%q:%q:%q", group.Name, group.Type, group.Now))
+	}
+	sort.Strings(groups)
+	key := fmt.Sprintf("%q:%q:%q:%t:%t:%q", configKey, m.networkCheckRoute(), m.snapshot.Settings.Mode, m.snapshot.Settings.TunEnabled, m.snapshot.Settings.SystemProxy, strings.Join(groups, "|"))
+	return key, configKey
+}
+
+// Listening on the same port does not mean the exit is the same: profiles,
+// selected nodes, rules and Core replacements all invalidate probe results.
+func (m *tuiModel) syncNetworkExit() bool {
+	key, configKey := m.networkExitFingerprint()
+	if m.networkExitKey == "" {
+		m.networkExitKey, m.networkConfigKey = key, configKey
+		return false
+	}
+	if key == m.networkExitKey {
+		return false
+	}
+	configChanged := m.networkConfigKey != configKey
+	m.networkExitKey, m.networkConfigKey = key, configKey
+	m.invalidateNetworkExit(configChanged)
+	return true
+}
+
+func (m *tuiModel) invalidateNetworkExit(configChanged bool) {
+	m.networkExitGeneration++
+	m.networkCheckPending = true
+	m.snapshot.Network = tuiNetworkInfo{IntranetIP: m.snapshot.Network.IntranetIP, Loading: m.networkCheckActive}
+	m.snapshot.DashboardDelay, m.snapshot.DashboardSpeed = tuiDelayResult{}, tuiSpeedResult{}
+	if configChanged {
+		for index := range m.snapshot.Groups {
+			m.snapshot.Groups[index].Delays = nil
+			m.snapshot.Groups[index].Speeds = nil
 		}
 	}
 }
@@ -142,7 +197,7 @@ func (m *tuiModel) networkRoute() tuiNetworkRoute {
 			label:    "SILENT · " + cliDisplayValue(m.snapshot.FLCOutbound),
 			silent:   true,
 			outbound: m.snapshot.FLCOutbound,
-			service:  m.service,
+			service:  m.service.forInstance(m.backendInstanceID),
 		}
 	}
 	if port := m.networkCheckProxyPort(); port > 0 {

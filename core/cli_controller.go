@@ -167,9 +167,9 @@ func (c controllerClient) listProxies() error {
 		if len(proxy.All) == 0 {
 			continue
 		}
-		fmt.Printf("%s (%s) -> %s\n", name, proxy.Type, proxy.Now)
+		fmt.Printf("%s (%s) -> %s\n", safeCLITerminalLine(name), safeCLITerminalLine(proxy.Type), safeCLITerminalLine(proxy.Now))
 		for _, item := range proxy.All {
-			fmt.Printf("  - %s\n", item)
+			fmt.Printf("  - %s\n", safeCLITerminalLine(item))
 		}
 	}
 	return nil

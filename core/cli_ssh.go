@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +43,7 @@ type cliSSHProfile struct {
 	IdentityPassphrase string   `json:"identity_passphrase,omitempty"`
 	Password           string   `json:"password,omitempty"`
 	Options            []string `json:"options,omitempty"`
+	operationContext   context.Context
 }
 
 type cliSSHConfig struct {
@@ -57,18 +59,25 @@ type cliSSHLastError struct {
 }
 
 type cliSSHTunnelState struct {
-	Name         string    `json:"name"`
-	Destination  string    `json:"destination"`
-	Port         int       `json:"port"`
-	UpstreamPort int       `json:"upstream_port,omitempty"`
-	ControlPath  string    `json:"control_path"`
-	RelayControl string    `json:"relay_control,omitempty"`
-	RelayPID     int       `json:"relay_pid,omitempty"`
-	Kind         string    `json:"kind"`
-	AutoCreated  bool      `json:"auto_created,omitempty"`
-	Reverse      bool      `json:"reverse,omitempty"`
-	StartedAt    time.Time `json:"started_at"`
-	StatePath    string    `json:"-"`
+	Name             string    `json:"name"`
+	Destination      string    `json:"destination"`
+	Port             int       `json:"port"`
+	UpstreamPort     int       `json:"upstream_port,omitempty"`
+	ControlPath      string    `json:"control_path"`
+	RelayControl     string    `json:"relay_control,omitempty"`
+	RelayPID         int       `json:"relay_pid,omitempty"`
+	Kind             string    `json:"kind"`
+	AutoCreated      bool      `json:"auto_created,omitempty"`
+	Reverse          bool      `json:"reverse,omitempty"`
+	StartedAt        time.Time `json:"started_at"`
+	StatePath        string    `json:"-"`
+	Pending          bool      `json:"pending,omitempty"`
+	OwnerPID         int       `json:"owner_pid,omitempty"`
+	OwnerStart       string    `json:"owner_start,omitempty"`
+	HelperPID        int       `json:"helper_pid,omitempty"`
+	HelperStart      string    `json:"helper_start,omitempty"`
+	AskpassPath      string    `json:"askpass_path,omitempty"`
+	operationContext context.Context
 }
 
 type cliSSHProfileView struct {
