@@ -737,7 +737,7 @@ func TestTUIWholeGroupDelayKeyUpdatesVisibleNodeStates(t *testing.T) {
 			t.Fatalf("%s was not marked Testing", node)
 		}
 	}
-	_, _ = model.Update(command())
+	drainTUICommands(model, command)
 	if model.snapshot.Groups[0].Delays["fast"].MedianMillis != 27 ||
 		model.snapshot.Groups[0].Delays["fast"].Samples != 5 ||
 		model.snapshot.Groups[0].Delays["dead"].Error == "" {
@@ -746,6 +746,29 @@ func TestTUIWholeGroupDelayKeyUpdatesVisibleNodeStates(t *testing.T) {
 	if !strings.Contains(model.snapshot.Status, "1/2 reachable") {
 		t.Fatalf("whole-group status = %q", model.snapshot.Status)
 	}
+}
+
+// Group probes return one command per in-flight node. Bubble Tea expands
+// BatchMsg in the program loop, so tests have to do that themselves.
+func drainTUICommands(model *tuiModel, command tea.Cmd) {
+	seen := 0
+	var walk func(tea.Cmd)
+	walk = func(command tea.Cmd) {
+		if command == nil || seen > 64 {
+			return
+		}
+		seen++
+		message := command()
+		if batch, ok := message.(tea.BatchMsg); ok {
+			for _, next := range batch {
+				walk(next)
+			}
+			return
+		}
+		_, next := model.Update(message)
+		walk(next)
+	}
+	walk(command)
 }
 
 func TestTUINetworkDetectionUsesConfiguredMixedPortProxy(t *testing.T) {

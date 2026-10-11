@@ -46,6 +46,10 @@ func dispatchCLI(program string, args []string) error {
 		return statusManagedCommand(commandArgs)
 	case "logs":
 		return logsManagedCommand(commandArgs)
+	case "settings":
+		return settingsCommand(commandArgs)
+	case "traffic":
+		return trafficCommand(commandArgs)
 	case "backend", "service":
 		return serviceManagementCommand(commandArgs)
 	case "shutdown":

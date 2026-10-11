@@ -59,8 +59,16 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 		m.beginLanguageSelection()
 		return nil
 	}
-	if m.busy && !tuiKeyAllowedWhileBusy(key) {
+	// The editor owns the terminal, so only navigation stays live. A core write
+	// or a legacy busy flag still rejects mutations, but search and refresh
+	// stay available. SSH writes do not use this gate: probes and core keys
+	// keep working while sshBusy is the only lane.
+	if m.editorBusy && !tuiKeyAllowedWhileBusy(key) {
 		m.snapshot.setStatus(newTUIMessage("ui.03e6bb796eac"))
+		return nil
+	}
+	if (m.coreBusy || m.orphanBusy()) && !tuiKeyAllowedDuringCoreWrite(key) {
+		m.snapshot.setStatus(newTUIMessage("ui.c90e0573178b"))
 		return nil
 	}
 	return m.handleKey(key)
@@ -81,6 +89,18 @@ func tuiKeyAllowedWhileBusy(key tuiKey) bool {
 		tuiKeyViewNext,
 		tuiKeyPageUp,
 		tuiKeyPageDown:
+		return true
+	default:
+		return false
+	}
+}
+
+func tuiKeyAllowedDuringCoreWrite(key tuiKey) bool {
+	if tuiKeyAllowedWhileBusy(key) {
+		return true
+	}
+	switch key {
+	case tuiKeyRefresh, tuiKeySearch:
 		return true
 	default:
 		return false

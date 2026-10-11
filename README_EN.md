@@ -170,14 +170,17 @@ flclash profile import-file /path/to/nodes.txt
 flclash proxy nodes GROUP --json
 flclash proxy select GROUP NODE --json
 flclash proxy delay NODE --json
+flclash proxy delay --group GROUP --json
+flclash settings show
 flclash logs --lines 100 --follow
+flclash logs clear
 flclash history show --limit 20
 flclash ssh disconnect             # SSH tunnels only
 flclash backend stop               # stop proxy Backend+Core; SSH stays
 flclash exit                       # stop frontends, Backend, Core, and SSH
 ```
 
-Proxy groups/list, nodes, select, delay, and speed accept options before or after names and support `--json`; speed requires the local Backend. Run applications using `flc COMMAND`, or `flc ssh COMMAND` for SSH.
+Proxy groups/list, nodes, select, delay, speed, and providers accept options before or after names and support `--json`. `delay --group` and `speed --group` measure each node in the group; speed requires the local Backend. `settings` changes allow-lan, ipv6, unified-delay, tcp-concurrent, log-level, and tun-scope. Run applications using `flc COMMAND`, or `flc ssh COMMAND` for SSH.
 
 In the TUI, `q` exits the current frontend and cancels its unfinished SSH connects, but preserves committed persistent tunnels; `Ctrl+C` is a full exit. Dashboard owns Core, mode, flc, proxy port, TUN, and System proxy. `?` lists keys; `Ctrl+N` opens notifications.
 

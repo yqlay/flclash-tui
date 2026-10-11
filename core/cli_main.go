@@ -14,7 +14,7 @@ import (
 	"syscall"
 )
 
-const cliVersion = "0.5.34"
+const cliVersion = "0.5.35"
 
 type controllerOptions struct {
 	address    string
@@ -69,14 +69,16 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  restart           Alias for core restart")
 	fmt.Fprintln(w, "  reload            Alias for core reload")
 	fmt.Fprintln(w, "  status            Show backend, Core, profile, port, and frontend state")
-	fmt.Fprintln(w, "  logs              Read or follow the managed backend log")
+	fmt.Fprintln(w, "  logs              Read, follow, clear, or export the managed backend log")
 	fmt.Fprintln(w, "  backend           Manage the per-user Backend process")
 	fmt.Fprintln(w, "  shutdown          Stop Backend and Core; disconnect all frontends")
 	fmt.Fprintln(w, "  exit              Fully exit frontends, Backend, Core, and SSH tunnels")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Configuration and runtime:")
 	fmt.Fprintln(w, "  profile           Import, select, update, rename, edit, or list profiles")
-	fmt.Fprintln(w, "  proxy             List groups/nodes, select nodes, or run tests")
+	fmt.Fprintln(w, "  proxy             List groups/nodes/providers, select nodes, or run tests")
+	fmt.Fprintln(w, "  settings          Show or set profile switches and the saved TUN scope")
+	fmt.Fprintln(w, "  traffic           Reset traffic counters")
 	fmt.Fprintln(w, "  config            Inspect, validate, edit, back up, or restore config")
 	fmt.Fprintln(w, "  history           Show, follow, or clear recent connection history")
 	fmt.Fprintln(w, "  connections       List or close active connections")

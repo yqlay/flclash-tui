@@ -72,7 +72,7 @@ func (m *tuiModel) waitServiceUpdate() tea.Cmd {
 }
 
 func (m *tuiModel) startRefresh() tea.Cmd {
-	if m.refreshInFlight || m.busy {
+	if m.refreshInFlight || m.coreBusy {
 		return nil
 	}
 	m.refreshInFlight = true
@@ -218,11 +218,13 @@ func mergeTUIUnavailableBackend(current, refreshed tuiSnapshot, paths cliPaths, 
 }
 
 func (m *tuiModel) startOperation(action func(*tuiOperationState)) tea.Cmd {
-	if m.busy {
+	if m.coreWriteBlocked() {
 		m.snapshot.setStatus(newTUIMessage("ui.c90e0573178b"))
 		return nil
 	}
-	m.busy = true
+	m.coreBusy = true
+	m.syncLaneBusy()
+	m.invalidateProxyProbes()
 	m.syncNetworkExit()
 	m.operationSequence++
 	m.refreshInFlight = false
@@ -430,6 +432,10 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	updated.LogDetailOpen = current.LogDetailOpen
 	updated.LogDetailScroll = current.LogDetailScroll
 	updated.DashboardScroll = current.DashboardScroll
+	// Dashboard probes are local measurements. A refresh snapshot is a clone
+	// from before those results landed, and the controller does not own them.
+	updated.DashboardDelay = current.DashboardDelay
+	updated.DashboardSpeed = current.DashboardSpeed
 	if current.Network.Loading ||
 		current.Network.CheckedAt.After(updated.Network.CheckedAt) {
 		updated.Network = current.Network
@@ -639,10 +645,13 @@ func mergeTUIGroupDelays(current, updated []tuiGroup) {
 				map[string]tuiSpeedResult,
 				len(updated[index].Speeds)+len(previous.Speeds),
 			)
-			for node, speed := range updated[index].Speeds {
+			for node, speed := range previous.Speeds {
+				if findTUIStringExact(updated[index].Nodes, node) < 0 {
+					continue
+				}
 				speeds[node] = speed
 			}
-			for node, speed := range previous.Speeds {
+			for node, speed := range updated[index].Speeds {
 				if findTUIStringExact(updated[index].Nodes, node) < 0 {
 					continue
 				}

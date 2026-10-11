@@ -631,7 +631,6 @@ func TestTUIDashboardAndProxySpeedResultsRender(t *testing.T) {
 
 func TestTUIProxyGroupSpeedResultUpdatesOneNodeAtATime(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
-	model.busy = true
 	model.snapshot.Groups = []tuiGroup{{
 		Name:   "Proxy",
 		Nodes:  []string{"Node"},
@@ -651,8 +650,8 @@ func TestTUIProxyGroupSpeedResultUpdatesOneNodeAtATime(t *testing.T) {
 	if result.Testing || result.BytesPerSecond != 10_000_000 {
 		t.Fatalf("node speed result = %+v", result)
 	}
-	if model.busy {
-		t.Fatal("group speed operation remained busy after the last node")
+	if model.busy || model.coreBusy {
+		t.Fatal("group speed result occupied the core lane")
 	}
 	if model.snapshot.Status != "Proxy speed tests complete: 1/1 succeeded" {
 		t.Fatalf("group speed status = %q", model.snapshot.Status)

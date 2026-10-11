@@ -72,12 +72,14 @@ func TestProxyCLIValidatesBeforeResolvingController(t *testing.T) {
 		{"typo"}, {"typo", "--help"}, {"groups", "extra"}, {"nodes"},
 		{"select", "one"}, {"delay", "one", "two"}, {"speed"},
 		{"nodes", "group", "--unknown"}, {"nodes", "group", "--controller"},
+		{"providers", "extra"}, {"provider", "update"}, {"provider", "nope"},
+		{"delay", "node", "--group", "G"}, {"groups", "--group", "G"},
 	} {
 		if err := proxyCommand(args); err == nil || strings.Contains(err.Error(), "backend is running") {
 			t.Errorf("%q should fail argument validation before service resolution, got %v", args, err)
 		}
 	}
-	for _, command := range []string{"groups", "nodes", "select", "delay", "speed"} {
+	for _, command := range []string{"groups", "nodes", "select", "delay", "speed", "providers", "provider"} {
 		output := captureCLIOutput(t, func() error { return proxyCommand([]string{command, "--help"}) })
 		if !strings.Contains(output, "Usage: flclash proxy "+command) {
 			t.Errorf("missing subcommand usage: %q", output)

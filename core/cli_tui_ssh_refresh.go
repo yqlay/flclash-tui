@@ -16,7 +16,7 @@ type tuiSSHLocalRefreshMsg struct {
 // SSH idle work only reads saved profiles and local tunnel/relay health. It
 // must never discover processes, probe an exit IP, or query the Mihomo API.
 func (m *tuiModel) startSSHLocalRefresh() tea.Cmd {
-	if m.sshLocalRefreshActive || m.busy || m.snapshot.Page != tuiPageSSH {
+	if m.sshLocalRefreshActive || m.sshBusy || m.snapshot.Page != tuiPageSSH {
 		return nil
 	}
 	m.sshLocalRefreshActive = true
@@ -39,7 +39,7 @@ func (m *tuiModel) applySSHLocalRefresh(message tuiSSHLocalRefreshMsg) tea.Cmd {
 		return nil
 	}
 	m.sshLocalRefreshActive = false
-	if m.busy {
+	if m.sshBusy {
 		return nil
 	}
 	previousIndex := m.sshDetailProfileIndex()

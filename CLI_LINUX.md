@@ -71,6 +71,8 @@ flclash exit
 
 flclash status [--json] [--watch]
 flclash logs [--lines N] [--follow]
+flclash logs clear
+flclash logs export
 ```
 
 Dashboard-equivalent commands:
@@ -123,7 +125,11 @@ flclash proxy groups [--json]
 flclash proxy nodes GROUP [--json]
 flclash proxy select GROUP NODE [--json]
 flclash proxy delay NODE [--test-url URL] [--json]
+flclash proxy delay --group GROUP [--test-url URL] [--json]
 flclash proxy speed NODE [--json]
+flclash proxy speed --group GROUP [--json]
+flclash proxy providers [--json]
+flclash proxy provider update NAME [--json]
 
 flclash history show [--follow] [--json] [--source mixed|proxy|ssh] [--state all|active|done] [--search TEXT] [--limit N]
 flclash history clear [--source mixed|proxy|ssh]
@@ -134,7 +140,17 @@ flclash connections close all [--source mixed|proxy|ssh]
 
 Proxy options can precede or follow names (`proxy nodes GROUP --json`, `proxy select GROUP NODE --json`); `--` ends option parsing for names beginning with `-`. `proxy list` remains an alias for `groups`. Invalid commands, arguments, and options fail before contacting Backend. Use `flclash proxy COMMAND --help` for subcommand usage.
 
-`--json` writes JSON only to stdout; failures go to stderr. Groups keeps the controller's `/proxies` response and nodes keeps `{group, now, nodes}`. Select returns `{group, node}` (managed selection also returns `revision` and `flc_outbound`); delay returns `node`, `median_millis`, `jitter_millis`, `min_millis`, `max_millis`, `samples`; speed returns `node`, `bytes`, `duration_millis`, `bytes_per_second`, `complete`. Managed selection uses Backend's revision-checked transaction. `--controller URL --secret SECRET` targets only that explicit controller; external-controller speed tests are not supported. Run applications through `flc COMMAND` or `flc ssh COMMAND`, not `flclash proxy curl`.
+`--json` writes JSON only to stdout; failures go to stderr. Groups keeps the controller's `/proxies` response and nodes keeps `{group, now, nodes}`. Select returns `{group, node}` (managed selection also returns `revision` and `flc_outbound`); delay returns `node`, `median_millis`, `jitter_millis`, `min_millis`, `max_millis`, `samples`; speed returns `node`, `bytes`, `duration_millis`, `bytes_per_second`, `complete`. `--group` prints one result per node in that group's order and uses the same measurements; a missing group fails, a node error stays on that node's line. Group JSON is an array of those objects plus `error` when a node fails. Managed selection uses Backend's revision-checked transaction. `--controller URL --secret SECRET` targets only that explicit controller; external-controller speed tests are not supported. `proxy providers` lists Mihomo proxy providers and `proxy provider update NAME` refreshes one. Run applications through `flc COMMAND` or `flc ssh COMMAND`, not `flclash proxy curl`.
+
+```bash
+flclash settings show
+flclash settings set allow-lan|ipv6|unified-delay|tcp-concurrent on|off
+flclash settings set log-level silent|error|warning|info|debug
+flclash settings set tun-scope user|system
+flclash traffic reset
+```
+
+`settings set` changes one profile field through the same revision-checked Backend transaction as the TUI. It does not replace `tun`, `port`, `mode`, or `sys`. `tun-scope` is refused while TUN is on. `logs clear` truncates the managed log, `logs export` writes a copy under the data directory, and `traffic reset` clears Backend traffic counters.
 
 History is Backend's shared, persistent, up-to-500-entry record. It contains active and recently completed **proxy** (Mihomo) and **ssh** (independent reverse-proxy) flows, not HTTP bodies. Filter with `--source mixed|proxy|ssh` (default mixed). Backend reloads it after restart; restored entries begin as completed until they are seen active again. `history clear` clears matching memory and disk entries without closing connections; `connections close all` closes matching live flows and does not erase History. Close an `ssh:` id through the SSH relay; other ids go to Mihomo. TUI Connections uses `f` for source; History keeps `f` for all/active/completed and uses `o` for source.
 

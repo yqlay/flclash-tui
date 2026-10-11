@@ -1,3 +1,10 @@
+## FlClash TUI v0.5.35
+
+- Keep navigation, refresh, and search available while Core is writing. SSH changes no longer block Core writes or proxy tests, and an open editor still owns the terminal.
+- Run proxy delay tests four at a time and speed tests two at a time. The newest test keeps the status line; a late result can still record its measurement and cannot clear a newer spinner.
+- Match the remaining TUI actions from the CLI: `settings show/set` for allow-lan, ipv6, unified-delay, tcp-concurrent, log-level, and tun-scope; `proxy delay|speed --group`; `proxy providers` and `proxy provider update`; `logs clear` and `logs export`; `traffic reset`. These use the same Backend transactions and measurements as the TUI.
+- Restart the Backend after upgrading so the CLI and TUI both run v0.5.35. Backend IPC remains v7.
+
 ## FlClash TUI v0.5.34
 
 - Fix managed Core mode transitions and TUN intent/runtime separation. Keep UID guard rules effective in global/direct modes, restore subscription rules in rule mode, and roll back owned TUN resources on failed starts.

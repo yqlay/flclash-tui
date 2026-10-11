@@ -227,7 +227,18 @@ func printManagedStatus(status tuiServiceStatus, jsonOutput bool) error {
 func logsManagedCommand(args []string) error {
 	if cliSubcommandHelp(args) {
 		fmt.Println("Usage: flclash logs [--follow] [--lines N]")
+		fmt.Println("       flclash logs clear")
+		fmt.Println("       flclash logs export")
 		return nil
+	}
+	if len(args) > 0 && (args[0] == "clear" || args[0] == "export") {
+		if len(args) != 1 {
+			return errors.New("usage: flclash logs clear|export")
+		}
+		if args[0] == "clear" {
+			return clearManagedLogs()
+		}
+		return exportManagedLogs()
 	}
 	fs := newCLIFlagSet("logs")
 	follow := fs.Bool("follow", false, "follow appended log data")
@@ -249,6 +260,48 @@ func logsManagedCommand(args []string) error {
 		paths.HomeDir = status.HomeDir
 	}
 	return readManagedLog(filepath.Join(paths.HomeDir, tuiServiceLogFilename), *lines, *follow)
+}
+
+func clearManagedLogs() error {
+	client, status, err := currentManagedService()
+	if err != nil {
+		return err
+	}
+	status, err = client.clearLogs(status.Revision)
+	if err != nil {
+		return err
+	}
+	clearTUILogs()
+	fmt.Printf("logs cleared (revision %d)\n", status.Revision)
+	return nil
+}
+
+func exportManagedLogs() error {
+	homeDir, err := managedOrLocalHomeDir()
+	if err != nil {
+		return err
+	}
+	path, err := exportTUILogs(homeDir, readTUIPersistentLogs(homeDir, 2000))
+	if err != nil {
+		return err
+	}
+	fmt.Println(path)
+	return nil
+}
+
+func managedOrLocalHomeDir() (string, error) {
+	_, status, err := currentManagedService()
+	if err == nil && status.HomeDir != "" {
+		return status.HomeDir, nil
+	}
+	if err != nil && !strings.Contains(err.Error(), "no FlClash backend is running") {
+		return "", err
+	}
+	paths, err := resolvePaths("", "")
+	if err != nil {
+		return "", err
+	}
+	return paths.HomeDir, nil
 }
 
 func serviceManagementCommand(args []string) error {

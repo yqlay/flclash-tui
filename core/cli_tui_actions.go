@@ -380,18 +380,7 @@ func (m *tuiModel) testSelectedProxyDelay() tea.Cmd {
 	}
 	groupName := group.Name
 	node := group.Nodes[m.snapshot.SelectedNode]
-	testURL := m.tuiDelayTestURL()
-	setTUIGroupDelay(&m.snapshot, groupName, node, tuiDelayResult{Testing: true})
-	return m.startOperation(func(state *tuiOperationState) {
-		delay, err := testTUIProxyDelaySamples(m.client, node, testURL)
-		if err != nil {
-			setTUIGroupDelay(&state.snapshot, groupName, node, tuiDelayResult{Error: err.Error()})
-			state.snapshot.setStatus(newTUIMessage("ui.13f55ad346eb", node, err.Error()))
-			return
-		}
-		setTUIGroupDelay(&state.snapshot, groupName, node, delay)
-		state.snapshot.setStatus(newTUIMessage("ui.c5d054f540f9", node, formatTUIDelay(delay)))
-	})
+	return m.enqueueDelayProbes(groupName, []string{node}, false)
 }
 
 func (m *tuiModel) testSelectedProxyGroupDelays() tea.Cmd {
@@ -406,65 +395,15 @@ func (m *tuiModel) testSelectedProxyGroupDelays() tea.Cmd {
 		return nil
 	}
 	nodes := append([]string(nil), group.Nodes...)
-	testingDelays := make(map[string]tuiDelayResult, len(nodes))
-	for _, node := range nodes {
-		testingDelays[node] = tuiDelayResult{Testing: true}
-	}
-	setTUIGroupDelays(&m.snapshot, group.Name, testingDelays)
-	testURL := m.tuiDelayTestURL()
-	return m.startOperation(func(state *tuiOperationState) {
-		delays := testTUIProxyDelays(m.client, nodes, testURL)
-		successes := 0
-		for _, delay := range delays {
-			if delay.MedianMillis > 0 {
-				successes++
-			}
-		}
-		setTUIGroupDelays(&state.snapshot, group.Name, delays)
-		state.snapshot.setStatus(newTUIMessage("ui.343980935349", group.Name,
-			successes,
-			len(nodes)))
-
-	})
+	return m.enqueueDelayProbes(group.Name, nodes, true)
 }
 
 func (m *tuiModel) testDashboardDelay() tea.Cmd {
-	if m.service == nil {
-		m.snapshot.setStatus(newTUIMessage("ui.df7bb6bc35d4"))
-		return nil
-	}
-	m.snapshot.DashboardDelay = tuiDelayResult{Testing: true}
-	mixedPort := m.snapshot.ActiveProxyPort
-	testURL := m.tuiDelayTestURL()
-	return m.startOperation(func(state *tuiOperationState) {
-		delay, err := state.service.testRouteDelay(mixedPort, testURL)
-		if err != nil {
-			state.snapshot.DashboardDelay = tuiDelayResult{Error: err.Error()}
-			state.snapshot.setStatus(newTUIMessage("ui.07774aaecaa3", err.Error()))
-			return
-		}
-		state.snapshot.DashboardDelay = delay
-		state.snapshot.setStatus(newTUIMessage("ui.593694af3dbf", formatTUIDelay(delay)))
-	})
+	return m.enqueueDashboardDelay()
 }
 
 func (m *tuiModel) testDashboardSpeed() tea.Cmd {
-	if m.service == nil {
-		m.snapshot.setStatus(newTUIMessage("ui.e1c7c4a7c00b"))
-		return nil
-	}
-	m.snapshot.DashboardSpeed = tuiSpeedResult{Testing: true}
-	mixedPort := m.snapshot.ActiveProxyPort
-	return m.startOperation(func(state *tuiOperationState) {
-		result, err := state.service.testRouteSpeed(mixedPort)
-		if err != nil {
-			state.snapshot.DashboardSpeed = tuiSpeedResult{Error: err.Error()}
-			state.snapshot.setStatus(newTUIMessage("ui.524fc802cbfb", err.Error()))
-			return
-		}
-		state.snapshot.DashboardSpeed = result
-		state.snapshot.setStatus(newTUIMessage("ui.dccbe0cdbd03", formatTUISpeed(result)))
-	})
+	return m.enqueueDashboardSpeed()
 }
 
 func (m *tuiModel) testSelectedProxySpeed() tea.Cmd {
@@ -485,27 +424,7 @@ func (m *tuiModel) testSelectedProxySpeed() tea.Cmd {
 	}
 	groupName := group.Name
 	node := group.Nodes[m.snapshot.SelectedNode]
-	setTUIGroupSpeed(
-		&m.snapshot,
-		groupName,
-		node,
-		tuiSpeedResult{Testing: true},
-	)
-	return m.startOperation(func(state *tuiOperationState) {
-		result, err := state.service.testProxySpeed(node)
-		if err != nil {
-			setTUIGroupSpeed(
-				&state.snapshot,
-				groupName,
-				node,
-				tuiSpeedResult{Error: err.Error()},
-			)
-			state.snapshot.setStatus(newTUIMessage("ui.e72ac0c17cec", node, err.Error()))
-			return
-		}
-		setTUIGroupSpeed(&state.snapshot, groupName, node, result)
-		state.snapshot.setStatus(newTUIMessage("ui.2be9d7d0142c", node, formatTUISpeed(result)))
-	})
+	return m.enqueueSpeedProbes(groupName, []string{node}, false)
 }
 
 func (m *tuiModel) testSelectedProxyGroupSpeeds() tea.Cmd {
@@ -524,25 +443,7 @@ func (m *tuiModel) testSelectedProxyGroupSpeeds() tea.Cmd {
 		return nil
 	}
 	nodes := append([]string(nil), group.Nodes...)
-	testingSpeeds := make(map[string]tuiSpeedResult, len(nodes))
-	for _, node := range nodes {
-		testingSpeeds[node] = tuiSpeedResult{Testing: true}
-	}
-	setTUIGroupSpeeds(&m.snapshot, group.Name, testingSpeeds)
-	if m.busy {
-		m.snapshot.setStatus(newTUIMessage("ui.c90e0573178b"))
-		return nil
-	}
-	m.busy = true
-	m.operationSequence++
-	m.groupSpeedIndicators = captureTUIOperationTestingIndicators(m.snapshot)
-	m.refreshInFlight = false
-	m.refreshSequence++
-	m.snapshot.setStatus(newTUIMessage("ui.fffba2149b7e", group.Name,
-		len(nodes),
-		len(nodes)*100))
-
-	return m.testNextProxyGroupSpeed(group.Name, nodes, len(nodes), 0)
+	return m.enqueueSpeedProbes(group.Name, nodes, true)
 }
 
 func (m *tuiModel) testNextProxyGroupSpeed(
@@ -712,7 +613,7 @@ func formatTUISpeed(result tuiSpeedResult) string {
 }
 
 func (m *tuiModel) startEditor(path string) tea.Cmd {
-	if m.busy {
+	if m.coreWriteBlocked() || m.sshBusy || m.editorBusy {
 		m.snapshot.setStatus(newTUIMessage("ui.c90e0573178b"))
 		return nil
 	}
@@ -777,7 +678,8 @@ func (m *tuiModel) startEditor(path string) tea.Cmd {
 		data: backup,
 		mode: info.Mode(),
 	}
-	m.busy = true
+	m.editorBusy = true
+	m.syncLaneBusy()
 	m.snapshot.setStatus(newTUIMessage("ui.7c0af99c219a"))
 	return tea.ExecProcess(command, func(err error) tea.Msg {
 		return tuiEditorResultMsg{err: err}

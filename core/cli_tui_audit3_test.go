@@ -208,8 +208,8 @@ func TestAudit3WholeGroupStaleSpeedResultFinishesOnlyOwnedIndicators(t *testing.
 	model.operationSequence, model.backendRevision, model.busy = 3, 2, true
 	model.groupSpeedIndicators = captureTUIOperationTestingIndicators(model.snapshot)
 	model.update(tuiProxyGroupSpeedResultMsg{operationID: 3, backendRevision: 1, groupName: "group", node: "node", result: tuiSpeedResult{BytesPerSecond: 999}})
-	if model.busy || model.snapshot.Groups[0].Speeds["node"].Testing || model.snapshot.Groups[0].Speeds["node"].BytesPerSecond != 0 {
-		t.Fatal("stale group-speed result remained testing or was applied")
+	if !model.busy || model.snapshot.Groups[0].Speeds["node"].Testing || model.snapshot.Groups[0].Speeds["node"].BytesPerSecond != 0 {
+		t.Fatal("stale group-speed result cleared the core lane or was applied")
 	}
 	model.busy = true
 	model.operationSequence = 4

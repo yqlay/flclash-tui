@@ -143,7 +143,7 @@ func completionCommand(args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: flclash completion bash|zsh|fish")
 	}
-	commands := "tui core sys tun mode port flc ssh net start stop restart reload status backend shutdown exit profile proxy history connections logs config geo env doctor completion check update run version help"
+	commands := "tui core sys tun mode port flc ssh net start stop restart reload status backend shutdown exit profile proxy settings traffic history connections logs config geo env doctor completion check update run version help"
 	groups := []struct {
 		command string
 		values  string
@@ -160,10 +160,12 @@ func completionCommand(args []string) error {
 		{"status", "--json --watch"},
 		{"backend", "start stop restart status logs clients"},
 		{"profile", "list import import-file current use update rename edit delete link"},
-		{"proxy", "groups list nodes select delay speed --json --controller --secret --test-url"},
+		{"proxy", "groups list nodes select delay speed providers provider --json --controller --secret --test-url --group"},
+		{"settings", "show set allow-lan ipv6 unified-delay tcp-concurrent log-level tun-scope on off silent error warning info debug user system"},
+		{"traffic", "reset"},
 		{"history", "show clear"},
 		{"connections", "show close"},
-		{"logs", "--follow --lines"},
+		{"logs", "--follow --lines clear export"},
 		{"config", "path show validate edit backup restore"},
 		{"geo", "status update"},
 		{"env", "--json"},

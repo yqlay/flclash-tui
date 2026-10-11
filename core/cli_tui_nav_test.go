@@ -147,7 +147,7 @@ func TestBubbleTeaBlocksMutatingActionsWhileBusy(t *testing.T) {
 	if model.snapshot.Settings.TunEnabled {
 		t.Fatal("busy mutation changed the staged settings")
 	}
-	if !strings.Contains(model.snapshot.Status, "Operation in progress") {
+	if !strings.Contains(model.snapshot.Status, "Another operation is still running") {
 		t.Fatalf("busy status = %q", model.snapshot.Status)
 	}
 	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})

@@ -78,6 +78,33 @@ func (l *countingTUIListener) Accept() (net.Conn, error) {
 	return connection, err
 }
 
+func TestTUIServiceRuntimeStaleSettingsDoNotWrite(t *testing.T) {
+	runtime := newTestTUIServiceRuntime(t)
+	original := []byte(defaultTUIConfig)
+	if err := os.WriteFile(runtime.paths.ConfigPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := uint64(0)
+	settings := tuiSettings{Mode: "rule", AllowLAN: true, LogLevel: "debug"}
+	status := runtime.handle(tuiServiceRequest{
+		ProtocolVersion:  tuiServiceProtocolVersion,
+		RequestID:        "stale-settings",
+		ExpectedRevision: &stale,
+		Action:           "apply_settings",
+		Settings:         &settings,
+	})
+	if status.OK || status.ErrorCode != tuiServiceErrorConflict {
+		t.Fatalf("stale settings response = %+v", status)
+	}
+	data, err := os.ReadFile(runtime.paths.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("stale settings wrote the profile:\n%s", data)
+	}
+}
+
 func TestTUIServiceRuntimeRejectsStaleRevision(t *testing.T) {
 	runtime := newTestTUIServiceRuntime(t)
 	stale := uint64(0)

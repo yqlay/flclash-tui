@@ -172,14 +172,17 @@ flclash profile import-file /path/to/nodes.txt
 flclash proxy nodes GROUP --json
 flclash proxy select GROUP NODE --json
 flclash proxy delay NODE --json
+flclash proxy delay --group GROUP --json
+flclash settings show
 flclash logs --lines 100 --follow
+flclash logs clear
 flclash history show --limit 20
 flclash ssh disconnect             # 只关 SSH 隧道
 flclash backend stop               # 停代理 Backend+Core，SSH 还在
 flclash exit                       # 完全退出前端、Backend、Core 和 SSH
 ```
 
-`proxy groups/list、nodes、select、delay、speed` 支持参数前后放置选项及 `--json`；测速 `speed` 需要本机 Backend。运行应用仍用 `flc COMMAND`，SSH 用 `flc ssh COMMAND`。
+`proxy groups/list、nodes、select、delay、speed、providers` 支持参数前后放置选项及 `--json`；`delay --group` 和 `speed --group` 按组内节点逐个测量，测速 `speed` 需要本机 Backend。`settings` 修改 allow-lan、ipv6、unified-delay、tcp-concurrent、log-level 和 tun-scope。运行应用仍用 `flc COMMAND`，SSH 用 `flc ssh COMMAND`。
 
 TUI：`q` 只退当前界面，并取消尚未完成的 SSH 连接；已连接的持久隧道保留。`Ctrl+C` 全停；Dashboard 管 Core、模式、flc、端口、TUN 和 System proxy；`?` 查看快捷键；`Ctrl+N` 查看通知。
 

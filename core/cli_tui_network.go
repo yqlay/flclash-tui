@@ -159,7 +159,11 @@ func (m *tuiModel) invalidateNetworkExit(configChanged bool) {
 	m.networkCheckPending = true
 	m.snapshot.Network = tuiNetworkInfo{IntranetIP: m.snapshot.Network.IntranetIP, Loading: m.networkCheckActive}
 	m.snapshot.DashboardDelay, m.snapshot.DashboardSpeed = tuiDelayResult{}, tuiSpeedResult{}
+	// Route delay/speed follows the selected exit. Node probes stay valid
+	// until the profile itself changes.
+	m.invalidateDashboardProbes()
 	if configChanged {
+		m.invalidateProxyProbes()
 		for index := range m.snapshot.Groups {
 			m.snapshot.Groups[index].Delays = nil
 			m.snapshot.Groups[index].Speeds = nil

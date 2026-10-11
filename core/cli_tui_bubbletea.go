@@ -189,6 +189,23 @@ type tuiProxyGroupSpeedResultMsg struct {
 	remaining         []string
 	total             int
 	successes         int
+	epoch             uint64
+	seq               uint64
+	batch             uint64
+	pooled            bool
+}
+
+type tuiProxyDelayResultMsg struct {
+	epoch             uint64
+	seq               uint64
+	batch             uint64
+	backendGeneration uint64
+	backendRevision   uint64
+	groupName         string
+	node              string
+	result            tuiDelayResult
+	dashboard         bool
+	pooled            bool
 }
 
 type tuiEditorResultMsg struct {
@@ -197,6 +214,7 @@ type tuiEditorResultMsg struct {
 
 type tuiSSHCommandResultMsg struct {
 	action       string
+	sequence     uint64
 	status       string
 	text         tuiMessage
 	selectedName string
@@ -291,6 +309,18 @@ type tuiModel struct {
 	refreshIncludesLogs      bool
 	lastIdleTick             tuiIdleTickPlan
 	busy                     bool
+	coreBusy                 bool
+	editorBusy               bool
+	sshBusy                  bool
+	sshWriteSequence         uint64
+	proxyProbeEpoch          uint64
+	proxyProbeSeq            map[string]uint64
+	delayInFlight            int
+	speedInFlight            int
+	delayQueue               []tuiProxyProbeJob
+	speedQueue               []tuiProxyProbeJob
+	delayBatch               tuiProbeBatchState
+	speedBatch               tuiProbeBatchState
 	operationSequence        uint64
 	groupSpeedIndicators     tuiOperationTestingIndicators
 	inputMode                tuiInputMode
@@ -990,7 +1020,8 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		previousRoute := m.networkCheckRoute()
-		m.busy = false
+		m.coreBusy = false
+		m.syncLaneBusy()
 		if message.state.settingsConflict && message.state.portEdit != nil && m.inputMode == tuiInputNone {
 			m.inputMode = tuiInputMixedPort
 			m.inputValue = []rune(message.state.portEdit.Value)
@@ -1059,45 +1090,12 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(commands...)
 	case tuiProxyGroupSpeedResultMsg:
-		if message.operationID != 0 && message.operationID != m.operationSequence {
-			return m, nil
-		}
-		if message.backendGeneration != m.backendGeneration || message.backendRevision < m.backendRevision {
-			m.busy = false
-			m.finishTUIOperationIndicators(tuiOperationState{operationID: message.operationID, testingIndicators: m.groupSpeedIndicators})
-			return m, m.startRefresh()
-		}
-		if message.result.Error == "" {
-			message.successes++
-		}
-		setTUIGroupSpeed(
-			&m.snapshot,
-			message.groupName,
-			message.node,
-			message.result,
-		)
-		completed := message.total - len(message.remaining)
-		if len(message.remaining) > 0 {
-			m.snapshot.setStatus(newTUIMessage("ui.be8bb45e2eb4", message.groupName,
-				completed,
-				message.total,
-				message.remaining[0]))
-
-			return m, m.testNextProxyGroupSpeed(
-				message.groupName,
-				message.remaining,
-				message.total,
-				message.successes,
-			)
-		}
-		m.busy = false
-		m.snapshot.setStatus(newTUIMessage("ui.9d3927bdfdcb", message.groupName,
-			message.successes,
-			message.total))
-
-		return m, m.startRefresh()
+		return m, m.applyProxySpeedResult(message)
+	case tuiProxyDelayResultMsg:
+		return m, m.applyProxyDelayResult(message)
 	case tuiEditorResultMsg:
-		m.busy = false
+		m.editorBusy = false
+		m.syncLaneBusy()
 		editorPath := m.editorPath
 		editorTempPath := m.editorTempPath
 		editorBackup := m.editorBackup
@@ -1146,7 +1144,11 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			refreshTUIProfiles(&state.snapshot, state.paths)
 		})
 	case tuiSSHCommandResultMsg:
-		m.busy = false
+		if message.sequence != 0 && message.sequence != m.sshWriteSequence {
+			return m, nil
+		}
+		m.sshBusy = false
+		m.syncLaneBusy()
 		var credentialRequired *cliSSHCredentialRequiredError
 		if message.action == "connect" && errors.As(message.err, &credentialRequired) {
 			m.beginSSHCredentialPrompt(
