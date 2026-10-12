@@ -136,7 +136,24 @@ TUI 里按 `q` 或关掉那个终端，只退出当前界面，Backend 还在，
 
 ## SSH 代理
 
-只在**需要被代理的那台机器**上运行 FlClash，把另一台已能上网的机器当作 SSH host。之后 `flc ssh COMMAND` 会把这条命令从 host 的网络出口送出去。本机不开放公网代理端口，SSH host 只需提供 SSH 服务。若该 host 已有 OpenSSH ControlMaster、`ssh -D` / VS Code SOCKS，或客户端通过 `ssh -R <port>` 建立的反向 SOCKS 代理，`connect` / `attach` 会复用它做流量反代，而不是再登一次；普通交互式 `ssh` 没有 ControlMaster、`-D` 或 `-R` 时无法捕捉。
+只在**需要被代理的那台机器**上运行 FlClash，把另一台已能上网的机器当作 SSH host。之后 `flc ssh COMMAND` 会把这条命令从 host 的网络出口送出去。本机不开放公网代理端口，SSH host 只需提供 SSH 服务。若该 host 已有 OpenSSH ControlMaster 或 `ssh -D` / VS Code SOCKS，`connect` / `attach` 会复用它，而不是再登一次。普通交互式 `ssh` 没有 ControlMaster、`-D` 或 `-R` 时无法捕捉。
+
+## SSH 反代
+
+B 是跑着 FlClash、需要走代理的那台机器。在已经能上网的 A 上把 SOCKS5 开在 B 本机：
+
+```bash
+ssh -f -N -R 10808 -p PORT USER@B
+```
+
+然后在 B 上：
+
+```bash
+flclash ssh attach --list
+flclash ssh attach
+```
+
+列表应出现 `INBOUND`，本机端口是 `127.0.0.1:10808`，流量从 A 出去。`ssh -D` 的 SOCKS 开在 A 自己的 `127.0.0.1`，要在 A 上执行 `flclash ssh attach`，B 看不到。
 
 ```bash
 flclash ssh import                 # 从 ~/.ssh/config 导入 Host

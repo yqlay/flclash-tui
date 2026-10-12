@@ -145,12 +145,12 @@ func (m *tuiModel) View() string {
 	} else if m.sshCaptureOpen {
 		snapshot.SelectionTitle = fmt.Sprintf(tr("ui.f4d5ed40e313"), len(m.sshCaptureCandidates))
 		if m.sshCaptureNames == nil {
-			snapshot.SelectionTitle = tr("ui.1900b478a586")
+			snapshot.SelectionTitle = "Looking for SOCKS on this machine…"
 		}
 		snapshot.SelectionOptions = append([]string(nil), m.sshCaptureOptions...)
 		snapshot.SelectedOption = m.sshCaptureSelected
 		snapshot.SelectionHint = ""
-		snapshot.Status = tr("ui.54346e32fec8")
+		snapshot.Status = "Enter attaches · no new login · Esc cancel"
 	} else if m.modeSelectionOpen {
 		snapshot.SelectionTitle = tr("ui.d3f86ef363b3")
 		snapshot.SelectionOptions = append(

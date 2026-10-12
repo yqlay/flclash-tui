@@ -476,7 +476,8 @@ func TestTUISSHPageKeepsAuthenticationOutOfMetrics(t *testing.T) {
 func TestTUISSHPageDistinguishesBrokenSOCKSListener(t *testing.T) {
 	output := stripTUIANSI(renderTUIAtSize(
 		tuiSnapshot{
-			Page: tuiPageSSH,
+			Page:          tuiPageSSH,
+			SSHDetailName: "school",
 			SSHProfiles: []tuiSSHProfile{{
 				Name:        "school",
 				Destination: "student@example.edu",

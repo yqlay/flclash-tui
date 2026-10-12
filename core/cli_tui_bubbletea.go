@@ -812,14 +812,14 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.sshCaptureOpen || message.generation != m.sshCaptureGeneration {
 			return m, nil
 		}
-		applyTUISSHCaptureResult(&m.snapshot, message.candidates)
+		applyTUISSHCaptureResult(&m.snapshot, message.candidates, message.hint)
 		m.sshCaptureNames = message.names
 		m.sshCaptureOptions = message.options
 		m.sshCaptureCandidates = message.candidates
 		m.sshCaptureSelected = message.selected
 		if len(message.candidates) == 0 {
 			m.sshCaptureOpen = false
-			m.snapshot.setStatus(newTUIMessage("ui.f684c73cba75", formatCLICaptureEmptyHint()))
+			m.snapshot.setStatus(newTUIMessage("ui.f684c73cba75", message.hint))
 			return m, nil
 		}
 		if len(message.candidates) == 1 {

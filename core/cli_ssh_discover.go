@@ -867,28 +867,27 @@ func captureCLISSHNameHint(candidate cliSSHCaptureCandidate) string {
 }
 
 func formatCLICaptureCandidate(candidate cliSSHCaptureCandidate) string {
-	dest := formatCLISSHDestination(candidate.Username, candidate.Host)
 	if candidate.Kind == cliSSHCaptureReverseSOCKSKind {
-		via := "client"
-		if candidate.Host != "" && candidate.Host != "127.0.0.1" && candidate.Host != "::1" {
-			via = formatCLISSHDestination(candidate.Username, candidate.Host)
-		}
-		return fmt.Sprintf("%-8s :%-5d  via %s", "INBOUND", candidate.SocksPort, via)
+		return fmt.Sprintf("exit via client · SOCKS ←R 127.0.0.1:%d", candidate.SocksPort)
 	}
+	dest := formatCLISSHDestination(candidate.Username, candidate.Host)
 	if candidate.Kind == cliSSHCaptureSOCKSKind {
-		return fmt.Sprintf("%-8s :%-5d  via %s", "LOCAL", candidate.SocksPort, dest)
+		return fmt.Sprintf("exit via %s · SOCKS 127.0.0.1:%d", dest, candidate.SocksPort)
 	}
-	return fmt.Sprintf("%-8s mux      via %s", "MUX", dest)
+	return fmt.Sprintf("exit via %s · mux", dest)
 }
 
 func formatCLICaptureEmptyHint() string {
 	if captureHasInboundSSHConnection() {
-		return "Capture 0 live · inbound SSH"
+		return "On the SSH client: ssh -R 10808 USER@THISHOST — then Capture again."
 	}
 	if cliRunningOnWSL() && lastWindowsSSHSnapshot.ProcessCount > 0 && !lastWindowsSSHSnapshot.HadSOCKS {
 		return "Capture 0 live · ssh.exe"
 	}
-	return "Capture 0 live"
+	if captureHasConfiguredSSHProfiles() {
+		return "Use a saved profile and press Enter to connect."
+	}
+	return "Nothing listening on this machine."
 }
 
 func captureHasConfiguredSSHProfiles() bool {

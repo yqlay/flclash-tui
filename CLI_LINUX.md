@@ -232,6 +232,23 @@ ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
 flclash ssh disconnect home
 ```
 
+### SSH reverse proxy
+
+B is the machine running FlClash. On A, the machine that already has internet, open a SOCKS5 listener on B with remote dynamic forwarding. Do not use `-D` for this direction; `-D` listens on A.
+
+```bash
+ssh -f -N -R 10808 -p PORT USER@B
+```
+
+On B:
+
+```bash
+flclash ssh attach --list
+flclash ssh attach
+```
+
+`--list` and the TUI Capture row should show `INBOUND` for `127.0.0.1:10808`. Traffic from B leaves through A. Capture only sees SOCKS already listening on this FlClash machine: `ssh -D` or ControlMaster here, or an inbound `ssh -R`. `ssh -D` on A is invisible to B.
+
 `--local-port PORT` gives persistent connections a stable loopback SOCKS5
 address for other local applications. Use `--local-port auto` to return to
 automatic allocation. Temporary `flc ssh -u` tunnels always use an automatic
@@ -257,14 +274,10 @@ running the command. `flclash ssh connect` without a name uses the same
 resolution. If that host already has a live OpenSSH ControlMaster (for example
 `ControlMaster auto` in `~/.ssh/config`), connect reuses it: FlClash only adds a
 dynamic SOCKS forward and the local traffic relay. `flclash ssh attach [NAME]`
-does the same capture and never starts a second login; `--list` and the TUI
-Capture row only see SOCKS already listening on this FlClash machine (`ssh -D` /
-ControlMaster here, or inbound `ssh -R`). Idle refresh and `ssh list` do not scan. Detach (`ssh disconnect` or `flclash exit`) cancels a ControlMaster
+does the same capture and never starts a second login. Idle refresh and `ssh list` do not scan. Detach (`ssh disconnect` or `flclash exit`) cancels a ControlMaster
 forward or stops only the local relay for a captured SOCKS (`-D` or `-R`), and leaves the
 user's SSH or VS Code session running. A plain interactive `ssh user@host`
-without ControlMaster, `-D`, or `-R` cannot be captured. If an SSH client connects to this
-host without reverse forwarding, reconnecting with `ssh -R 10808 user@this-host` allows
-Capture to immediately detect and route traffic through that client. Capture also recognizes live
+without ControlMaster, `-D`, or `-R` cannot be captured. Capture also recognizes live
 ControlMaster sockets from process `ssh -S`/`-M`/`ControlPath`, from `ssh -G`
 (including VS Code `-F` temp configs), and from `~/.ssh/sockets`, `~/.ssh/cm`,
 and `/tmp/ssh-*` (not ssh-agent sockets or private keys). Default VS Code

@@ -134,7 +134,7 @@ func (m *tuiModel) beginSSHCapture() tea.Cmd {
 	m.sshCaptureOpen = true
 	m.sshCaptureNames = nil
 	m.sshCaptureCandidates = nil
-	m.sshCaptureOptions = []string{"Scanning…"}
+	m.sshCaptureOptions = []string{"Looking for SOCKS on this machine…"}
 	m.sshCaptureSelected = 0
 	return func() tea.Msg {
 		result := discoverTUISSHCapture(profiles, current)
@@ -143,9 +143,10 @@ func (m *tuiModel) beginSSHCapture() tea.Cmd {
 	}
 }
 
-func applyTUISSHCaptureResult(snapshot *tuiSnapshot, candidates []cliSSHCaptureCandidate) {
+func applyTUISSHCaptureResult(snapshot *tuiSnapshot, candidates []cliSSHCaptureCandidate, hint string) {
 	snapshot.SSHCaptureKnown = true
 	snapshot.SSHCaptureFound = len(candidates)
+	snapshot.SSHCaptureHint = hint
 	inbound, local := 0, 0
 	for _, candidate := range candidates {
 		if candidate.Kind == cliSSHCaptureReverseSOCKSKind {
@@ -215,7 +216,11 @@ func (m *tuiModel) handleSSHCapture(message tea.KeyMsg) tea.Cmd {
 		if m.sshCaptureSelected < 0 ||
 			m.sshCaptureSelected >= len(m.sshCaptureCandidates) {
 			m.sshCaptureOpen = false
-			m.snapshot.setStatus(newTUIMessage("ui.f684c73cba75", formatCLICaptureEmptyHint()))
+			hint := m.snapshot.SSHCaptureHint
+			if hint == "" {
+				hint = formatCLICaptureEmptyHint()
+			}
+			m.snapshot.setStatus(newTUIMessage("ui.f684c73cba75", hint))
 			return nil
 		}
 		return m.attachSSHCaptureCandidate(m.sshCaptureCandidates[m.sshCaptureSelected])

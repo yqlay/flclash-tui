@@ -738,13 +738,17 @@ func TestLoadCLISSHProfileViewsDoesNotProbeControlMaster(t *testing.T) {
 func TestTUISSHRendersCaptureRow(t *testing.T) {
 	var output strings.Builder
 	snapshot := tuiSnapshot{
-		Page:        tuiPageSSH,
-		SelectedSSH: tuiSSHCaptureRow,
+		Page:          tuiPageSSH,
+		SelectedSSH:   tuiSSHCaptureRow,
+		SSHDetailName: "home",
 		SSHProfiles: []tuiSSHProfile{{
-			Name:     "home",
-			Username: "deploy",
-			Host:     "gateway.example.com",
-			Port:     22,
+			Name:      "home",
+			Username:  "deploy",
+			Host:      "gateway.example.com",
+			Port:      22,
+			Connected: true,
+			Ready:     true,
+			SocksPort: 1080,
 		}},
 	}
 	drawTUISSH(&output, snapshot, 120, 36)
@@ -752,12 +756,13 @@ func TestTUISSHRendersCaptureRow(t *testing.T) {
 	for _, expected := range []string{
 		"Capture",
 		"THIS machine",
+		"ssh -D is captured on the client. ssh -R is captured here.",
 	} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("SSH page missing %q:\n%s", expected, plain)
 		}
 	}
-	if strings.Contains(plain, "SSH · home") {
+	if strings.Contains(plain, "SSH · home") || strings.Contains(plain, "Traffic history") {
 		t.Fatalf("Capture highlight unexpectedly opened profile details:\n%s", plain)
 	}
 }

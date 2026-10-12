@@ -134,7 +134,24 @@ To send ordinary apps such as a browser through the proxy, switch Dashboard mode
 
 ## SSH proxy
 
-Run FlClash only on the machine whose traffic needs proxying, and use another already-online host as the SSH peer. `flc ssh COMMAND` then leaves through that host's network. The local machine does not open a public proxy port; the peer only needs SSH. If that host already has an OpenSSH ControlMaster, an `ssh -D` / VS Code SOCKS listener, or an inbound reverse SOCKS proxy (`ssh -R <port>`), `connect` / `attach` reuse it for the SOCKS reverse proxy instead of opening a second login. A plain interactive `ssh` without ControlMaster, `-D`, or `-R` cannot be captured.
+Run FlClash only on the machine whose traffic needs proxying, and use another already-online host as the SSH peer. `flc ssh COMMAND` then leaves through that host's network. The local machine does not open a public proxy port; the peer only needs SSH. If that host already has an OpenSSH ControlMaster or an `ssh -D` / VS Code SOCKS listener, `connect` / `attach` reuse it instead of opening a second login. A plain interactive `ssh` without ControlMaster, `-D`, or `-R` cannot be captured.
+
+## SSH reverse proxy
+
+B is the machine running FlClash, the one whose programs need a proxy. On A, the machine that already has internet, open the SOCKS5 listener on B:
+
+```bash
+ssh -f -N -R 10808 -p PORT USER@B
+```
+
+Then on B:
+
+```bash
+flclash ssh attach --list
+flclash ssh attach
+```
+
+The list should show `INBOUND`. The SOCKS port on B is `127.0.0.1:10808`, and traffic leaves through A. `ssh -D` listens on A's own `127.0.0.1`; capture that on A. B cannot see it.
 
 ```bash
 flclash ssh import                 # import Host entries from ~/.ssh/config

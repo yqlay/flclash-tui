@@ -260,6 +260,7 @@ type tuiSnapshot struct {
 	SSHCaptureFound         int
 	SSHCaptureInbound       int
 	SSHCaptureLocal         int
+	SSHCaptureHint          string
 	SSHDashboardFocus       bool
 	SSHDetailName           string
 	SSHNetwork              tuiNetworkInfo

@@ -581,7 +581,7 @@ func TestCaptureEmptyHintForRemoteProfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	hint := formatCLICaptureEmptyHint()
-	if hint != "Capture 0 live" {
+	if hint != "Use a saved profile and press Enter to connect." {
 		t.Fatalf("hint = %q", hint)
 	}
 }
@@ -667,7 +667,7 @@ func TestDiscoverReverseSocksCandidateAndCapture(t *testing.T) {
 	}
 
 	label := formatCLICaptureCandidate(c)
-	if !strings.Contains(label, "INBOUND") || !strings.Contains(label, strconv.Itoa(port)) {
+	if !strings.Contains(label, "exit via client") || !strings.Contains(label, "←R") || !strings.Contains(label, strconv.Itoa(port)) {
 		t.Fatalf("unexpected label: %q", label)
 	}
 
@@ -791,8 +791,8 @@ func TestCaptureEmptyHintMentionsReverseSOCKS(t *testing.T) {
 	})
 
 	hint := formatCLICaptureEmptyHint()
-	if !strings.Contains(hint, "inbound SSH") {
-		t.Fatalf("expected inbound SSH status, got: %q", hint)
+	if !strings.Contains(hint, "ssh -R 10808 USER@THISHOST") {
+		t.Fatalf("expected the reverse-forward command, got: %q", hint)
 	}
 }
 
@@ -1046,11 +1046,8 @@ func TestFormatCLICaptureCandidateClientIP(t *testing.T) {
 		Source:    "sshd",
 	}
 	labelUnknown := formatCLICaptureCandidate(cUnknown)
-	if !strings.Contains(labelUnknown, "INBOUND") || !strings.Contains(labelUnknown, "via client") {
-		t.Fatalf("expected inbound via client in label, got %q", labelUnknown)
-	}
-	if strings.Contains(labelUnknown, "@127.0.0.1") {
-		t.Fatalf("label should not contain '@127.0.0.1', got %q", labelUnknown)
+	if labelUnknown != "exit via client · SOCKS ←R 127.0.0.1:10808" {
+		t.Fatalf("expected inbound client label, got %q", labelUnknown)
 	}
 
 	cEmpty := cliSSHCaptureCandidate{
@@ -1062,8 +1059,8 @@ func TestFormatCLICaptureCandidateClientIP(t *testing.T) {
 		Source:    "sshd",
 	}
 	labelEmpty := formatCLICaptureCandidate(cEmpty)
-	if !strings.Contains(labelEmpty, "via client") {
-		t.Fatalf("expected 'via client' in empty host label, got %q", labelEmpty)
+	if labelEmpty != "exit via client · SOCKS ←R 127.0.0.1:10808" {
+		t.Fatalf("expected client label for an empty host, got %q", labelEmpty)
 	}
 
 	cKnown := cliSSHCaptureCandidate{
@@ -1075,8 +1072,8 @@ func TestFormatCLICaptureCandidateClientIP(t *testing.T) {
 		Source:    "sshd",
 	}
 	labelKnown := formatCLICaptureCandidate(cKnown)
-	if !strings.Contains(labelKnown, "via alice@192.168.1.50") {
-		t.Fatalf("expected 'via alice@192.168.1.50' in label, got %q", labelKnown)
+	if labelKnown != "exit via client · SOCKS ←R 127.0.0.1:10808" {
+		t.Fatalf("inbound label should stay on the client exit, got %q", labelKnown)
 	}
 }
 

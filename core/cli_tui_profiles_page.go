@@ -207,30 +207,19 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int, lan
 	for _, profile := range snapshot.SSHProfiles {
 		statusWidth = maxTUIWidth(statusWidth, tuiDisplayWidth(tuiSSHListStatus(profile, language...)))
 	}
-	if snapshot.SSHCaptureKnown {
-		captureStatus := tr("ui.c627c09c14e5")
-		if snapshot.SSHCaptureFound > 0 {
-			captureStatus = fmt.Sprintf(tr("ui.d0782e498713"), snapshot.SSHCaptureFound)
-		}
-		statusWidth = maxTUIWidth(statusWidth, tuiDisplayWidth(captureStatus))
-	}
 	for visualIndex := start; visualIndex < end; visualIndex++ {
 		if visualIndex == 0 {
-			status := "—"
 			color := tuiCyan
 			if snapshot.SSHCaptureKnown {
 				if snapshot.SSHCaptureFound == 0 {
-					status = tr("ui.c627c09c14e5")
 					color = tuiDim
 				} else {
-					status = fmt.Sprintf(tr("ui.d0782e498713"), snapshot.SSHCaptureFound)
 					color = tuiGreen
 				}
 			}
 			row := tuiColumns(width-4,
 				tuiColumn{value: tr("ui.1900b478a586"), width: 18, minimum: 8},
-				tuiColumn{value: status, width: statusWidth, minimum: statusWidth},
-				tuiColumn{value: tr("layout.capture_hint"), width: 32, minimum: 8, optional: true},
+				tuiColumn{value: tr("layout.capture_hint"), width: maxTUIWidth(width-24, 8), minimum: 8},
 			)
 			tuiRow(
 				b,
@@ -247,30 +236,19 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int, lan
 		}
 		profile := snapshot.SSHProfiles[index]
 		status := tr("ui.5541de951552")
-		endpoint := ""
 		color := tuiDim
 		if profile.NeedsUsername {
 			status = tr("ui.58be0d89a72e")
-			endpoint = tr("ui.80cdfd3e3379")
 			color = tuiYellow
 		} else if profile.Connected && profile.Ready {
 			status = tr("ui.1f914c4386c0")
 			if profile.Attached {
 				status = tr("ui.9448242431c8")
 			}
-			endpoint = fmt.Sprintf(tr("ui.89f09a77f737"), profile.SocksPort)
 			color = tuiGreen
 		} else if profile.Connected {
 			status = tr("ui.d84771511dbe")
-			endpoint = fmt.Sprintf(tr("ui.5eec4815da1c"), profile.SocksPort)
 			color = tuiRed
-		} else if profile.LocalPort > 0 {
-			endpoint = fmt.Sprintf(tr("ui.4b8293b7a463"), profile.LocalPort)
-		} else {
-			endpoint = tr("ui.d9b076d2ba45")
-		}
-		if profile.LastError != "" && !(profile.Connected && profile.Ready) {
-			endpoint += " · " + truncateTUI(profile.LastError, 36)
 		}
 		name := truncateTUI(profile.Name, 16)
 		if profile.Default {
@@ -279,7 +257,7 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int, lan
 		row := tuiColumns(width-4,
 			tuiColumn{value: name, width: 18, minimum: 8},
 			tuiColumn{value: status, width: statusWidth, minimum: statusWidth},
-			tuiColumn{value: fmt.Sprintf("%s:%d%s", profile.Destination, profile.Port, endpoint), width: maxTUIWidth(width-24-statusWidth, 8), minimum: 8, optional: true},
+			tuiColumn{value: fmt.Sprintf("%s:%d", profile.Destination, profile.Port), width: maxTUIWidth(width-24-statusWidth, 8), minimum: 8, optional: true},
 		)
 		tuiRow(
 			b,
@@ -317,6 +295,10 @@ func drawTUISSHDashboard(
 	height,
 	profileRows int, language ...string,
 ) {
+	if snapshot.SelectedSSH == tuiSSHCaptureRow {
+		drawTUISSHCapturePanel(b, snapshot, width, height, profileRows, language...)
+		return
+	}
 	if snapshot.SSHDetailName == "" {
 		return
 	}
@@ -326,6 +308,42 @@ func drawTUISSHDashboard(
 	}
 	profile := snapshot.SSHProfiles[index]
 	drawTUISSHDetails(b, snapshot, profile, width, height, profileRows, language...)
+}
+
+func drawTUISSHCapturePanel(
+	b *strings.Builder,
+	snapshot tuiSnapshot,
+	width,
+	height,
+	profileRows int,
+	language ...string,
+) {
+	tr := tuiTranslator(language...)
+	tuiTitle(b, tr("ui.1900b478a586"), tr("layout.capture_hint"), width)
+	fields := make([]tuiField, 0, 3)
+	for _, line := range tuiSSHCaptureLines(snapshot) {
+		fields = append(fields, tuiLabelField(line, ""))
+	}
+	limit := maxTUIWidth(height-(profileRows+3)-3, 1)
+	tuiWriteRows(b, tuiSelectedRows(tuiFieldRows(fields, width), limit), width)
+	tuiEndPanel(b, width)
+}
+
+func tuiSSHCaptureLines(snapshot tuiSnapshot) []string {
+	second := "This machine only sees SOCKS already listening here."
+	third := "ssh -D is captured on the client. ssh -R is captured here."
+	if snapshot.SSHCaptureFound > 0 {
+		return []string{
+			fmt.Sprintf("%d SOCKS on this machine · Enter to attach", snapshot.SSHCaptureFound),
+			second,
+			third,
+		}
+	}
+	first := "Enter scans SOCKS already listening on this machine."
+	if snapshot.SSHCaptureKnown && snapshot.SSHCaptureHint != "" {
+		first = snapshot.SSHCaptureHint
+	}
+	return []string{first, second, third}
 }
 
 func tuiSSHTunnelStatus(profile tuiSSHProfile, language ...string) (string, string) {
@@ -343,6 +361,9 @@ func tuiSSHTunnelStatus(profile tuiSSHProfile, language ...string) (string, stri
 		statusColor = tuiGreen
 	} else if profile.Connected {
 		status = tr("ui.1f1ff003e81e")
+		if profile.SocksPort > 0 {
+			status += fmt.Sprintf(tr("ui.5eec4815da1c"), profile.SocksPort)
+		}
 		if profile.LastError != "" {
 			status += " · " + profile.LastError
 		}
