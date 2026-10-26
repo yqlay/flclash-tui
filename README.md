@@ -47,7 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh |
 
 检查更新用 `flclash update --check`；`.deb` 安装可用 `flclash update` 确认升级。便携安装重新运行上面的便携安装命令。升级保留订阅、SSH 配置和语言偏好；完成后重新打开 TUI。
 
-下面先写 TUI。同一件事的命令放在后半「命令行」。
+前面按 TUI 的顺序写。有的步骤必须再敲一条命令，例如开好 Core 之后用 `flc`，或者 SSH 反代时在 A 上执行 `ssh -R`。这些命令就写在对应步骤旁边。后半「命令行」是同一批命令的完整列表。
 
 ## TUI
 
@@ -67,7 +67,15 @@ curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh |
 
 订阅服务提供流量信息时，**Profiles** 会显示已用量、总额度和到期时间；本地文件或未返回这些信息的订阅显示未知，不会估算额度。silent 模式下不需要把端口暴露给公网或局域网。
 
-要让指定命令走代理，回到终端用后半的 `flc`。`flc codex` 连上之后是这样：
+Core 起来之后，指定命令要在终端前面加 `flc`：
+
+```bash
+flc codex
+flc claude
+flc git clone https://github.com/owner/repository.git
+```
+
+`flc codex` 连上之后是这样：
 
 <p align="center">
   <img src="readme-assets/photo-4.png" alt="flc codex 启动成功" width="920">
@@ -81,7 +89,7 @@ curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh |
 
 ### 桌面 / 全局代理
 
-要让浏览器等普通程序也走代理：在 Dashboard 把模式改成 `rule` 或 `global`，再启用 **System proxy** 或 TUN。无头机优先用后半的 `flc`。
+要让浏览器等普通程序也走代理：在 Dashboard 把模式改成 `rule` 或 `global`，再启用 **System proxy** 或 TUN。无头机仍然用上面的 `flc`，不要开全局代理。
 
 ### SSH
 
@@ -101,7 +109,7 @@ ssh -f -N -R 10808 -p PORT USER@B
 
 不必加 `LD_PRELOAD`。B 上的连接经这条隧道回到 A 的 ssh 进程，该用户的出站会被 TUN 送进 Clash，按 A 的规则自动分流。规则里走直连的地址（例如 `172.16.0.0/12`）不会被套进代理，所以这条 SSH 自己可以连上 B。
 
-然后在 B 的 **SSH** 页选中 **Capture**，按 Enter。列表应出现 `INBOUND`，本机端口是 `127.0.0.1:10808`，流量从 A 出去并按 A 的规则分流。`ssh -D` 的 SOCKS 开在 A 自己的 `127.0.0.1`，要在 A 的 TUI 里 Capture，B 看不到。
+然后在 B 的 **SSH** 页选中 **Capture**，按 Enter。不想开界面时，同一件事是 `flclash ssh attach`。列表应出现 `INBOUND`，本机端口是 `127.0.0.1:10808`，流量从 A 出去并按 A 的规则分流。`ssh -D` 的 SOCKS 开在 A 自己的 `127.0.0.1`，要在 A 上 Capture，B 看不到。
 
 ### 退出
 
