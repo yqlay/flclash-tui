@@ -45,7 +45,7 @@ If GitHub is unstable, download the matching `.deb` or `.tar.gz` from [Releases]
 
 Use `flclash update --check` to check for updates. For `.deb` installations, run `flclash update` and confirm; for portable installations, rerun the portable installer above. Upgrades preserve profiles, SSH settings, and the language preference. Reopen the TUI afterwards.
 
-The first half follows the TUI. Some steps still need one command beside them, such as `flc` after Core is up, or `ssh -R` on A for the SSH reverse proxy. **Command line** below is the full list of those commands.
+The first half is the TUI. The same jobs as shell commands are in **Command line** below.
 
 ## TUI
 
@@ -65,15 +65,7 @@ Headless hosts default to `silent`: system proxy and TUN stay off, and only comm
 
 When the subscription provider supplies usage metadata, **Profiles** shows used traffic, quota, and expiry. Local files or subscriptions without that metadata remain unknown; the app does not guess quotas. Silent mode does not expose a port on the LAN or the public internet.
 
-After Core is up, prefix the command you want proxied with `flc`:
-
-```bash
-flc codex
-flc claude
-flc git clone https://github.com/owner/repository.git
-```
-
-After `flc codex` connects:
+To send one command through the proxy, use `flc` in the command-line half below. After `flc codex` connects:
 
 <p align="center">
   <img src="readme-assets/photo-4.png" alt="flc codex connected successfully" width="920">
@@ -87,7 +79,7 @@ The Dashboard traffic graph updates. **Connections** lists proxied and SSH rever
 
 ### Desktop / system-wide proxy
 
-To send ordinary apps such as a browser through the proxy, switch Dashboard mode to `rule` or `global`, then enable **System proxy** or TUN. On a headless host, keep using `flc` above instead of a system-wide proxy.
+To send ordinary apps such as a browser through the proxy, switch Dashboard mode to `rule` or `global`, then enable **System proxy** or TUN. On headless hosts, prefer `flc` in the command-line half.
 
 ### SSH
 
@@ -107,7 +99,7 @@ ssh -f -N -R 10808 -p PORT USER@B
 
 Do not add `LD_PRELOAD`. Connections from B return to the ssh process on A. TUN sends that user's outbound traffic into Clash, which splits it with A's rules. Addresses matched to direct (for example `172.16.0.0/12`) are not proxied, so this SSH session can reach B.
 
-On B, select **Capture** on the **SSH** page and press Enter. Without the screen, the same step is `flclash ssh attach`. The list should show `INBOUND`. The SOCKS port on B is `127.0.0.1:10808`, and traffic leaves through A under A's rules. `ssh -D` listens on A's own `127.0.0.1`; capture that on A. B cannot see it.
+On B, select **Capture** on the **SSH** page and press Enter. The list should show `INBOUND`. The SOCKS port on B is `127.0.0.1:10808`, and traffic leaves through A under A's rules. `ssh -D` listens on A's own `127.0.0.1`; capture that in A's TUI. B cannot see it.
 
 ### Exit
 
