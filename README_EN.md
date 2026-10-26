@@ -138,22 +138,22 @@ Run FlClash only on the machine whose traffic needs proxying, and use another al
 
 ## SSH reverse proxy
 
-B is the machine whose programs need a proxy. A is the machine that already has internet and has FlClash TUN enabled. On A, set the mode to `rule` or `global`, turn TUN on, then:
+B is the machine that needs a proxy. On A, turn TUN on (`rule` or `global`), then open SOCKS on B:
 
 ```bash
 ssh -f -N -R 10808 -p PORT USER@B
 ```
 
-Do not add `LD_PRELOAD`. Connections from B return to the ssh process on A. TUN sends that user's outbound traffic into Clash, which splits it with A's rules. Addresses matched to direct (for example `172.16.0.0/12`) are not proxied, so this SSH session can reach B.
+No `LD_PRELOAD`. Traffic leaves through A and follows A's rules. Direct ranges such as `172.16.0.0/12` stay direct.
 
-Then on B, use Capture on the SSH page, or:
+On B, use Capture on the SSH page, or:
 
 ```bash
 flclash ssh attach --list
 flclash ssh attach
 ```
 
-The list should show `INBOUND`. The SOCKS port on B is `127.0.0.1:10808`, and traffic leaves through A under A's rules. `ssh -D` listens on A's own `127.0.0.1`; capture that on A. B cannot see it.
+The list should show `INBOUND`. The port on B is `127.0.0.1:10808`. `ssh -D` listens on A's own `127.0.0.1`; run `flclash ssh attach` on A. B cannot see it.
 
 ```bash
 flclash ssh import                 # import Host entries from ~/.ssh/config
