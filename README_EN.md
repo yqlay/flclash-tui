@@ -45,11 +45,7 @@ If GitHub is unstable, download the matching `.deb` or `.tar.gz` from [Releases]
 
 Use `flclash update --check` to check for updates. For `.deb` installations, run `flclash update` and confirm; for portable installations, rerun the portable installer above. Upgrades preserve profiles, SSH settings, and the language preference. Reopen the TUI afterwards.
 
-The first half is the TUI. The same jobs as shell commands are in **Command line** below.
-
-## TUI
-
-### Import a subscription and pick a node
+## Step 2: Import a subscription and pick a node
 
 Run `flclash` to open the TUI. In **Profiles**, import a subscription URL or local file, select it, and press Enter to activate. Then in **Proxies** pick a group and node (press `d` to test delay). Dashboard should stay on `silent` so other programs are left alone. Focus **Core** and press Enter to start it. Other modes also need **System proxy**.
 
@@ -63,86 +59,120 @@ Run `flclash` to open the TUI. In **Profiles**, import a subscription URL or loc
 
 Headless hosts default to `silent`: system proxy and TUN stay off, and only commands you prefix with `flc` use the proxy.
 
-When the subscription provider supplies usage metadata, **Profiles** shows used traffic, quota, and expiry. Local files or subscriptions without that metadata remain unknown; the app does not guess quotas. Silent mode does not expose a port on the LAN or the public internet.
+When the subscription provider supplies usage metadata, **Profiles** shows used traffic, quota, and expiry. Local files or subscriptions without that metadata remain unknown; the app does not guess quotas.
 
-To send one command through the proxy, use `flc` in the command-line half below. After `flc codex` connects:
+```bash
+flc example_command
+```
+
+If the command needs sudo:
+
+```bash
+flc sudo -E example_command
+```
+
+`-E` keeps the proxy environment variables under sudo.
+
+Silent mode uses an authenticated private loopback listener. You do not need to expose a port on the LAN or the public internet. If the listener, Core, or node is down, `flc` errors and refuses to run instead of sending the command out direct.
+
+## Step 3: Run Codex or Claude
+
+```bash
+flc codex
+flc claude
+```
+
+After `flc codex` connects:
 
 <p align="center">
   <img src="readme-assets/photo-4.png" alt="flc codex connected successfully" width="920">
 </p>
 
-The Dashboard traffic graph updates. **Connections** lists proxied and SSH reverse-proxy sessions (`f` switches proxy / ssh, `/` searches, Enter opens details, `d` closes the selected flow, `x` closes every flow in the selected source). **History** uses `/` to search, `f` for all / active / completed, `o` for the source, and `x` to clear that source's history. **Logs** uses `/` to search, `f` to filter levels, Enter for the full record, `e` to export, and `x` to clear. Closing a flow does not erase history.
+The Dashboard traffic graph updates, and **Connections** lists both proxied and SSH reverse-proxy sessions (`f` filters proxy / ssh):
 
 <p align="center">
   <img src="readme-assets/photo-5.png" alt="Connections page showing proxied sessions" width="920">
 </p>
 
-### Desktop / system-wide proxy
+`flc COMMAND` sets uppercase and lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` for that command only (and for children of `flc bash`). The same wrapper works for ordinary tools:
 
-To send ordinary apps such as a browser through the proxy, switch Dashboard mode to `rule` or `global`, then enable **System proxy** or TUN. On headless hosts, prefer `flc` in the command-line half.
+```bash
+flc git clone https://github.com/owner/repository.git
+flc npm install
+flc curl https://example.com
+flc sh -c 'git fetch --all && npm ci'
+```
 
-### SSH
+To run several commands in a row without repeating `flc`, open a proxied shell:
 
-Open the TUI on the machine whose traffic needs a proxy. On the **SSH** page, ↑↓ only moves the highlight, Enter connects or disconnects, `u` stars the default, `e` edits, and `x` deletes. The first row is **Capture**. Enter or `a` attaches a SOCKS listener already on this machine and does not open a new login. A plain interactive `ssh` without ControlMaster, `-D`, or `-R` does not appear.
+```bash
+flc bash
 
-Speed and the traffic graph count only that tunnel's local forwarding. Dashboard counts Mihomo Core separately. A connected profile can be inspected, but disconnect it before saving edits. Detail views use PgUp/PgDn. Public IP is checked at startup, after the route changes, or on a manual refresh. Delay and speed run only when you ask, and a route change drops the old result. If a settings draft conflicts, note the values you want, press Esc, then uppercase `R` to reload. `?` lists keys. `Ctrl+N` opens notifications. `q` leaves the screen and cancels an unfinished connect. A tunnel that is already up stays up.
+# child commands inside this shell inherit the proxy
+codex
+claude
+git push
+```
 
-### SSH reverse proxy
+Leave the shell and the environment variables disappear. Other shells, system services, Docker containers, and existing connections for this user are untouched.
 
-B is the machine whose programs need a proxy. A is the machine that already has internet and has FlClash TUN enabled.
+## When you are done
 
-On A's TUI, set the mode to `rule` or `global` and turn TUN on. Then in a terminal on A:
+```bash
+flclash exit    # stop this user's frontends, Backend, Core, and SSH
+```
+
+Or open the TUI with `flclash` and press `Ctrl+C`.
+
+No proxied shell environment is left behind. Next time, start `flclash` again, then run `flc codex` or `flc claude`.
+
+Press `q` in the TUI, or close that terminal, to leave only the current frontend. Backend stays up, so `flc` still works.
+
+## Desktop / system-wide proxy
+
+To send ordinary apps such as a browser through the proxy, switch Dashboard mode to `rule` or `global`, then enable **System proxy** or TUN. On headless hosts, prefer `flc` above.
+
+## SSH proxy
+
+Run FlClash only on the machine whose traffic needs proxying, and use another already-online host as the SSH peer. `flc ssh COMMAND` then leaves through that host's network. The local machine does not open a public proxy port; the peer only needs SSH. If that host already has an OpenSSH ControlMaster or an `ssh -D` / VS Code SOCKS listener, `connect` / `attach` reuse it instead of opening a second login. A plain interactive `ssh` without ControlMaster, `-D`, or `-R` cannot be captured.
+
+## SSH reverse proxy
+
+B is the machine running FlClash, the one whose programs need a proxy. On A, the machine that already has internet, open the SOCKS5 listener on B:
 
 ```bash
 ssh -f -N -R 10808 -p PORT USER@B
 ```
 
-Do not add `LD_PRELOAD`. Connections from B return to the ssh process on A. TUN sends that user's outbound traffic into Clash, which splits it with A's rules. Addresses matched to direct (for example `172.16.0.0/12`) are not proxied, so this SSH session can reach B.
-
-On B, select **Capture** on the **SSH** page and press Enter. The list should show `INBOUND`. The SOCKS port on B is `127.0.0.1:10808`, and traffic leaves through A under A's rules. `ssh -D` listens on A's own `127.0.0.1`; capture that in A's TUI. B cannot see it.
-
-### Exit
-
-`Ctrl+C` stops this user's frontends, Backend, Core, and SSH. `q`, or closing that terminal, leaves only the screen. The Backend stays up.
-
-## Command line
-
-`flc COMMAND` sets uppercase and lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` for that command only, and for children of `flc bash`. If the listener, Core, or node is down, `flc` errors and refuses to run instead of going direct.
+Then on B:
 
 ```bash
-flc example_command
-flc sudo -E example_command          # -E keeps the proxy variables under sudo
-flc codex
-flc claude
-flc git clone https://github.com/owner/repository.git
-flc npm install
-flc curl https://example.com
-flc sh -c 'git fetch --all && npm ci'
-flc bash                             # children inherit the proxy; the variables disappear on exit
+flclash ssh attach --list
+flclash ssh attach
 ```
 
-Other shells, system services, Docker containers, and existing connections are untouched.
+The list should show `INBOUND`. The SOCKS port on B is `127.0.0.1:10808`, and traffic leaves through A. `ssh -D` listens on A's own `127.0.0.1`; capture that on A. B cannot see it.
 
 ```bash
-flclash ssh import                   # import Host entries from ~/.ssh/config
+flclash ssh import                 # import Host entries from ~/.ssh/config
 flclash ssh add home host --user user --password --local-port 1080
 flclash ssh default home
-flclash ssh attach --list
-flclash ssh attach                   # capture a live ControlMaster, ssh -D / VS Code SOCKS, or ssh -R; never start a new login
-flc ssh curl https://example.com     # opens the default profile; rebuilds a broken tunnel
-flc ssh -d curl https://example.com  # direct only when the host FlClash TUN is off
+flclash ssh attach                 # capture a live ControlMaster, ssh -D / VS Code SOCKS, or ssh -R reverse proxy; never start a new login
+flc ssh curl https://example.com   # opens the default profile; rebuilds a broken tunnel
+
+# Follow host policy by default; -d allows direct only when the host FlClash TUN is off
+flc ssh -d curl https://example.com
+
 flclash ssh add school host --user user --jump bastion --identity ~/.ssh/id_ed25519 --passphrase --password
-flclash ssh test
-flclash ssh disconnect home          # SSH only; flclash backend stop leaves tunnels up
+flclash ssh test                   # open the tunnel and run a SOCKS5 handshake
+flclash ssh disconnect home        # SSH only; flclash backend stop leaves tunnels up
 ```
 
-With no tunnel up, `flc ssh` connects the default (or only) profile and keeps it persistent. `flc ssh -d` refuses when the remote transparent TUN is on, the state is unknown, or the version is incompatible. Under WSL, do not use a `/mnt/c/...` key that shows mode `0777`; copy it to `~/.ssh/` and `chmod 600` first.
+With no tunnel up, `flc ssh` connects the default (or only) profile and keeps it persistent. The TUI **SSH** page manages the same profiles; press `u` to star the default. `flc ssh -d` refuses when the remote transparent TUN is on, the state is unknown, or the version is incompatible. Under WSL, do not use a `/mnt/c/...` key that shows mode `0777`; copy it to `~/.ssh/` and `chmod 600` first.
 
-The reverse command after TUN is on is the same as in the TUI section: `ssh -f -N -R 10808 -p PORT USER@B`. On B, use `flclash ssh attach` above.
+In the SSH profile list, ↑↓ only moves the highlight; Enter connects or switches the dashboard below. SSH speed and traffic measure local forwarding through that tunnel; the main Dashboard measures Mihomo Core separately. Connected profiles can be inspected, but must be disconnected before saving edits.
 
-```bash
-flclash exit                         # stop this user's frontends, Backend, Core, and SSH
-```
+SSH fields, key passphrases, Jump, and Dashboard probes are documented in [CLI_LINUX.md](CLI_LINUX.md).
 
 ## Common commands
 
@@ -167,7 +197,19 @@ flclash backend stop               # stop proxy Backend+Core; SSH stays
 flclash exit                       # stop frontends, Backend, Core, and SSH
 ```
 
-Proxy groups/list, nodes, select, delay, speed, and providers accept options before or after names and support `--json`. `delay --group` and `speed --group` measure each node in the group; speed requires the local Backend. `settings` changes allow-lan, ipv6, unified-delay, tcp-concurrent, log-level, and tun-scope. Run applications with `flc COMMAND`, and SSH with `flc ssh COMMAND`. History keeps up to 500 entries. `flclash logs` shows Backend logs. `flclash history show` shows history.
+Proxy groups/list, nodes, select, delay, speed, and providers accept options before or after names and support `--json`. `delay --group` and `speed --group` measure each node in the group; speed requires the local Backend. `settings` changes allow-lan, ipv6, unified-delay, tcp-concurrent, log-level, and tun-scope. Run applications using `flc COMMAND`, or `flc ssh COMMAND` for SSH.
+
+In the TUI, `q` exits the current frontend and cancels its unfinished SSH connects, but preserves committed persistent tunnels; `Ctrl+C` is a full exit. Dashboard owns Core, mode, flc, proxy port, TUN, and System proxy. `?` lists keys; `Ctrl+N` opens notifications.
+
+## Connections, history, and logs
+
+- **Connections**: `/` searches, `f` selects mixed / proxy / ssh, Enter opens details, `d` closes the selected flow, and `x` closes all flows in the selected source after confirmation. Closing flows does not erase history.
+- **History**: `/` searches, `f` selects all / active / completed, `o` selects the source, Enter opens details, and `x` clears that source's history after confirmation without closing flows. Up to 500 entries persist across restarts.
+- **Logs**: Backend logs and current frontend events are merged. `/` searches, `f` filters levels, Enter opens the complete record, `e` exports, and `x` clears after confirmation. Refreshes preserve filters and detail state.
+
+These detail views support PgUp/PgDn and adapt to terminal resizing. Public IP checks run at startup, after route changes, or on manual refresh; latency and speed checks run on demand. Changing the route invalidates old results without starting periodic background speed tests.
+
+If another frontend changes the configuration, a conflicting settings draft keeps your input and refuses to overwrite the newer state. Note any values you want to keep, cancel input with Esc, then press uppercase `R` to reload and edit again. Reload discards the old draft.
 
 Profile import accepts Mihomo/Clash YAML, URI lists and Base64 wrappers, SIP008, sing-box/Xray JSON, and common Surge/Quantumult X/Loon proxy lines. An unsupported or malformed node rejects the whole import instead of being dropped silently.
 
