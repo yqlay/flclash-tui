@@ -140,7 +140,7 @@ TUI 里按 `q` 或关掉那个终端，只退出当前界面，Backend 还在，
 
 ## SSH 反代
 
-B 是需要走代理的那台机器。A 开好 TUN（`rule` 或 `global`）后，把 SOCKS 开在 B 本机：
+B 是需要走代理的那台机器。A 开好 TUN（`rule` 或 `global`）后：
 
 ```bash
 ssh -f -N -R 10808 -p PORT USER@B
@@ -155,7 +155,7 @@ flclash ssh attach --list
 flclash ssh attach
 ```
 
-列表应出现 `INBOUND`，本机端口是 `127.0.0.1:10808`。`ssh -D` 的 SOCKS 开在 A 自己的 `127.0.0.1`，要在 A 上执行 `flclash ssh attach`，B 看不到。
+列表应出现 `INBOUND`，代理是 attach 打印的 `http://127.0.0.1:端口`。`ssh -D` 开在 A 自己的 `127.0.0.1`，要在 A 上 attach，B 看不到。
 
 ```bash
 flclash ssh import                 # 从 ~/.ssh/config 导入 Host

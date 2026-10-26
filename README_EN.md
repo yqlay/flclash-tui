@@ -138,7 +138,7 @@ Run FlClash only on the machine whose traffic needs proxying, and use another al
 
 ## SSH reverse proxy
 
-B is the machine that needs a proxy. On A, turn TUN on (`rule` or `global`), then open SOCKS on B:
+B is the machine that needs a proxy. On A, turn TUN on (`rule` or `global`), then:
 
 ```bash
 ssh -f -N -R 10808 -p PORT USER@B
@@ -153,7 +153,7 @@ flclash ssh attach --list
 flclash ssh attach
 ```
 
-The list should show `INBOUND`. The port on B is `127.0.0.1:10808`. `ssh -D` listens on A's own `127.0.0.1`; run `flclash ssh attach` on A. B cannot see it.
+The list should show `INBOUND`. The proxy is the `http://127.0.0.1:PORT` that attach prints. `ssh -D` listens on A's own `127.0.0.1`; attach on A. B cannot see it.
 
 ```bash
 flclash ssh import                 # import Host entries from ~/.ssh/config
