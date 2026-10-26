@@ -47,9 +47,13 @@ curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh |
 
 检查更新用 `flclash update --check`；`.deb` 安装可用 `flclash update` 确认升级。便携安装重新运行上面的便携安装命令。升级保留订阅、SSH 配置和语言偏好；完成后重新打开 TUI。
 
-## 第二步：导入订阅并选择节点
+下面先写 TUI。同一件事的命令放在后半「命令行」。
 
-命令行敲 `flclash` 回车打开 TUI。在 **Profiles** 导入订阅 URL 或本地文件，选中该 profile 按 Enter 激活，随后在 **Proxies** 选择代理组和节点（选中节点后可按 `d` 测延迟）。Dashboard 推荐 `silent` 模式（不会干扰其他程序），然后选中 **Core** 按 Enter 启动（其他模式还需要启动 **System proxy**）。
+## TUI
+
+### 导入订阅并选择节点
+
+运行 `flclash` 打开 TUI。在 **Profiles** 导入订阅 URL 或本地文件，选中该 profile 按 Enter 激活，随后在 **Proxies** 选择代理组和节点（选中节点后可按 `d` 测延迟）。Dashboard 推荐 `silent` 模式（不会干扰其他程序），然后选中 **Core** 按 Enter 启动（其他模式还需要启动 **System proxy**）。
 
 <p align="center">
   <img src="readme-assets/photo-3.png" alt="选中 Core，按 Enter 在 silent 模式启动" width="920">
@@ -61,86 +65,35 @@ curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh |
 
 无头机器默认使用 `silent` 模式：系统代理和 TUN 都保持关闭，只有显式在命令前面加上 `flc` 的命令会走代理。
 
-订阅服务提供流量信息时，**Profiles** 会显示已用量、总额度和到期时间；本地文件或未返回这些信息的订阅显示未知，不会估算额度。
+订阅服务提供流量信息时，**Profiles** 会显示已用量、总额度和到期时间；本地文件或未返回这些信息的订阅显示未知，不会估算额度。silent 模式下不需要把端口暴露给公网或局域网。
 
-```bash
-flc example_command
-```
-
-如果要加 sudo：
-
-```bash
-flc sudo -E example_command
-```
-
-这里的 `-E` 是让 sudo 继承环境变量，以便走代理。
-
-silent 模式下 FlClash 使用认证后的私有 loopback listener；不需要把端口暴露给公网或局域网。若入口、Core 或节点不可用，`flc` 会报错并拒绝执行，不会把命令交给直连网络。
-
-## 第三步：直接运行 Codex 或 Claude
-
-```bash
-flc codex
-flc claude
-```
-
-`flc codex` 连上服务器之后是这样：
+要让指定命令走代理，回到终端用后半的 `flc`。`flc codex` 连上之后是这样：
 
 <p align="center">
   <img src="readme-assets/photo-4.png" alt="flc codex 启动成功" width="920">
 </p>
 
-可以在 Dashboard 上看流量图，也可以在 **Connections** 里看到走代理和 SSH 反代的具体连接（`f` 可过滤 proxy / ssh）：
+在 Dashboard 上看流量图。**Connections** 里可以看到走代理和 SSH 反代的连接（`f` 切换 proxy / ssh，`/` 搜索，Enter 看详情，`d` 关闭选中，`x` 关闭当前来源的全部连接）。**History** 用 `/` 搜索，`f` 切换全部 / 活跃 / 已结束，`o` 切换来源，`x` 清除当前来源的历史。**Logs** 用 `/` 搜索，`f` 筛选级别，Enter 看完整内容，`e` 导出，`x` 清空。关闭连接不会删历史。
 
 <p align="center">
   <img src="readme-assets/photo-5.png" alt="Connections 里走代理的连接" width="920">
 </p>
 
-`flc COMMAND` 会仅为这条命令（以及 `flc bash` 里的子进程）设置大写和小写的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。同样适用于常见开发工具：
+### 桌面 / 全局代理
 
-```bash
-flc git clone https://github.com/owner/repository.git
-flc npm install
-flc curl https://example.com
-flc sh -c 'git fetch --all && npm ci'
-```
+要让浏览器等普通程序也走代理：在 Dashboard 把模式改成 `rule` 或 `global`，再启用 **System proxy** 或 TUN。无头机优先用后半的 `flc`。
 
-如果要连续运行多个命令，不必重复输入 `flc`，可以开一个代理 shell：
+### SSH
 
-```bash
-flc bash
+只在需要被代理的那台机器上打开 TUI。**SSH** 页 ↑↓ 只移动高亮，Enter 连接或断开，`u` 把当前项标为默认，`e` 编辑，`x` 删除。第一行 **Capture** 按 Enter 或 `a`，接管这台机器上已经在听的 SOCKS，不新开登录。普通交互式 `ssh` 没有 ControlMaster、`-D` 或 `-R` 时不会出现。
 
-# 这个 shell 内的子命令继承代理环境
-codex
-claude
-git push
-```
+速度和流量图只统计这条隧道的本地转发。Dashboard 统计 Mihomo Core，二者独立。连接中的配置可以查看，保存修改前要先断开。详情可用 PgUp/PgDn。公网 IP 在启动、出口变化或手动刷新时检查；延迟和测速手动触发，切换出口后旧结果失效。多窗口如果提示设置草稿冲突，先记下要保留的值，Esc 取消，再按大写 `R` 重载。`?` 看快捷键，`Ctrl+N` 看通知。`q` 退出界面并取消还没完成的连接，已经连上的隧道保留。
 
-退出该 shell 后环境变量立刻消失；当前用户的其他 shell、系统服务、Docker 容器和已有连接不会受影响。
+### SSH 反代
 
-## 用完后关闭
+B 是需要走代理的那台机器。A 是已经能上网、并且打开了 FlClash TUN 的机器。
 
-```bash
-flclash exit    # 停止当前用户的前端、Backend、Core 和 SSH
-```
-
-或者 `flclash` 进入 TUI 后按 `Ctrl+C`，也可以结束程序。
-
-不会残留 shell 代理环境。下次启动后，重新运行 `flclash`，再用 `flc codex` 或 `flc claude` 即可。
-
-TUI 里按 `q` 或关掉那个终端，只退出当前界面，Backend 还在，`flc` 仍可用。
-
-## 桌面 / 全局代理
-
-要让浏览器等普通程序也走代理：在 Dashboard 把模式改成 `rule` 或 `global`，再启用 **System proxy** 或 TUN。无头机优先用上面的 `flc`。
-
-## SSH 代理
-
-只在**需要被代理的那台机器**上运行 FlClash，把另一台已能上网的机器当作 SSH host。之后 `flc ssh COMMAND` 会把这条命令从 host 的网络出口送出去。本机不开放公网代理端口，SSH host 只需提供 SSH 服务。若该 host 已有 OpenSSH ControlMaster 或 `ssh -D` / VS Code SOCKS，`connect` / `attach` 会复用它，而不是再登一次。普通交互式 `ssh` 没有 ControlMaster、`-D` 或 `-R` 时无法捕捉。
-
-## SSH 反代
-
-B 是需要走代理的那台机器。A 是已经能上网、并且打开了 FlClash TUN 的机器。在 A 上把模式设成 `rule` 或 `global`，打开 TUN，然后：
+在 A 的 TUI 里把模式设成 `rule` 或 `global`，打开 TUN。然后在 A 的终端执行：
 
 ```bash
 ssh -f -N -R 10808 -p PORT USER@B
@@ -148,35 +101,50 @@ ssh -f -N -R 10808 -p PORT USER@B
 
 不必加 `LD_PRELOAD`。B 上的连接经这条隧道回到 A 的 ssh 进程，该用户的出站会被 TUN 送进 Clash，按 A 的规则自动分流。规则里走直连的地址（例如 `172.16.0.0/12`）不会被套进代理，所以这条 SSH 自己可以连上 B。
 
-然后在 B 上用 SSH 页的 Capture，或：
+然后在 B 的 **SSH** 页选中 **Capture**，按 Enter。列表应出现 `INBOUND`，本机端口是 `127.0.0.1:10808`，流量从 A 出去并按 A 的规则分流。`ssh -D` 的 SOCKS 开在 A 自己的 `127.0.0.1`，要在 A 的 TUI 里 Capture，B 看不到。
+
+### 退出
+
+`Ctrl+C` 停止当前用户的前端、Backend、Core 和 SSH。`q` 或关掉这个终端只退出界面，Backend 还在。
+
+## 命令行
+
+`flc COMMAND` 只给这一条命令（以及 `flc bash` 里的子进程）设置大写和小写的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`。入口、Core 或节点不可用时，`flc` 报错并拒绝执行，不会改走直连。
 
 ```bash
-flclash ssh attach --list
-flclash ssh attach
+flc example_command
+flc sudo -E example_command          # -E 让 sudo 继承代理变量
+flc codex
+flc claude
+flc git clone https://github.com/owner/repository.git
+flc npm install
+flc curl https://example.com
+flc sh -c 'git fetch --all && npm ci'
+flc bash                             # 这个 shell 里的子命令继承代理；退出后变量消失
 ```
 
-列表应出现 `INBOUND`，本机端口是 `127.0.0.1:10808`，流量从 A 出去并按 A 的规则分流。`ssh -D` 的 SOCKS 开在 A 自己的 `127.0.0.1`，要在 A 上执行 `flclash ssh attach`，B 看不到。
+其他 shell、系统服务、Docker 容器和已有连接不受影响。
 
 ```bash
-flclash ssh import                 # 从 ~/.ssh/config 导入 Host
+flclash ssh import                   # 从 ~/.ssh/config 导入 Host
 flclash ssh add home host --user user --password --local-port 1080
 flclash ssh default home
-flclash ssh attach                 # 捕捉已有 ControlMaster、ssh -D / VS Code SOCKS 或 ssh -R 反向代理，不新建登录
-flc ssh curl https://example.com   # 自动连接默认配置；断线会重建隧道
-
-# 默认交给 host 的网络策略；-d 只在 host 的 FlClash TUN 关闭时允许直连
-flc ssh -d curl https://example.com
-
+flclash ssh attach --list
+flclash ssh attach                   # 捕捉已有 ControlMaster、ssh -D / VS Code SOCKS 或 ssh -R，不新建登录
+flc ssh curl https://example.com     # 自动连接默认配置；断线会重建隧道
+flc ssh -d curl https://example.com  # 仅当 host 的 FlClash TUN 关闭时允许直连
 flclash ssh add school host --user user --jump bastion --identity ~/.ssh/id_ed25519 --passphrase --password
-flclash ssh test                   # 打开隧道并做 SOCKS5 握手
-flclash ssh disconnect home        # 只关 SSH；flclash backend stop 不停隧道
+flclash ssh test
+flclash ssh disconnect home          # 只关 SSH；flclash backend stop 不停隧道
 ```
 
-没有已打开的隧道时，`flc ssh` 会连接默认（或唯一）配置并保持为持久隧道。TUI 的 **SSH** 页同样能管理配置；`u` 将当前项标为默认。`flc ssh -d` 在远端透明 TUN 开启、状态未知或版本不兼容时会拒绝执行。WSL 不要直接用权限显示为 `0777` 的 `/mnt/c/...` 私钥，先复制到 `~/.ssh/` 并 `chmod 600`。
+没有已打开的隧道时，`flc ssh` 会连接默认（或唯一）配置并保持为持久隧道。`flc ssh -d` 在远端透明 TUN 开启、状态未知或版本不兼容时会拒绝执行。WSL 不要直接用权限显示为 `0777` 的 `/mnt/c/...` 私钥，先复制到 `~/.ssh/` 并 `chmod 600`。
 
-SSH 配置列表的 ↑↓ 只移动高亮，Enter 才连接或切换下方仪表盘。SSH 页的速度和流量图统计该隧道的本地转发流量；Dashboard 统计 Mihomo Core，二者独立。连接中的配置可以查看，但保存修改前需要先断开。
+A 上打开 TUN 后的反代命令与 TUI 一节相同：`ssh -f -N -R 10808 -p PORT USER@B`。B 上用上面的 `flclash ssh attach`。
 
-完整 SSH 字段、密钥口令、Jump 和 Dashboard 测速见 [CLI_LINUX.md](CLI_LINUX.md)。
+```bash
+flclash exit                         # 停止当前用户的前端、Backend、Core 和 SSH
+```
 
 ## 常用命令
 
@@ -201,19 +169,7 @@ flclash backend stop               # 停代理 Backend+Core，SSH 还在
 flclash exit                       # 完全退出前端、Backend、Core 和 SSH
 ```
 
-`proxy groups/list、nodes、select、delay、speed、providers` 支持参数前后放置选项及 `--json`；`delay --group` 和 `speed --group` 按组内节点逐个测量，测速 `speed` 需要本机 Backend。`settings` 修改 allow-lan、ipv6、unified-delay、tcp-concurrent、log-level 和 tun-scope。运行应用仍用 `flc COMMAND`，SSH 用 `flc ssh COMMAND`。
-
-TUI：`q` 只退当前界面，并取消尚未完成的 SSH 连接；已连接的持久隧道保留。`Ctrl+C` 全停；Dashboard 管 Core、模式、flc、端口、TUN 和 System proxy；`?` 查看快捷键；`Ctrl+N` 查看通知。
-
-## 连接、历史和日志
-
-- **Connections**：`/` 搜索，`f` 切换 mixed / proxy / ssh 来源，Enter 查看详情，`d` 关闭选中连接，`x` 关闭当前来源的全部连接（需确认）。关闭连接不会删除历史。
-- **History**：`/` 搜索，`f` 切换全部 / 活跃 / 已结束，`o` 切换来源，Enter 查看详情，`x` 清除当前来源的历史（需确认），不关闭连接。记录持久保存，最多 500 条。
-- **Logs**：合并后端日志和当前前端事件；`/` 搜索，`f` 筛选级别，Enter 查看完整内容，`e` 导出，`x` 确认清空。自动刷新保留搜索条件和详情状态。
-
-上述详情支持 PgUp/PgDn 滚动；调整终端大小时自动适配。公网 IP 在启动、出口变化或手动刷新时检查；延迟和测速由手动操作触发，切换出口后旧结果失效，不会后台周期性测速。
-
-多窗口操作时，如果提示设置草稿冲突，输入会保留，过期修改不会覆盖新配置。先记下需要保留的值，Esc 取消输入，再按大写 `R` 重载当前配置并重新编辑；重载会丢弃旧草稿。
+`proxy groups/list、nodes、select、delay、speed、providers` 支持参数前后放置选项及 `--json`；`delay --group` 和 `speed --group` 按组内节点逐个测量，测速 `speed` 需要本机 Backend。`settings` 修改 allow-lan、ipv6、unified-delay、tcp-concurrent、log-level 和 tun-scope。运行应用用 `flc COMMAND`，SSH 用 `flc ssh COMMAND`。历史最多保留 500 条。`flclash logs` 看后端日志，`flclash history show` 看历史。
 
 订阅导入兼容 Mihomo/Clash YAML、节点 URI 列表及其 Base64、SIP008、sing-box/Xray JSON，以及常见 Surge/Quantumult X/Loon 节点行。不支持或损坏的节点会中止整次导入，不会静默漏掉。
 
