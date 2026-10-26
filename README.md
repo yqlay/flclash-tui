@@ -140,20 +140,22 @@ TUI 里按 `q` 或关掉那个终端，只退出当前界面，Backend 还在，
 
 ## SSH 反代
 
-B 是跑着 FlClash、需要走代理的那台机器。在已经能上网的 A 上把 SOCKS5 开在 B 本机：
+B 是需要走代理的那台机器。A 是已经能上网、并且打开了 FlClash TUN 的机器。在 A 上把模式设成 `rule` 或 `global`，打开 TUN，然后：
 
 ```bash
 ssh -f -N -R 10808 -p PORT USER@B
 ```
 
-然后在 B 上：
+不必加 `LD_PRELOAD`。B 上的连接经这条隧道回到 A 的 ssh 进程，该用户的出站会被 TUN 送进 Clash，按 A 的规则自动分流。规则里走直连的地址（例如 `172.16.0.0/12`）不会被套进代理，所以这条 SSH 自己可以连上 B。
+
+然后在 B 上用 SSH 页的 Capture，或：
 
 ```bash
 flclash ssh attach --list
 flclash ssh attach
 ```
 
-列表应出现 `INBOUND`，本机端口是 `127.0.0.1:10808`，流量从 A 出去。`ssh -D` 的 SOCKS 开在 A 自己的 `127.0.0.1`，要在 A 上执行 `flclash ssh attach`，B 看不到。
+列表应出现 `INBOUND`，本机端口是 `127.0.0.1:10808`，流量从 A 出去并按 A 的规则分流。`ssh -D` 的 SOCKS 开在 A 自己的 `127.0.0.1`，要在 A 上执行 `flclash ssh attach`，B 看不到。
 
 ```bash
 flclash ssh import                 # 从 ~/.ssh/config 导入 Host
