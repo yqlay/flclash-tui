@@ -737,6 +737,47 @@ func TestDiscoverReverseSocksExcludesProxyEngine(t *testing.T) {
 	}
 }
 
+func TestDiscoverReverseSocksOwnerComm(t *testing.T) {
+	for _, test := range []struct {
+		owner string
+		want  int
+	}{
+		{owner: "sshd", want: 1},
+		{owner: "sshd-session", want: 1},
+		{owner: "python", want: 0},
+	} {
+		t.Run(test.owner, func(t *testing.T) {
+			upstream := listenCLITestTCP(t)
+			defer upstream.Close()
+			go acceptCLITestSOCKS(upstream)
+			port := upstream.Addr().(*net.TCPAddr).Port
+
+			previousSSHD := hasSSHDProcess
+			previousPorts := collectLoopbackListenPorts
+			previousOwners := linuxLoopbackListenOwners
+			resetCachedLoopbackListenOwners()
+			hasSSHDProcess = func() bool { return true }
+			collectLoopbackListenPorts = func() []procListenPort {
+				return []procListenPort{{port: port, inode: 99999}}
+			}
+			linuxLoopbackListenOwners = func() map[int]string {
+				return map[int]string{port: test.owner}
+			}
+			t.Cleanup(func() {
+				hasSSHDProcess = previousSSHD
+				collectLoopbackListenPorts = previousPorts
+				linuxLoopbackListenOwners = previousOwners
+				resetCachedLoopbackListenOwners()
+			})
+
+			candidates := discoverReverseSocksCandidates()
+			if len(candidates) != test.want {
+				t.Fatalf("owner %q candidates = %+v, want %d", test.owner, candidates, test.want)
+			}
+		})
+	}
+}
+
 func TestDiscoverReverseSocksExcludesNonSOCKS(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

@@ -170,7 +170,7 @@ func trafficClearConfirmMessage(source, kind string) string {
 		if kind == "history" {
 			return "Delete persisted SSH History entries. Proxy history is kept."
 		}
-		return "Close every visible SSH SOCKS flow. Proxy connections are left running."
+		return "Close every visible SSH proxy flow. Proxy connections are left running."
 	default:
 		if kind == "history" {
 			return "Delete all persisted active and completed History entries from the Backend."

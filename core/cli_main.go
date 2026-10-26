@@ -14,7 +14,7 @@ import (
 	"syscall"
 )
 
-const cliVersion = "0.5.35"
+const cliVersion = "0.5.36"
 
 type controllerOptions struct {
 	address    string
@@ -60,7 +60,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  mode              Select rule/global/direct/silent mode")
 	fmt.Fprintln(w, "  port              Get, set, or disable the normal Proxy port")
 	fmt.Fprintln(w, "  flc               Inspect silent flc; Proxies selection sets its group")
-	fmt.Fprintln(w, "  ssh               Manage independent SSH SOCKS5 profiles and tunnels")
+	fmt.Fprintln(w, "  ssh               Manage independent SSH HTTP proxy profiles and tunnels")
 	fmt.Fprintln(w, "  net               Show or test Dashboard network detection")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Lifecycle shortcuts:")
@@ -112,6 +112,9 @@ func runCommand(args []string) error {
 	testURL := fs.String("test-url", "https://www.gstatic.com/generate_204", "URL used by proxy-group delay tests")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("usage: flclash run [--config PATH] [--directory PATH]")
 	}
 
 	paths, err := resolvePaths(*configArg, *directoryArg)
@@ -174,6 +177,9 @@ func checkCommand(args []string) error {
 	directoryArg := fs.String("directory", "", "directory used to resolve config.yaml")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if len(fs.Args()) != 0 {
+		return errors.New("usage: flclash check --config PATH")
 	}
 	paths, err := resolvePaths(*configArg, *directoryArg)
 	if err != nil {

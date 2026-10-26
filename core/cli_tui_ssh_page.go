@@ -58,7 +58,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 					prefix = "attached"
 				}
 				message.status = fmt.Sprintf(
-					"SSH %s %s · SOCKS5 127.0.0.1:%d",
+					"SSH %s %s · HTTP 127.0.0.1:%d",
 					state.Name,
 					prefix,
 					state.Port,
@@ -80,7 +80,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 					prefix = "already connected"
 				}
 				message.status = fmt.Sprintf(
-					"SSH %s %s · SOCKS5 127.0.0.1:%d",
+					"SSH %s %s · HTTP 127.0.0.1:%d",
 					state.Name,
 					prefix,
 					state.Port,
@@ -108,7 +108,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 			message.err = err
 			if err == nil {
 				message.status = fmt.Sprintf(
-					"SSH %s ready · SOCKS5 127.0.0.1:%d · handshake %s",
+					"SSH %s ready · HTTP 127.0.0.1:%d · handshake %s",
 					state.Name,
 					state.Port,
 					latency,
@@ -260,7 +260,7 @@ func (m *tuiModel) attachSSHCaptureCandidate(candidate cliSSHCaptureCandidate) t
 				label = "already attached"
 			}
 			message.status = fmt.Sprintf(
-				"SSH %s %s · SOCKS5 127.0.0.1:%d",
+				"SSH %s %s · HTTP 127.0.0.1:%d",
 				state.Name,
 				label,
 				state.Port,
@@ -393,17 +393,20 @@ func (m *tuiModel) pollSelectedSSHRelay() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		message := tuiSSHRelayStatsMsg{name: name, generation: generation, at: time.Now()}
+		message := tuiSSHRelayStatsMsg{name: name, generation: generation}
 		state, active, err := activeCLIPersistentSSHTunnel()
 		if err != nil {
 			message.err = err
+			message.at = time.Now()
 			return message
 		}
 		if !active || !strings.EqualFold(state.Name, name) {
 			message.err = errors.New("SSH tunnel is disconnected")
+			message.at = time.Now()
 			return message
 		}
 		message.stats, message.err = queryCLISSHRelay(state, "status")
+		message.at = time.Now()
 		return message
 	}
 }
@@ -423,7 +426,7 @@ func (m *tuiModel) selectedSSHHTTPClient() (
 	if !profile.Connected || !profile.Ready || profile.SocksPort < 1 {
 		return name, nil, nil, errors.New("connect this SSH profile first")
 	}
-	client, closeClient, err := newTUISOCKSHTTPClient(profile.SocksPort)
+	client, closeClient, err := newTUIRouteHTTPClient(tuiLoopbackProxyURL(profile.SocksPort))
 	return name, client, closeClient, err
 }
 

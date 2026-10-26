@@ -459,7 +459,7 @@ func TestTUISSHPageKeepsAuthenticationOutOfMetrics(t *testing.T) {
 		"SSH · school",
 		"school",
 		"CONNECTED",
-		"SOCKS5 127.0.0.1:45678",
+		"HTTP 127.0.0.1:45678",
 		"Proxy Inet IP",
 		"Proxy IP",
 		"Speed",
@@ -494,7 +494,7 @@ func TestTUISSHPageDistinguishesBrokenSOCKSListener(t *testing.T) {
 		180,
 		30,
 	))
-	for _, expected := range []string{"BROKEN", "SOCKS5 127.0.0.1:45678 unavailable"} {
+	for _, expected := range []string{"BROKEN", "HTTP 127.0.0.1:45678 unavailable"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("broken SSH page does not contain %q:\n%s", expected, output)
 		}
@@ -531,7 +531,10 @@ func TestTUISSHDashboardShowsProxyMetricsAndRelayTraffic(t *testing.T) {
 		"192.168.1.20 (eth0)",
 		"Proxy IP",
 		"203.0.113.8  [SG]",
-		"SOCKS5 127.0.0.1:1080",
+		"HTTP 127.0.0.1:1080",
+		"Traffic total",
+		"4.0 KB",
+		"8.0 KB",
 		"Speed",
 		"↓ 2.0 KB/s · ↑ 1.0 KB/s",
 		"Traffic history",
@@ -1591,17 +1594,17 @@ func TestRunCLICommandWithSSHProxySetsEnvironmentAndExitCode(t *testing.T) {
 	err := runCLICommandWithSSHProxy([]string{
 		"sh",
 		"-c",
-		"test \"$ALL_PROXY\" = socks5h://127.0.0.1:45678 && " +
-			"test \"$all_proxy\" = socks5h://127.0.0.1:45678 && " +
-			"test \"$HTTP_PROXY\" = socks5h://127.0.0.1:45678 && " +
-			"test \"$HTTPS_PROXY\" = socks5h://127.0.0.1:45678 && " +
-			"test \"$http_proxy\" = socks5h://127.0.0.1:45678 && " +
-			"test \"$https_proxy\" = socks5h://127.0.0.1:45678 && " +
+		"test \"$ALL_PROXY\" = http://127.0.0.1:45678 && " +
+			"test \"$all_proxy\" = http://127.0.0.1:45678 && " +
+			"test \"$HTTP_PROXY\" = http://127.0.0.1:45678 && " +
+			"test \"$HTTPS_PROXY\" = http://127.0.0.1:45678 && " +
+			"test \"$http_proxy\" = http://127.0.0.1:45678 && " +
+			"test \"$https_proxy\" = http://127.0.0.1:45678 && " +
 			"exit 7",
 	}, 45678)
 	var exitError *cliExitCodeError
 	if !errors.As(err, &exitError) || exitError.ExitCode() != 7 {
-		t.Fatalf("SSH wrapper exit = %v, want exit code 7 with socks5h env", err)
+		t.Fatalf("SSH wrapper exit = %v, want exit code 7 with http proxy env", err)
 	}
 }
 
@@ -2821,14 +2824,15 @@ func TestActiveCLISSHTunnelKeepsBrokenForwardManageable(t *testing.T) {
 	}
 	listOutput := captureCLIOutput(t, func() error { return cliSSHListCommand(nil) })
 	if !strings.Contains(listOutput, "BROKEN") ||
-		!strings.Contains(listOutput, "SOCKS5 127.0.0.1:"+strconv.Itoa(port)+" unavailable") {
+		!strings.Contains(listOutput, "HTTP 127.0.0.1:"+strconv.Itoa(port)+" unavailable") {
 		t.Fatalf("broken SSH list output = %q", listOutput)
 	}
 	showOutput := captureCLIOutput(t, func() error {
 		return cliSSHShowCommand([]string{"school"})
 	})
 	if !strings.Contains(showOutput, "Connected:             running") ||
-		!strings.Contains(showOutput, "SOCKS5 ready:          stopped") {
+		!strings.Contains(showOutput, "HTTP ready:") ||
+		!strings.Contains(showOutput, "stopped") {
 		t.Fatalf("broken SSH show output = %q", showOutput)
 	}
 	if err := stopCLIStateTunnel(loaded); err != nil {

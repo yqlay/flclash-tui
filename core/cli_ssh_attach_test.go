@@ -547,9 +547,10 @@ func TestTUISSHAttachKeyOpensCapturePicker(t *testing.T) {
 		"  previous=\"$argument\"\n" +
 		"done\n" +
 		"case \" $* \" in\n" +
-		"  *' -G '*) printf 'controlmaster auto\\ncontrolpath %s\\n' '" + controlPath + "' ;;\n" +
+		"  *' -G '*gateway.example.com*) printf 'controlmaster auto\\ncontrolpath %s\\n' '" + controlPath + "' ;;\n" +
+		"  *' -G '*) printf 'controlmaster no\\ncontrolpath none\\n' ;;\n" +
 		"  *)\n" +
-		"    if [ \"$operation\" = check ]; then test -e \"$control\"; exit $?; fi\n" +
+		"    if [ \"$operation\" = check ] && [ \"$control\" = '" + controlPath + "' ]; then exit 0; fi\n" +
 		"    exit 1 ;;\n" +
 		"esac\n"
 	if err := os.WriteFile(sshPath, []byte(script), 0o700); err != nil {

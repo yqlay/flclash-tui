@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -882,6 +883,51 @@ func probeCLISSHSOCKS(port int, timeout time.Duration) error {
 	return last
 }
 
+func probeCLIHTTPProxy(port int, timeout time.Duration) error {
+	if port < 1 || port > 65535 {
+		return errors.New("SSH HTTP proxy port is invalid")
+	}
+	var last error
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		if err := probeCLIHTTPProxyHost(host, port, timeout); err == nil {
+			return nil
+		} else {
+			last = err
+		}
+	}
+	if last == nil {
+		last = errors.New("SSH HTTP proxy is not accepting connections")
+	}
+	return last
+}
+
+func probeCLIHTTPProxyHost(host string, port int, timeout time.Duration) error {
+	connection, err := net.DialTimeout(
+		"tcp",
+		net.JoinHostPort(host, strconv.Itoa(port)),
+		timeout,
+	)
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	_ = connection.SetDeadline(time.Now().Add(timeout))
+	if _, err := io.WriteString(
+		connection,
+		"GET / HTTP/1.1\r\nHost: probe\r\nConnection: close\r\n\r\n",
+	); err != nil {
+		return err
+	}
+	status, err := bufio.NewReader(connection).ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(status, "HTTP/1.") {
+		return errors.New("listener is not an HTTP proxy")
+	}
+	return nil
+}
+
 func probeCLISSHSOCKSHost(host string, port int, timeout time.Duration) error {
 	connection, err := net.DialTimeout(
 		"tcp",
@@ -1217,7 +1263,7 @@ func runCLICommandWithSSHProxy(args []string, port int) error {
 		return fmt.Errorf("command not found or cannot be executed: %q (%v)", args[0], err)
 	}
 	args = cliWrappedCommandArguments(executable, args)
-	proxyURL := "socks5h://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	proxyURL := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	command := exec.Command(executable, args[1:]...)
 	command.Args, command.Env = args, cliProxyEnvironment(os.Environ(), proxyURL)
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr

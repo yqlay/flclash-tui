@@ -413,6 +413,10 @@ func drawTUISSHDetails(b *strings.Builder, snapshot tuiSnapshot, profile tuiSSHP
 			tuiTrafficChartUpload,
 			formatBytes(snapshot.SSHTraffic.Up),
 			tuiReset,
+		),
+		tuiTemplateField(tr("ui.21f42460546e"),
+			formatBytes(snapshot.SSHTotalTraffic.Up),
+			formatBytes(snapshot.SSHTotalTraffic.Down),
 		))
 	fields[1].color, fields[2].color = tuiGreen, tuiCyan
 	rows := tuiFieldRows(fields, width)

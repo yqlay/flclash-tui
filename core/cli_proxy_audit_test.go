@@ -105,6 +105,79 @@ func TestProxyCLIRejectsHTMLForJSONAndMissingSingleDashValue(t *testing.T) {
 	}
 }
 
+func TestDispatchShutdownRejectsHelpAndExtraBeforeServiceLookup(t *testing.T) {
+	setupCLICommandTestDirectories(t)
+	runtimeDirectory, err := cliRuntimeDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", filepath.Join(runtimeDirectory, tuiServiceSocketFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	var contacts atomic.Int32
+	go func() {
+		for {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			contacts.Add(1)
+			_ = connection.Close()
+		}
+	}()
+
+	for _, args := range [][]string{
+		{"shutdown", "-help"},
+		{"shutdown", "--help"},
+		{"shutdown", "-h"},
+		{"shutdown", "help"},
+	} {
+		output := captureCLIOutput(t, func() error {
+			return dispatchCLI("flclash", args)
+		})
+		if !strings.Contains(output, "Usage: flclash shutdown") {
+			t.Fatalf("%v help =\n%s", args, output)
+		}
+	}
+	if err := dispatchCLI("flclash", []string{"shutdown", "extra"}); err == nil || !strings.Contains(err.Error(), "usage: flclash shutdown") {
+		t.Fatalf("shutdown extra = %v", err)
+	}
+	if contacts.Load() != 0 {
+		t.Fatalf("shutdown help/extra contacted the backend socket %d times", contacts.Load())
+	}
+}
+
+func TestTUICommandRejectsUnexpectedArguments(t *testing.T) {
+	err := tuiCommand([]string{"extra"})
+	if err == nil || !strings.Contains(err.Error(), "usage: flclash tui") {
+		t.Fatalf("tui extra = %v", err)
+	}
+	err = dispatchCLI("flclash", []string{"ui", "extra"})
+	if err == nil || !strings.Contains(err.Error(), "usage: flclash tui") {
+		t.Fatalf("ui extra = %v", err)
+	}
+}
+
+func TestStopRejectsUnexpectedArgumentsBeforeServiceLookup(t *testing.T) {
+	setupCLICommandTestDirectories(t)
+	err := stopCommand([]string{"extra"})
+	if err == nil || !strings.Contains(err.Error(), "usage: flclash stop") || strings.Contains(err.Error(), "Backend") {
+		t.Fatalf("stop extra = %v", err)
+	}
+}
+
+func TestRunAndCheckRejectUnexpectedArguments(t *testing.T) {
+	setupCLICommandTestDirectories(t)
+	if err := runCommand([]string{"extra"}); err == nil || !strings.Contains(err.Error(), "usage: flclash run") {
+		t.Fatalf("run extra = %v", err)
+	}
+	if err := checkCommand([]string{"extra.yaml"}); err == nil || !strings.Contains(err.Error(), "usage: flclash check") {
+		t.Fatalf("check extra = %v", err)
+	}
+}
+
 func TestManagementCLIRejectsUnexpectedArgumentsBeforeServiceLookup(t *testing.T) {
 	setupCLICommandTestDirectories(t)
 	for _, run := range []func() error{

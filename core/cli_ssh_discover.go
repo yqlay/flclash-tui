@@ -1233,6 +1233,10 @@ func parseProcNetAddress(value string, family int) (string, int, bool) {
 	return "", 0, false
 }
 
+func isSSHDComm(comm string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(comm)), "sshd")
+}
+
 func procNetListenAddressOK(host string) bool {
 	ip := net.ParseIP(host)
 	if ip == nil {
@@ -1291,7 +1295,7 @@ func discoverReverseSocksCandidates() []cliSSHCaptureCandidate {
 		if isFlClashManagedSOCKSPort(port) || isProxyEngineComm(owners[port]) {
 			continue
 		}
-		if owner, exists := owners[port]; exists && owner != "" && !strings.EqualFold(owner, "sshd") {
+		if owner, exists := owners[port]; exists && owner != "" && !isSSHDComm(owner) {
 			continue
 		}
 		if probeCLISSHSOCKS(port, 200*time.Millisecond) != nil {

@@ -453,6 +453,9 @@ func tuiCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if len(fs.Args()) != 0 {
+		return errors.New("usage: flclash tui [--config PATH] [--directory PATH]")
+	}
 
 	paths, err := resolvePaths(*configArg, *directoryArg)
 	if err != nil {

@@ -10,13 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
-
-	"golang.org/x/net/proxy"
 )
 
 // The CLI starts detached helpers by re-executing itself. In a Go test that
@@ -103,21 +100,7 @@ func TestSSHAuditCloseFlowFinalizesStalledUpstream(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- relay.run() }()
 	defer func() { relay.stop(); <-done }()
-	dialer, err := proxy.SOCKS5("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(publicPort)), nil, proxy.Direct)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var client net.Conn
-	deadline := time.Now().Add(time.Second)
-	for client == nil && time.Now().Before(deadline) {
-		client, _ = dialer.Dial("tcp", "example.test:443")
-		if client == nil {
-			time.Sleep(time.Millisecond)
-		}
-	}
-	if client == nil {
-		t.Fatal("relay never became ready")
-	}
+	client := dialCLITestHTTPConnect(t, publicPort, "example.test:443")
 	defer client.Close()
 	remote := <-accepted
 	defer remote.Close()
@@ -130,7 +113,7 @@ func TestSSHAuditCloseFlowFinalizesStalledUpstream(t *testing.T) {
 	if err := relay.closeFlows("all"); err != nil {
 		t.Fatal(err)
 	}
-	deadline = time.Now().Add(300 * time.Millisecond)
+	deadline := time.Now().Add(300 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		flows := relay.listFlows()
 		if len(flows) == 1 && !flows[0].Active && relay.connections.Load() == 0 {

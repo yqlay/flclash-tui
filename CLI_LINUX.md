@@ -207,9 +207,10 @@ flc sh -c 'curl -s https://example.com | jq .'
 SSH profiles and tunnels are independent of Mihomo, subscriptions, Core state,
 and the normal `flc` proxy. The machine running FlClash is always the traffic
 source and the configured SSH host is the network exit. For a persistent
-tunnel, FlClash exposes one loopback-only Go SOCKS5 relay and connects it to a
-hidden OpenSSH dynamic SOCKS5 forward. The relay injects
-`socks5h://127.0.0.1:PORT` into the local child command's upper- and lower-case
+tunnel, FlClash exposes one loopback-only HTTP proxy and connects it to a
+hidden OpenSSH dynamic SOCKS5 forward. The public port accepts HTTP CONNECT and
+absolute-form HTTP. `flc ssh` injects
+`http://127.0.0.1:PORT` into the local child command's upper- and lower-case
 proxy environment. For example, if FlClash runs only on B and the profile points
 to A, B's selected traffic exits through A; A only needs an SSH server:
 
@@ -228,7 +229,7 @@ flc ssh -u home git ls-remote https://github.com/owner/repository.git
 flclash ssh add school A --user user --identity ~/.ssh/id_ed25519 --passphrase --password
 flclash ssh list
 flclash ssh test home
-ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
+ALL_PROXY=http://127.0.0.1:1080 curl https://example.com
 flclash ssh disconnect home
 ```
 
@@ -249,13 +250,13 @@ flclash ssh attach
 
 `--list` and the TUI Capture row should show `INBOUND` for `127.0.0.1:10808`. Traffic from B leaves through A. Capture only sees SOCKS already listening on this FlClash machine: `ssh -D` or ControlMaster here, or an inbound `ssh -R`. `ssh -D` on A is invisible to B.
 
-`--local-port PORT` gives persistent connections a stable loopback SOCKS5
+`--local-port PORT` gives persistent connections a stable loopback HTTP
 address for other local applications. Use `--local-port auto` to return to
 automatic allocation. Temporary `flc ssh -u` tunnels always use an automatic
 port, so they cannot steal the persistent application endpoint. Fixed-port
 conflicts fail closed instead of silently choosing another port.
-The relay counts bytes and records each SOCKS flow, so the SSH Dashboard can
-show 30-sample live traffic and cumulative totals, and Connections / History
+The relay counts tunneled bytes and records each proxy flow, so the SSH Dashboard can
+show 30-sample live speed and cumulative totals, and Connections / History
 list the same flows beside Mihomo proxy traffic, without root, eBPF, packet
 capture, or changes to the remote SSH server.
 
@@ -269,7 +270,7 @@ Both persistent and temporary (`flc ssh -u NAME`) commands support `-d`.
 
 `flc ssh COMMAND` opens the default SSH profile, or the only configured
 profile, as a persistent tunnel when none is connected. If the persistent
-tunnel is present but its SOCKS5 listener is down, FlClash rebuilds it before
+tunnel is present but its HTTP proxy is down, FlClash rebuilds it before
 running the command. `flclash ssh connect` without a name uses the same
 resolution. If that host already has a live OpenSSH ControlMaster (for example
 `ControlMaster auto` in `~/.ssh/config`), connect reuses it: FlClash only adds a
@@ -291,7 +292,7 @@ multiplexing nor `-D`, add `ControlMaster auto` and `ControlPath ~/.ssh/cm-%C`
 to `~/.ssh/config`, reconnect, then capture again. `-u NAME` creates a
 separate temporary tunnel for that command and
 closes it afterwards; an existing persistent tunnel remains open. Commands must
-support proxy environment variables and SOCKS5. Tunnel setup is fail-closed, so
+support proxy environment variables and an HTTP proxy. Tunnel setup is fail-closed, so
 a failed SSH connection never runs the command directly. `flclash ssh import`
 copies concrete OpenSSH `Host` entries from `~/.ssh/config`. `--jump HOST`
 sets ProxyJump without burying it in raw OpenSSH options. OpenSSH's TCP connection
@@ -333,8 +334,9 @@ The SSH TUI keeps a compact profile list above one detail view. The detail is
 empty on entry; Up/Down moves only the list highlight, and Enter opens the
 highlighted profile. Once opened, the detail stays on that profile until
 another profile is opened with Enter. It shows the
-tunnel's local SOCKS5 listener, the SSH host's `Proxy Inet IP`, the public
-`Proxy IP` seen through the SSH SOCKS5 path, live upload/download speed, and
+tunnel's local HTTP proxy, the SSH host's `Proxy Inet IP`, the public
+`Proxy IP` seen through that HTTP proxy, live upload/download speed, cumulative
+relay totals, and
 an expanding relay-traffic graph. Disconnected profiles hide the network
 metrics. Opening a profile refreshes only local relay statistics; pressing
 `n` in the detail view explicitly checks the two proxy IPs. The remote inet

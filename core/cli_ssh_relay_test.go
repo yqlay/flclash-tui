@@ -3,17 +3,20 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"golang.org/x/net/proxy"
 )
 
 func TestSSHRelayUpstreamHandshakeHonorsCancellation(t *testing.T) {
@@ -59,81 +62,129 @@ func TestSSHRelayUpstreamHandshakeHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestCLISSHRelayMetersSOCKS5Traffic(t *testing.T) {
+func TestCLISSHRelayRejectsSOCKS5(t *testing.T) {
+	upstream := listenCLITestTCP(t)
+	defer upstream.Close()
+	relay, publicPort, done := startCLITestRelay(t, upstream.Addr().(*net.TCPAddr).Port)
+	connection, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(publicPort)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if _, err := connection.Write([]byte{5, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	_ = connection.SetDeadline(time.Now().Add(time.Second))
+	reply := make([]byte, 2)
+	n, err := connection.Read(reply)
+	if n > 0 && reply[0] == 5 {
+		t.Fatalf("public port answered SOCKS5: %v", reply[:n])
+	}
+	if err == nil && n > 0 && reply[0] == 5 {
+		t.Fatal("public port still speaks SOCKS5")
+	}
+	if relay.upload.Load() != 0 || relay.download.Load() != 0 || len(relay.listFlows()) != 0 {
+		t.Fatalf("rejected SOCKS5 was recorded ↑%d ↓%d flows=%+v", relay.upload.Load(), relay.download.Load(), relay.listFlows())
+	}
+	relay.stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCLISSHRelayMetersHTTPConnectTraffic(t *testing.T) {
 	echo := listenCLITestTCP(t)
 	defer echo.Close()
 	go acceptCLITestEcho(echo)
-
 	upstream := listenCLITestTCP(t)
 	defer upstream.Close()
 	go acceptCLITestSOCKS(upstream)
-
-	publicPort := availableCLITestPort(t)
-	relay := &cliSSHRelay{
-		listenPort:   publicPort,
-		upstreamPort: upstream.Addr().(*net.TCPAddr).Port,
-		controlPath:  filepath.Join(t.TempDir(), "relay.sock"),
-		startedAt:    time.Now(),
-		shutdown:     make(chan struct{}),
+	relay, publicPort, done := startCLITestRelay(t, upstream.Addr().(*net.TCPAddr).Port)
+	if err := probeCLIHTTPProxy(publicPort, time.Second); err != nil {
+		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- relay.run() }()
-	deadline := time.Now().Add(2 * time.Second)
-	for relay.listener == nil && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	if err := probeCLISSHSOCKS(publicPort, time.Second); err == nil {
+		t.Fatal("public HTTP proxy accepted a SOCKS5 greeting")
 	}
-	if relay.listener == nil {
-		t.Fatal("relay listener did not become ready")
+	if relay.upload.Load() != 0 || relay.download.Load() != 0 {
+		t.Fatalf("protocol probes were metered ↑%d ↓%d", relay.upload.Load(), relay.download.Load())
 	}
 
-	dialer, err := proxy.SOCKS5(
-		"tcp",
-		net.JoinHostPort("127.0.0.1", strconv.Itoa(publicPort)),
-		nil,
-		proxy.Direct,
-	)
+	connection, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(publicPort)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	connection, err := dialer.Dial("tcp", echo.Addr().String())
-	if err != nil {
+	target := echo.Addr().String()
+	if _, err := fmt.Fprintf(connection, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
 		t.Fatal(err)
 	}
-	payload := bytes.Repeat([]byte("metered-over-ssh\n"), 4096)
+	reader := bufio.NewReader(connection)
+	status := readCLITestHTTPStatus(t, reader)
+	if !strings.Contains(status, " 200 ") {
+		t.Fatalf("CONNECT status = %q", status)
+	}
+	payload := bytes.Repeat([]byte("metered-over-http\n"), 4096)
 	if _, err := connection.Write(payload); err != nil {
 		t.Fatal(err)
 	}
 	received := make([]byte, len(payload))
-	if _, err := io.ReadFull(connection, received); err != nil {
+	if _, err := io.ReadFull(reader, received); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(received, payload) {
-		t.Fatal("relay changed the proxied payload")
+		t.Fatal("HTTP relay changed the tunneled payload")
 	}
 	_ = connection.Close()
+	waitCLITestRelayTotals(t, relay, len(payload))
+	if !cliTestRelayHasHost(relay, target) {
+		t.Fatalf("missing live HTTP flow for %s: %+v", target, relay.listFlows())
+	}
+	relay.stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
 
-	deadline = time.Now().Add(time.Second)
-	for (relay.upload.Load() < int64(len(payload)) || relay.download.Load() < int64(len(payload))) && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if relay.upload.Load() < int64(len(payload)) || relay.download.Load() < int64(len(payload)) {
-		t.Fatalf("metered totals = ↑%d ↓%d, want at least %d each", relay.upload.Load(), relay.download.Load(), len(payload))
-	}
-	flows := relay.listFlows()
-	if len(flows) == 0 {
-		t.Fatal("relay did not record the SOCKS flow")
-	}
-	foundLive := false
-	for _, flow := range flows {
-		if flow.Active && flow.Host == echo.Addr().String() {
-			foundLive = true
-			if !strings.HasPrefix(flow.ID, cliSSHFlowIDPrefix) {
-				t.Fatalf("flow id = %q", flow.ID)
-			}
+func TestCLISSHRelayMetersAbsoluteHTTP(t *testing.T) {
+	const payload = "metered-http-request"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RequestURI() != "/meter" {
+			t.Errorf("forwarded request URI = %q", r.URL.RequestURI())
 		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		if string(body) != payload {
+			t.Errorf("forwarded body = %q", body)
+		}
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer origin.Close()
+	upstream := listenCLITestTCP(t)
+	defer upstream.Close()
+	go acceptCLITestSOCKS(upstream)
+	relay, publicPort, done := startCLITestRelay(t, upstream.Addr().(*net.TCPAddr).Port)
+	proxyURL, err := url.Parse("http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(publicPort)))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !foundLive {
-		t.Fatalf("missing live flow for %s: %+v", echo.Addr(), flows)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	response, err := client.Post(origin.URL+"/meter", "text/plain", strings.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	received, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || string(received) != payload {
+		t.Fatalf("absolute HTTP response = %s %q", response.Status, received)
+	}
+	waitCLITestRelayTotals(t, relay, len(payload))
+	if !cliTestRelayHasHost(relay, origin.Listener.Addr().String()) {
+		t.Fatalf("missing absolute-form flow for %s: %+v", origin.Listener.Addr(), relay.listFlows())
 	}
 	relay.stop()
 	if err := <-done; err != nil {
@@ -167,19 +218,7 @@ func TestCLISSHRelayCloseStopsActiveFlow(t *testing.T) {
 	if relay.listener == nil {
 		t.Fatal("relay listener did not become ready")
 	}
-	dialer, err := proxy.SOCKS5(
-		"tcp",
-		net.JoinHostPort("127.0.0.1", strconv.Itoa(publicPort)),
-		nil,
-		proxy.Direct,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	connection, err := dialer.Dial("tcp", echo.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	connection := dialCLITestHTTPConnect(t, publicPort, echo.Addr().String())
 	deadline = time.Now().Add(time.Second)
 	var id string
 	for time.Now().Before(deadline) && id == "" {
@@ -208,7 +247,7 @@ func TestCLISSHRelayCloseStopsActiveFlow(t *testing.T) {
 	select {
 	case <-readDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("close did not end the SOCKS session")
+		t.Fatal("close did not end the HTTP tunnel")
 	}
 	_ = connection.Close()
 	relay.stop()
@@ -227,6 +266,93 @@ func TestCLISSHDynamicForwardUsesHiddenUpstreamPort(t *testing.T) {
 	joined := " " + strings.Join(arguments, " ") + " "
 	if !strings.Contains(joined, " -D 127.0.0.1:49152 ") || strings.Contains(joined, " -D 127.0.0.1:1080 ") {
 		t.Fatalf("dynamic forward exposed the wrong port: %v", arguments)
+	}
+}
+
+func startCLITestRelay(t *testing.T, upstreamPort int) (*cliSSHRelay, int, chan error) {
+	t.Helper()
+	publicPort := availableCLITestPort(t)
+	relay := &cliSSHRelay{
+		listenPort:   publicPort,
+		upstreamPort: upstreamPort,
+		controlPath:  filepath.Join(t.TempDir(), "relay.sock"),
+		startedAt:    time.Now(),
+		shutdown:     make(chan struct{}),
+	}
+	done := make(chan error, 1)
+	go func() { done <- relay.run() }()
+	deadline := time.Now().Add(2 * time.Second)
+	for relay.listener == nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if relay.listener == nil {
+		t.Fatal("relay listener did not become ready")
+	}
+	return relay, publicPort, done
+}
+
+func waitCLITestRelayTotals(t *testing.T, relay *cliSSHRelay, minimum int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	want := int64(minimum)
+	for (relay.upload.Load() < want || relay.download.Load() < want) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if relay.upload.Load() < want || relay.download.Load() < want {
+		t.Fatalf("metered totals = ↑%d ↓%d, want at least %d each", relay.upload.Load(), relay.download.Load(), minimum)
+	}
+}
+
+func cliTestRelayHasHost(relay *cliSSHRelay, host string) bool {
+	for _, flow := range relay.listFlows() {
+		if flow.Host == host && strings.HasPrefix(flow.ID, cliSSHFlowIDPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func dialCLITestHTTPConnect(t *testing.T, port int, target string) net.Conn {
+	t.Helper()
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	deadline := time.Now().Add(2 * time.Second)
+	var connection net.Conn
+	var err error
+	for connection == nil && time.Now().Before(deadline) {
+		connection, err = net.DialTimeout("tcp", address, 200*time.Millisecond)
+		if connection == nil {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if connection == nil {
+		t.Fatal(err)
+	}
+	_ = connection.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := fmt.Fprintf(connection, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
+		t.Fatal(err)
+	}
+	status := readCLITestHTTPStatus(t, bufio.NewReader(connection))
+	if !strings.Contains(status, " 200 ") {
+		t.Fatalf("CONNECT status = %q", status)
+	}
+	_ = connection.SetDeadline(time.Time{})
+	return connection
+}
+
+func readCLITestHTTPStatus(t *testing.T, reader *bufio.Reader) string {
+	t.Helper()
+	status, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line == "\r\n" || line == "\n" {
+			return status
+		}
 	}
 }
 

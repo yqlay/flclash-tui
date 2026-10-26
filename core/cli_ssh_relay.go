@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -119,7 +120,7 @@ func (w cliSSHCountingWriter) Write(data []byte) (int, error) {
 func runCLISSHRelayCommand(args []string) error {
 	fs := flag.NewFlagSet("_ssh_relay", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	listenPort := fs.Int("listen-port", 0, "public SOCKS5 port")
+	listenPort := fs.Int("listen-port", 0, "public HTTP proxy port")
 	upstreamPort := fs.Int("upstream-port", 0, "OpenSSH SOCKS5 port")
 	controlPath := fs.String("control", "", "private control socket")
 	profile := fs.String("profile", "", "SSH profile name")
@@ -192,7 +193,7 @@ func (r *cliSSHRelay) run() error {
 				return acceptErr
 			}
 		}
-		go r.serveSOCKS(connection)
+		go r.serveAccepted(connection)
 	}
 }
 
@@ -267,24 +268,77 @@ func (r *cliSSHRelay) stats() cliSSHRelayStats {
 	}
 }
 
-func (r *cliSSHRelay) serveSOCKS(client net.Conn) {
-	defer client.Close()
-	_ = client.SetDeadline(time.Now().Add(15 * time.Second))
-	target, err := readCLIInboundSOCKS5(client)
+type cliRelayBufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *cliRelayBufferedConn) Read(data []byte) (int, error) {
+	return c.reader.Read(data)
+}
+
+func (r *cliSSHRelay) serveAccepted(raw net.Conn) {
+	defer raw.Close()
+	_ = raw.SetDeadline(time.Now().Add(15 * time.Second))
+	client := &cliRelayBufferedConn{Conn: raw, reader: bufio.NewReader(raw)}
+	r.serveHTTP(client)
+}
+
+func (r *cliSSHRelay) serveHTTP(client *cliRelayBufferedConn) {
+	request, err := http.ReadRequest(client.reader)
 	if err != nil {
+		return
+	}
+	target, err := cliHTTPProxyTarget(request)
+	if err != nil {
+		_ = request.Body.Close()
+		writeCLIHTTPProxyStatus(client, http.StatusBadRequest, "Bad Request")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	upstream, err := dialCLISSHRelayUpstream(ctx, r.upstreamPort, target)
 	if err != nil {
-		writeCLISOCKS5Reply(client, 0x05)
+		_ = request.Body.Close()
+		writeCLIHTTPProxyStatus(client, http.StatusBadGateway, "Bad Gateway")
 		return
 	}
 	defer upstream.Close()
-	if err := writeCLISOCKS5Reply(client, 0x00); err != nil {
+	if request.Method == http.MethodConnect {
+		_ = request.Body.Close()
+		if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+			return
+		}
+		r.relayTunnel(client, target, upstream)
 		return
 	}
+	prepareCLIHTTPProxyRequest(request)
+	_ = client.SetDeadline(time.Time{})
+	_ = upstream.SetDeadline(time.Time{})
+	flow := r.beginFlow(client, target, upstream)
+	defer r.endFlow(flow)
+	r.connections.Add(1)
+	defer r.connections.Add(-1)
+	writeErr := request.Write(cliSSHCountingWriter{
+		writer:  upstream,
+		counter: &r.upload,
+		extra:   &flow.upload,
+	})
+	_ = request.Body.Close()
+	if writeErr != nil {
+		return
+	}
+	if tcp, ok := upstream.(*net.TCPConn); ok {
+		_ = tcp.CloseWrite()
+	}
+	_, _ = io.Copy(cliSSHCountingWriter{
+		writer:  client,
+		counter: &r.download,
+		extra:   &flow.download,
+	}, upstream)
+}
+
+func (r *cliSSHRelay) relayTunnel(client net.Conn, target string, upstream net.Conn) {
 	_ = client.SetDeadline(time.Time{})
 	_ = upstream.SetDeadline(time.Time{})
 	flow := r.beginFlow(client, target, upstream)
@@ -300,9 +354,7 @@ func (r *cliSSHRelay) serveSOCKS(client net.Conn) {
 			counter: &r.upload,
 			extra:   &flow.upload,
 		}, client)
-		if tcp, ok := upstream.(*net.TCPConn); ok {
-			_ = tcp.CloseWrite()
-		}
+		closeCLIHalfClose(upstream)
 	}()
 	go func() {
 		defer wait.Done()
@@ -311,11 +363,87 @@ func (r *cliSSHRelay) serveSOCKS(client net.Conn) {
 			counter: &r.download,
 			extra:   &flow.download,
 		}, upstream)
-		if tcp, ok := client.(*net.TCPConn); ok {
-			_ = tcp.CloseWrite()
-		}
+		closeCLIHalfClose(client)
 	}()
 	wait.Wait()
+}
+
+func closeCLIHalfClose(connection net.Conn) {
+	switch conn := connection.(type) {
+	case *net.TCPConn:
+		_ = conn.CloseWrite()
+	case *cliRelayBufferedConn:
+		if tcp, ok := conn.Conn.(*net.TCPConn); ok {
+			_ = tcp.CloseWrite()
+		}
+	}
+}
+
+func cliHTTPProxyTarget(request *http.Request) (string, error) {
+	if request == nil {
+		return "", errors.New("HTTP proxy target is missing")
+	}
+	if request.Method == http.MethodConnect {
+		return cliHTTPProxyHostPort(request.Host, "443")
+	}
+	if request.URL == nil || !request.URL.IsAbs() || request.URL.Host == "" {
+		return "", errors.New("HTTP proxy target is missing")
+	}
+	port := "80"
+	if strings.EqualFold(request.URL.Scheme, "https") {
+		port = "443"
+	}
+	return cliHTTPProxyHostPort(request.URL.Host, port)
+}
+
+func cliHTTPProxyHostPort(host, defaultPort string) (string, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "", errors.New("HTTP proxy target is missing")
+	}
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		return net.JoinHostPort(host, defaultPort), nil
+	}
+	return host, nil
+}
+
+func prepareCLIHTTPProxyRequest(request *http.Request) {
+	request.RequestURI = ""
+	request.Close = true
+	removeCLIHTTPHopHeaders(request.Header)
+	request.Header.Set("Connection", "close")
+}
+
+func removeCLIHTTPHopHeaders(header http.Header) {
+	for _, value := range header.Values("Connection") {
+		for _, name := range strings.Split(value, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				header.Del(name)
+			}
+		}
+	}
+	for _, name := range []string{
+		"Connection",
+		"Proxy-Connection",
+		"Keep-Alive",
+		"Proxy-Authenticate",
+		"Proxy-Authorization",
+		"Te",
+		"Trailer",
+		"Transfer-Encoding",
+		"Upgrade",
+	} {
+		header.Del(name)
+	}
+}
+
+func writeCLIHTTPProxyStatus(connection net.Conn, status int, text string) {
+	_, _ = fmt.Fprintf(
+		connection,
+		"HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+		status,
+		text,
+	)
 }
 
 func cliSSHRelayChain(profile string) string {

@@ -667,9 +667,9 @@ func cliSSHAttachCommand(args []string) error {
 		return err
 	}
 	if already {
-		fmt.Printf("SSH %s already connected · SOCKS5 127.0.0.1:%d\n", state.Name, state.Port)
+		fmt.Printf("SSH %s already connected · HTTP 127.0.0.1:%d\n", state.Name, state.Port)
 		return nil
 	}
-	fmt.Printf("SSH %s attached · SOCKS5 127.0.0.1:%d\n", state.Name, state.Port)
+	fmt.Printf("SSH %s attached · HTTP 127.0.0.1:%d\n", state.Name, state.Port)
 	return nil
 }

@@ -609,8 +609,8 @@ func testCLISSHProfile(name string) (cliSSHTunnelState, time.Duration, error) {
 	if err != nil {
 		return cliSSHTunnelState{}, 0, err
 	}
-	if err := probeCLISSHSOCKS(state.Port, 2*time.Second); err != nil {
-		return state, 0, fmt.Errorf("SSH SOCKS5 handshake failed: %w", err)
+	if err := probeCLIHTTPProxy(state.Port, 2*time.Second); err != nil {
+		return state, 0, fmt.Errorf("SSH HTTP proxy handshake failed: %w", err)
 	}
 	return state, time.Since(started).Round(time.Millisecond), nil
 }
@@ -633,8 +633,8 @@ func testCLISSHProfileContext(parent context.Context, name string) (cliSSHTunnel
 	if err != nil {
 		return state, 0, err
 	}
-	if err := probeCLISSHSOCKS(state.Port, 2*time.Second); err != nil {
-		return state, 0, fmt.Errorf("SSH SOCKS5 handshake failed: %w", err)
+	if err := probeCLIHTTPProxy(state.Port, 2*time.Second); err != nil {
+		return state, 0, fmt.Errorf("SSH HTTP proxy handshake failed: %w", err)
 	}
 	return state, time.Since(started).Round(time.Millisecond), nil
 }
@@ -698,7 +698,7 @@ func promptCLISSHProfile(existing cliSSHProfile, editing bool) (cliSSHProfileEdi
 	}
 	localPortText, err = promptCLISSHLine(
 		reader,
-		"Local SOCKS5 port (auto or 1-65535)",
+		"Local HTTP port (auto or 1-65535)",
 		localPortText,
 		false,
 	)

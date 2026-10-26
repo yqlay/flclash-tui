@@ -1,3 +1,11 @@
+## FlClash TUI v0.5.36
+
+- The SSH relay's public loopback port is an HTTP proxy. `CONNECT` carries HTTPS and absolute-form requests carry plain HTTP. A SOCKS5 greeting on that port is rejected. The hidden OpenSSH dynamic forward stays SOCKS5. `flc ssh` injects `http://127.0.0.1:PORT`.
+- SSH page delay, speed, and proxy-IP checks use that HTTP proxy. The detail view shows cumulative relay traffic beside the live speed.
+- Capture inbound `ssh -R` listeners owned by OpenSSH 9.8+ `sshd-session` as well as `sshd`.
+- `flclash run`, `check`, `tui`, `stop`, and `shutdown` reject extra arguments. `shutdown` still stops only Backend and Core; SSH tunnels stay up.
+- Restart the Backend after upgrading so the CLI and TUI both run v0.5.36. Backend IPC remains v7.
+
 ## FlClash TUI v0.5.35
 
 - Keep navigation, refresh, and search available while Core is writing. SSH changes no longer block Core writes or proxy tests, and an open editor still owns the terminal.

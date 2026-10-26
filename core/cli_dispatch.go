@@ -53,6 +53,15 @@ func dispatchCLI(program string, args []string) error {
 	case "backend", "service":
 		return serviceManagementCommand(commandArgs)
 	case "shutdown":
+		if cliSubcommandHelp(commandArgs) {
+			fmt.Println("Usage: flclash shutdown")
+			fmt.Println("Stop Backend and Core and disconnect all frontends.")
+			fmt.Println("SSH tunnels stay up; use `flclash ssh disconnect` or `flclash exit`.")
+			return nil
+		}
+		if len(commandArgs) != 0 {
+			return errors.New("usage: flclash shutdown")
+		}
 		return serviceManagementCommand([]string{"stop"})
 	case "exit":
 		return exitCommand(commandArgs)
@@ -170,7 +179,7 @@ func printFLCUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "In silent mode flc uses an authenticated private listener; other modes use Proxy port.")
 	fmt.Fprintln(w, "flc fails closed when its proxy entry is unavailable; it never silently runs direct.")
-	fmt.Fprintln(w, "flc ssh uses an SSH SOCKS5 profile; -d fails closed if the SSH host has transparent FlClash TUN enabled.")
+	fmt.Fprintln(w, "flc ssh uses an SSH HTTP proxy profile; -d fails closed if the SSH host has transparent FlClash TUN enabled.")
 }
 
 func isCLIHelpArg(value string) bool {

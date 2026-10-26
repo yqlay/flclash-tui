@@ -595,6 +595,9 @@ func stopCommand(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if len(fs.Args()) != 0 {
+		return errors.New("usage: flclash stop")
+	}
 	paths, err := resolvePaths("", *directoryArg)
 	if err != nil {
 		return err
