@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/net/proxy"
 )
 
 func TestSSHRelayUpstreamHandshakeHonorsCancellation(t *testing.T) {
@@ -62,29 +64,100 @@ func TestSSHRelayUpstreamHandshakeHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestCLISSHRelayRejectsSOCKS5(t *testing.T) {
+func TestCLISSHRelayAcceptsHTTPAndSOCKS5(t *testing.T) {
+	echo := listenCLITestTCP(t)
+	defer echo.Close()
+	go acceptCLITestEcho(echo)
 	upstream := listenCLITestTCP(t)
 	defer upstream.Close()
+	recorded := make(chan string, 1)
+	go func() {
+		for {
+			connection, err := upstream.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer connection.Close()
+				target, err := readCLIInboundSOCKS5(connection)
+				if err != nil {
+					return
+				}
+				if target == "example.test:443" {
+					select {
+					case recorded <- target:
+					default:
+					}
+					_ = writeCLISOCKS5Reply(connection, 0)
+					return
+				}
+				remote, err := net.Dial("tcp", target)
+				if err != nil {
+					_ = writeCLISOCKS5Reply(connection, 0x05)
+					return
+				}
+				defer remote.Close()
+				if writeCLISOCKS5Reply(connection, 0) != nil {
+					return
+				}
+				go io.Copy(remote, connection)
+				_, _ = io.Copy(connection, remote)
+			}()
+		}
+	}()
 	relay, publicPort, done := startCLITestRelay(t, upstream.Addr().(*net.TCPAddr).Port)
-	connection, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(publicPort)))
+	if err := probeCLIHTTPProxy(publicPort, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := probeCLISSHSOCKS(publicPort, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if relay.upload.Load() != 0 || relay.download.Load() != 0 || len(relay.listFlows()) != 0 {
+		t.Fatalf("protocol probes were metered ↑%d ↓%d flows=%+v", relay.upload.Load(), relay.download.Load(), relay.listFlows())
+	}
+
+	dialer, err := proxy.SOCKS5(
+		"tcp",
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(publicPort)),
+		nil,
+		&net.Dialer{Timeout: time.Second},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer connection.Close()
-	if _, err := connection.Write([]byte{5, 1, 0}); err != nil {
+	domain, err := dialer.Dial("tcp", "example.test:443")
+	if err != nil {
 		t.Fatal(err)
 	}
-	_ = connection.SetDeadline(time.Now().Add(time.Second))
-	reply := make([]byte, 2)
-	n, err := connection.Read(reply)
-	if n > 0 && reply[0] == 5 {
-		t.Fatalf("public port answered SOCKS5: %v", reply[:n])
+	_ = domain.Close()
+	select {
+	case target := <-recorded:
+		if target != "example.test:443" {
+			t.Fatalf("SOCKS5 domain target = %q", target)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SOCKS5 domain was not forwarded")
 	}
-	if err == nil && n > 0 && reply[0] == 5 {
-		t.Fatal("public port still speaks SOCKS5")
+
+	connection, err := dialer.Dial("tcp", echo.Addr().String())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if relay.upload.Load() != 0 || relay.download.Load() != 0 || len(relay.listFlows()) != 0 {
-		t.Fatalf("rejected SOCKS5 was recorded ↑%d ↓%d flows=%+v", relay.upload.Load(), relay.download.Load(), relay.listFlows())
+	payload := bytes.Repeat([]byte("metered-over-socks\n"), 4096)
+	if _, err := connection.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	received := make([]byte, len(payload))
+	if _, err := io.ReadFull(connection, received); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(received, payload) {
+		t.Fatal("SOCKS5 relay changed the tunneled payload")
+	}
+	_ = connection.Close()
+	waitCLITestRelayTotals(t, relay, len(payload))
+	if !cliTestRelayHasHost(relay, echo.Addr().String()) {
+		t.Fatalf("missing live SOCKS5 flow for %s: %+v", echo.Addr(), relay.listFlows())
 	}
 	relay.stop()
 	if err := <-done; err != nil {
@@ -103,8 +176,8 @@ func TestCLISSHRelayMetersHTTPConnectTraffic(t *testing.T) {
 	if err := probeCLIHTTPProxy(publicPort, time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if err := probeCLISSHSOCKS(publicPort, time.Second); err == nil {
-		t.Fatal("public HTTP proxy accepted a SOCKS5 greeting")
+	if err := probeCLISSHSOCKS(publicPort, time.Second); err != nil {
+		t.Fatal(err)
 	}
 	if relay.upload.Load() != 0 || relay.download.Load() != 0 {
 		t.Fatalf("protocol probes were metered ↑%d ↓%d", relay.upload.Load(), relay.download.Load())

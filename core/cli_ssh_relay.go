@@ -120,7 +120,7 @@ func (w cliSSHCountingWriter) Write(data []byte) (int, error) {
 func runCLISSHRelayCommand(args []string) error {
 	fs := flag.NewFlagSet("_ssh_relay", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	listenPort := fs.Int("listen-port", 0, "public HTTP proxy port")
+	listenPort := fs.Int("listen-port", 0, "public HTTP/SOCKS5 proxy port")
 	upstreamPort := fs.Int("upstream-port", 0, "OpenSSH SOCKS5 port")
 	controlPath := fs.String("control", "", "private control socket")
 	profile := fs.String("profile", "", "SSH profile name")
@@ -281,7 +281,34 @@ func (r *cliSSHRelay) serveAccepted(raw net.Conn) {
 	defer raw.Close()
 	_ = raw.SetDeadline(time.Now().Add(15 * time.Second))
 	client := &cliRelayBufferedConn{Conn: raw, reader: bufio.NewReader(raw)}
+	peek, err := client.reader.Peek(1)
+	if err != nil {
+		return
+	}
+	if peek[0] == 5 {
+		r.serveSOCKS(client)
+		return
+	}
 	r.serveHTTP(client)
+}
+
+func (r *cliSSHRelay) serveSOCKS(client *cliRelayBufferedConn) {
+	target, err := readCLIInboundSOCKS5(client)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	upstream, err := dialCLISSHRelayUpstream(ctx, r.upstreamPort, target)
+	if err != nil {
+		_ = writeCLISOCKS5Reply(client, 0x05)
+		return
+	}
+	defer upstream.Close()
+	if err := writeCLISOCKS5Reply(client, 0); err != nil {
+		return
+	}
+	r.relayTunnel(client, target, upstream)
 }
 
 func (r *cliSSHRelay) serveHTTP(client *cliRelayBufferedConn) {

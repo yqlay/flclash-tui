@@ -104,9 +104,11 @@ const (
 	tuiDashboardModeRow
 	tuiDashboardFLCOutboundRow
 	tuiDashboardMixedPortRow
+	tuiDashboardPublicIPRow
+	tuiDashboardIntranetRow
 	tuiDashboardDelayRow
 	tuiDashboardSpeedRow
-	tuiDashboardRowCount
+	tuiDashboardOverviewStartRow
 )
 
 const (
@@ -239,7 +241,22 @@ const (
 	tuiProfileImportFileRow         = -1
 	tuiProfileImportRowCount        = 2
 	tuiSSHCaptureRow                = -1
+	tuiSSHTunnelRow                 = 0
+	tuiSSHProxyPortRow              = 1
+	tuiSSHInetRow                   = 2
+	tuiSSHProxyIPRow                = 3
+	tuiSSHSpeedRow                  = 4
+	tuiSSHTrafficRow                = 5
+	tuiSSHDetailIdleRowCount        = 2
+	tuiSSHDetailReadyRowCount       = 6
 )
+
+func tuiSSHDetailSelectableCount(profile tuiSSHProfile) int {
+	if profile.Connected && profile.Ready {
+		return tuiSSHDetailReadyRowCount
+	}
+	return tuiSSHDetailIdleRowCount
+}
 
 type tuiSnapshot struct {
 	Page                    tuiPage
@@ -263,6 +280,9 @@ type tuiSnapshot struct {
 	SSHCaptureHint          string
 	SSHDashboardFocus       bool
 	SSHDetailName           string
+	SSHDetailRow            int
+	SSHPortEditing          bool
+	SSHPortInput            string
 	SSHNetwork              tuiNetworkInfo
 	SSHDelay                tuiDelayResult
 	SSHSpeed                tuiSpeedResult

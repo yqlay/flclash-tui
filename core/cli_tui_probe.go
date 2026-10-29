@@ -191,16 +191,30 @@ func (m *tuiModel) enqueueSpeedProbes(group string, nodes []string, summary bool
 	return tea.Batch(m.pumpSpeedProbes()...)
 }
 
+func (m *tuiModel) dashboardProbePort() int {
+	return managedListenerPort(
+		m.coreRunning || !m.ownsCore,
+		m.snapshot.Settings.Mode,
+		m.snapshot.ActiveProxyPort,
+		m.snapshot.Settings.MixedPort,
+		m.snapshot.Settings.MixedPort,
+	)
+}
+
 func (m *tuiModel) enqueueDashboardDelay() tea.Cmd {
 	if m.service == nil {
 		m.snapshot.setStatus(newTUIMessage("ui.df7bb6bc35d4"))
+		return nil
+	}
+	if m.dashboardProbePort() <= 0 {
+		m.snapshot.setStatus(tuiMessage{Raw: "normal Proxy port is not active; use `flclash flc test` in silent mode"})
 		return nil
 	}
 	if m.rejectProxyProbe() {
 		return nil
 	}
 	m.snapshot.DashboardDelay = tuiDelayResult{Testing: true}
-	job := m.newProbeJob(tuiProbeDashboardDelay, "", "", m.tuiDelayTestURL(), m.snapshot.ActiveProxyPort, 0)
+	job := m.newProbeJob(tuiProbeDashboardDelay, "", "", defaultCLITestURL, m.dashboardProbePort(), 0)
 	m.replaceQueuedProbe(&m.delayQueue, job)
 	return tea.Batch(m.pumpDelayProbes()...)
 }
@@ -210,11 +224,15 @@ func (m *tuiModel) enqueueDashboardSpeed() tea.Cmd {
 		m.snapshot.setStatus(newTUIMessage("ui.e1c7c4a7c00b"))
 		return nil
 	}
+	if m.dashboardProbePort() <= 0 {
+		m.snapshot.setStatus(tuiMessage{Raw: "normal Proxy port is not active; use `flclash flc test` in silent mode"})
+		return nil
+	}
 	if m.rejectProxyProbe() {
 		return nil
 	}
 	m.snapshot.DashboardSpeed = tuiSpeedResult{Testing: true}
-	job := m.newProbeJob(tuiProbeDashboardSpeed, "", "", "", m.snapshot.ActiveProxyPort, 0)
+	job := m.newProbeJob(tuiProbeDashboardSpeed, "", "", "", m.dashboardProbePort(), 0)
 	m.replaceQueuedProbe(&m.speedQueue, job)
 	return tea.Batch(m.pumpSpeedProbes()...)
 }
@@ -343,7 +361,7 @@ func (m *tuiModel) runDelayProbe(job tuiProxyProbeJob) tea.Cmd {
 			if service == nil {
 				err = errString("Backend is not running")
 			} else {
-				message.result, err = service.testRouteDelay(job.mixedPort, job.testURL)
+				message.result, err = testManagedRouteDelayForCommand(service, job.mixedPort, job.testURL)
 			}
 		} else {
 			message.result, err = testTUIProxyDelaySamples(client, job.node, job.testURL)
@@ -370,7 +388,7 @@ func (m *tuiModel) runSpeedProbe(job tuiProxyProbeJob) tea.Cmd {
 		if service == nil {
 			err = errString("Backend is not running")
 		} else if job.kind == tuiProbeDashboardSpeed {
-			message.result, err = service.testRouteSpeed(job.mixedPort)
+			message.result, err = testManagedRouteSpeedForCommand(service, job.mixedPort)
 		} else {
 			message.result, err = service.testProxySpeed(job.node)
 		}

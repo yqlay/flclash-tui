@@ -706,13 +706,13 @@ func cliSSHListCommand(args []string) error {
 				status = "ATTACHED"
 			}
 			endpoint = fmt.Sprintf(
-				" · HTTP 127.0.0.1:%d · configured %s",
+				" · HTTP/SOCKS 127.0.0.1:%d · configured %s",
 				view.SocksPort,
 				configured,
 			)
 		} else if view.Connected {
 			status, endpoint = "BROKEN", fmt.Sprintf(
-				" · HTTP 127.0.0.1:%d unavailable",
+				" · HTTP/SOCKS 127.0.0.1:%d unavailable",
 				view.SocksPort,
 			)
 		} else if view.LocalPort > 0 {
@@ -759,7 +759,7 @@ func cliSSHShowCommand(args []string) error {
 			localPort = strconv.Itoa(view.LocalPort)
 		}
 		fmt.Printf(
-			"Name:                  %s\nDefault:               %s\nSSH username:          %s\nSSH host:              %s\nJump host:             %s\nSSH port:              %d\nLocal HTTP:            %s\nIdentity(private key): %s\nKey passphrase:        %s\nSSH password:          %s\nConnected:             %s\nHTTP ready:            %s\n",
+			"Name:                  %s\nDefault:               %s\nSSH username:          %s\nSSH host:              %s\nJump host:             %s\nSSH port:              %d\nLocal proxy:           %s\nIdentity(private key): %s\nKey passphrase:        %s\nSSH password:          %s\nConnected:             %s\nProxy ready:           %s\n",
 			view.Name,
 			cliOnOff(view.Default),
 			cliDisplayValue(view.Username),
@@ -774,7 +774,7 @@ func cliSSHShowCommand(args []string) error {
 			cliOnOff(view.Ready),
 		)
 		if view.SocksPort > 0 {
-			fmt.Printf("HTTP:        127.0.0.1:%d\n", view.SocksPort)
+			fmt.Printf("HTTP/SOCKS:  127.0.0.1:%d\n", view.SocksPort)
 		}
 		if view.LastError != "" {
 			fmt.Printf("Last error:            %s\n", view.LastError)
@@ -802,14 +802,14 @@ func cliSSHConnectCommand(args []string) error {
 		return err
 	}
 	if alreadyConnected {
-		fmt.Printf("SSH %s already connected · HTTP 127.0.0.1:%d\n", state.Name, state.Port)
+		fmt.Printf("SSH %s already connected · HTTP/SOCKS 127.0.0.1:%d\n", state.Name, state.Port)
 		return nil
 	}
 	if cliSSHTunnelIsAttached(state.Kind) {
-		fmt.Printf("SSH %s attached · HTTP 127.0.0.1:%d\n", state.Name, state.Port)
+		fmt.Printf("SSH %s attached · HTTP/SOCKS 127.0.0.1:%d\n", state.Name, state.Port)
 		return nil
 	}
-	fmt.Printf("SSH %s connected · HTTP 127.0.0.1:%d\n", state.Name, state.Port)
+	fmt.Printf("SSH %s connected · HTTP/SOCKS 127.0.0.1:%d\n", state.Name, state.Port)
 	return nil
 }
 
@@ -824,7 +824,7 @@ func cliSSHDisconnectCommand(args []string) error {
 		fmt.Println("All SSH tunnels disconnected")
 		return nil
 	}
-	state, disconnected, err := disconnectCLISSHProfile(firstCLIArgument(args))
+	state, disconnected, err := disconnectCLISSHProfileForCommand(firstCLIArgument(args))
 	if err != nil {
 		return err
 	}
@@ -854,7 +854,7 @@ func cliSSHTestCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("SSH %s ready · HTTP 127.0.0.1:%d · handshake %s\n", state.Name, state.Port, latency)
+	fmt.Printf("SSH %s ready · HTTP/SOCKS 127.0.0.1:%d · handshake %s\n", state.Name, state.Port, latency)
 	return nil
 }
 

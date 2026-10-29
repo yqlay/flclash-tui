@@ -44,7 +44,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 		message := tuiSSHCommandResultMsg{action: action, selectedName: name, sequence: sequence}
 		switch action {
 		case "connect":
-			state, alreadyConnected, err := connectCLISSHProfileWithCredentialsContext(
+			state, alreadyConnected, err := connectCLISSHProfileWithContextForCommand(
 				operationContext,
 				name,
 				credentials,
@@ -58,7 +58,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 					prefix = "attached"
 				}
 				message.status = fmt.Sprintf(
-					"SSH %s %s · HTTP 127.0.0.1:%d",
+					"SSH %s %s · HTTP/SOCKS 127.0.0.1:%d",
 					state.Name,
 					prefix,
 					state.Port,
@@ -72,7 +72,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 				message.text = newTUIMessage(key, state.Name, state.Port)
 			}
 		case "attach":
-			state, alreadyConnected, err := attachCLISSHProfileContext(operationContext, name)
+			state, alreadyConnected, err := attachCLISSHProfileContextForCommand(operationContext, name)
 			message.err = err
 			if err == nil {
 				prefix := "attached"
@@ -80,7 +80,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 					prefix = "already connected"
 				}
 				message.status = fmt.Sprintf(
-					"SSH %s %s · HTTP 127.0.0.1:%d",
+					"SSH %s %s · HTTP/SOCKS 127.0.0.1:%d",
 					state.Name,
 					prefix,
 					state.Port,
@@ -92,7 +92,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 				message.text = newTUIMessage(key, state.Name, state.Port)
 			}
 		case "disconnect":
-			state, disconnected, err := disconnectCLISSHProfile(name)
+			state, disconnected, err := disconnectCLISSHProfileForCommand(name)
 			message.err = err
 			if err == nil {
 				if disconnected {
@@ -108,7 +108,7 @@ func (m *tuiModel) runSelectedSSHActionWithCredentials(
 			message.err = err
 			if err == nil {
 				message.status = fmt.Sprintf(
-					"SSH %s ready · HTTP 127.0.0.1:%d · handshake %s",
+					"SSH %s ready · HTTP/SOCKS 127.0.0.1:%d · handshake %s",
 					state.Name,
 					state.Port,
 					latency,
@@ -260,7 +260,7 @@ func (m *tuiModel) attachSSHCaptureCandidate(candidate cliSSHCaptureCandidate) t
 				label = "already attached"
 			}
 			message.status = fmt.Sprintf(
-				"SSH %s %s · HTTP 127.0.0.1:%d",
+				"SSH %s %s · HTTP/SOCKS 127.0.0.1:%d",
 				state.Name,
 				label,
 				state.Port,
@@ -291,6 +291,208 @@ func (m *tuiModel) sshDetailProfileIndex() int {
 		return -1
 	}
 	return findTUISSHProfile(m.snapshot.SSHProfiles, m.snapshot.SSHDetailName)
+}
+
+func (m *tuiModel) sshDetailSelectableCount() int {
+	index := m.sshDetailProfileIndex()
+	if index < 0 || index >= len(m.snapshot.SSHProfiles) {
+		return tuiSSHDetailIdleRowCount
+	}
+	return tuiSSHDetailSelectableCount(m.snapshot.SSHProfiles[index])
+}
+
+func (m *tuiModel) syncSSHDetailRowStatus() {
+	switch m.snapshot.SSHDetailRow {
+	case tuiSSHProxyPortRow:
+		m.snapshot.setStatus(newTUIMessage("ssh.proxy_port_row"))
+		return
+	case tuiSSHProxyIPRow:
+		m.snapshot.setStatus(newTUIMessage("ssh.proxy_ip_row"))
+		return
+	case tuiSSHInetRow, tuiSSHSpeedRow, tuiSSHTrafficRow:
+		m.snapshot.setStatus(newTUIMessage("ssh.detail_row"))
+		return
+	}
+	index := m.sshDetailProfileIndex()
+	if index >= 0 && m.snapshot.SSHProfiles[index].Connected && m.snapshot.SSHProfiles[index].Ready {
+		m.snapshot.setStatus(newTUIMessage("ui.4bb703bee905", m.snapshot.SSHProfiles[index].Name))
+		return
+	}
+	m.snapshot.setStatus(newTUIMessage("ui.ca79eec78149"))
+}
+
+func (m *tuiModel) closeSSHProxyPortEditIfDetailGone() {
+	if m.sshProxyPortEditing && m.sshDetailProfileIndex() < 0 {
+		m.cancelSSHProxyPortEdit()
+	}
+}
+
+func (m *tuiModel) cancelSSHProxyPortEdit() {
+	m.sshProxyPortEditing = false
+	m.sshProxyPortInput = nil
+	m.sshProxyPortCursor = 0
+	m.sshProxyPortSelectAll = false
+}
+
+func (m *tuiModel) beginSSHProxyPortEdit() {
+	if !m.snapshot.SSHDashboardFocus || m.snapshot.SSHDetailRow != tuiSSHProxyPortRow {
+		return
+	}
+	index := m.sshDetailProfileIndex()
+	if index < 0 {
+		return
+	}
+	profile := m.snapshot.SSHProfiles[index]
+	port := profile.SocksPort
+	if port <= 0 {
+		port = profile.LocalPort
+	}
+	value := "auto"
+	if port > 0 {
+		value = strconv.Itoa(port)
+	}
+	m.sshProxyPortEditing = true
+	m.sshProxyPortInput = []rune(value)
+	m.sshProxyPortCursor = len(m.sshProxyPortInput)
+	m.sshProxyPortSelectAll = true
+	m.snapshot.setStatus(newTUIMessage("ssh.proxy_port_input"))
+}
+
+func (m *tuiModel) commitSSHProxyPortEdit() tea.Cmd {
+	port, err := parseCLISSHLocalPort(string(m.sshProxyPortInput))
+	if err != nil {
+		m.cancelSSHProxyPortEdit()
+		m.snapshot.setStatus(newTUIMessage("ui.ff400816f107", err.Error()))
+		return nil
+	}
+	index := m.sshDetailProfileIndex()
+	if index < 0 {
+		m.cancelSSHProxyPortEdit()
+		m.snapshot.setStatus(newTUIMessage("ui.84d646458df9"))
+		return nil
+	}
+	name := m.snapshot.SSHProfiles[index].Name
+	sequence, ok := m.beginSSHWrite()
+	if !ok {
+		return nil
+	}
+	m.cancelSSHProxyPortEdit()
+	m.snapshot.setStatus(newTUIMessage("ui.013120ffa8f1", "port", name))
+	return func() tea.Msg {
+		state, rebindErr := rebindCLISSHPublicPort(name, port)
+		message := tuiSSHCommandResultMsg{
+			action:       "port",
+			sequence:     sequence,
+			selectedName: name,
+			err:          rebindErr,
+		}
+		if rebindErr == nil {
+			label := "auto"
+			if state.Port > 0 {
+				label = "127.0.0.1:" + strconv.Itoa(state.Port)
+			}
+			shown := state.Name
+			if shown == "" {
+				shown = name
+			}
+			message.status = "SSH " + shown + " proxy port " + label
+		}
+		return message
+	}
+}
+
+func (m *tuiModel) handleSSHProxyPortInput(message tea.KeyMsg) tea.Cmd {
+	switch message.Type {
+	case tea.KeyCtrlC:
+		m.cancelSSHProxyPortEdit()
+		return m.handleKey(tuiKeyInterrupt)
+	case tea.KeyEsc:
+		m.cancelSSHProxyPortEdit()
+		m.snapshot.setStatus(newTUIMessage("ui.c86a2f40e61a"))
+		return nil
+	case tea.KeyEnter:
+		return m.commitSSHProxyPortEdit()
+	case tea.KeyBackspace, tea.KeyCtrlH:
+		if m.sshProxyPortSelectAll {
+			m.sshProxyPortInput = nil
+			m.sshProxyPortCursor = 0
+			m.sshProxyPortSelectAll = false
+		} else if m.sshProxyPortCursor > 0 {
+			previous := tuiPreviousGrapheme(m.sshProxyPortInput, m.sshProxyPortCursor)
+			m.sshProxyPortInput = append(
+				m.sshProxyPortInput[:previous],
+				m.sshProxyPortInput[m.sshProxyPortCursor:]...,
+			)
+			m.sshProxyPortCursor = previous
+		}
+		return nil
+	case tea.KeyDelete:
+		if m.sshProxyPortSelectAll {
+			m.sshProxyPortInput = nil
+			m.sshProxyPortCursor = 0
+			m.sshProxyPortSelectAll = false
+		} else if m.sshProxyPortCursor < len(m.sshProxyPortInput) {
+			m.sshProxyPortInput = append(
+				m.sshProxyPortInput[:m.sshProxyPortCursor],
+				m.sshProxyPortInput[tuiNextGrapheme(m.sshProxyPortInput, m.sshProxyPortCursor):]...,
+			)
+		}
+		return nil
+	case tea.KeyLeft:
+		if m.sshProxyPortSelectAll {
+			m.sshProxyPortCursor = 0
+			m.sshProxyPortSelectAll = false
+		} else if m.sshProxyPortCursor > 0 {
+			m.sshProxyPortCursor = tuiPreviousGrapheme(m.sshProxyPortInput, m.sshProxyPortCursor)
+		}
+		return nil
+	case tea.KeyRight:
+		if m.sshProxyPortSelectAll {
+			m.sshProxyPortCursor = len(m.sshProxyPortInput)
+			m.sshProxyPortSelectAll = false
+		} else if m.sshProxyPortCursor < len(m.sshProxyPortInput) {
+			m.sshProxyPortCursor = tuiNextGrapheme(m.sshProxyPortInput, m.sshProxyPortCursor)
+		}
+		return nil
+	case tea.KeyHome, tea.KeyCtrlA:
+		m.sshProxyPortCursor = 0
+		m.sshProxyPortSelectAll = false
+		return nil
+	case tea.KeyEnd, tea.KeyCtrlE:
+		m.sshProxyPortCursor = len(m.sshProxyPortInput)
+		m.sshProxyPortSelectAll = false
+		return nil
+	case tea.KeyCtrlU:
+		m.sshProxyPortInput = nil
+		m.sshProxyPortCursor = 0
+		m.sshProxyPortSelectAll = false
+		return nil
+	case tea.KeyRunes:
+		if m.sshProxyPortSelectAll {
+			m.sshProxyPortInput = nil
+			m.sshProxyPortCursor = 0
+			m.sshProxyPortSelectAll = false
+		}
+		for _, value := range message.Runes {
+			if len(m.sshProxyPortInput) >= 5 {
+				break
+			}
+			digit := value >= '0' && value <= '9'
+			letter := (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z')
+			if !digit && !letter {
+				continue
+			}
+			m.sshProxyPortInput = append(m.sshProxyPortInput, 0)
+			copy(
+				m.sshProxyPortInput[m.sshProxyPortCursor+1:],
+				m.sshProxyPortInput[m.sshProxyPortCursor:],
+			)
+			m.sshProxyPortInput[m.sshProxyPortCursor] = value
+			m.sshProxyPortCursor++
+		}
+		m.sshProxyPortCursor = tuiGraphemeCursor(m.sshProxyPortInput, m.sshProxyPortCursor)
+	}
+	return nil
 }
 
 func (m *tuiModel) toggleSelectedSSHDefault() tea.Cmd {

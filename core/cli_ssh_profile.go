@@ -259,7 +259,7 @@ func parseCLISSHLocalPort(value string) (int, error) {
 	}
 	port, err := strconv.Atoi(value)
 	if err != nil || port < 1 || port > 65535 {
-		return 0, fmt.Errorf("invalid local SOCKS5 port %q; use 1-65535 or auto", value)
+		return 0, fmt.Errorf("invalid local proxy port %q; use 1-65535 or auto", value)
 	}
 	return port, nil
 }
@@ -420,6 +420,22 @@ var (
 	startCLISSHRelayForOperation             = startCLISSHRelay
 )
 
+// setCLISSHProfileLocalPort writes only the saved public port. The full
+// profile replace refuses while a tunnel is connected.
+func setCLISSHProfileLocalPort(name string, port int) error {
+	if port < 0 || port > 65535 {
+		return fmt.Errorf("invalid local proxy port %d", port)
+	}
+	return updateCLISSHConfigForOperation(func(config *cliSSHConfig) error {
+		index, found := findCLISSHProfile(config.Profiles, name)
+		if !found {
+			return fmt.Errorf("SSH profile %q does not exist", name)
+		}
+		config.Profiles[index].LocalPort = port
+		return nil
+	})
+}
+
 func cliSSHProfileConnected(name string) (bool, error) {
 	lock, err := lockCLISSHTunnelOperation()
 	if err != nil {
@@ -441,7 +457,7 @@ func connectCLISSHProfileWithCredentials(
 	name string,
 	credentials cliSSHCredentials,
 ) (cliSSHTunnelState, bool, error) {
-	return connectCLISSHProfileWithCredentialsContext(context.Background(), name, credentials)
+	return connectCLISSHProfileWithContextForCommand(context.Background(), name, credentials)
 }
 
 func connectCLISSHProfileWithCredentialsContext(parent context.Context, name string, credentials cliSSHCredentials) (cliSSHTunnelState, bool, error) {
@@ -698,7 +714,7 @@ func promptCLISSHProfile(existing cliSSHProfile, editing bool) (cliSSHProfileEdi
 	}
 	localPortText, err = promptCLISSHLine(
 		reader,
-		"Local HTTP port (auto or 1-65535)",
+		"Local proxy port (auto or 1-65535)",
 		localPortText,
 		false,
 	)
@@ -876,7 +892,7 @@ func validateCLISSHProfileStructure(profile cliSSHProfile) error {
 		return errors.New("SSH port must be between 1 and 65535")
 	}
 	if profile.LocalPort < 0 || profile.LocalPort > 65535 {
-		return errors.New("local SOCKS5 port must be auto or between 1 and 65535")
+		return errors.New("local proxy port must be auto or between 1 and 65535")
 	}
 	if err := validateCLISSHJump(profile.Jump); err != nil {
 		return err

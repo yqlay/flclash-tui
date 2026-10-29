@@ -325,7 +325,7 @@ func persistCLISSHTunnelState(state cliSSHTunnelState) (cliSSHTunnelState, error
 }
 
 func attachCLISSHProfile(name string) (cliSSHTunnelState, bool, error) {
-	return attachCLISSHProfileContext(context.Background(), name)
+	return attachCLISSHProfileContextForCommand(context.Background(), name)
 }
 
 func attachCLISSHProfileContext(parent context.Context, name string) (cliSSHTunnelState, bool, error) {
@@ -667,9 +667,9 @@ func cliSSHAttachCommand(args []string) error {
 		return err
 	}
 	if already {
-		fmt.Printf("SSH %s already connected · HTTP 127.0.0.1:%d\n", state.Name, state.Port)
+		fmt.Printf("SSH %s already connected · HTTP/SOCKS 127.0.0.1:%d\n", state.Name, state.Port)
 		return nil
 	}
-	fmt.Printf("SSH %s attached · HTTP 127.0.0.1:%d\n", state.Name, state.Port)
+	fmt.Printf("SSH %s attached · HTTP/SOCKS 127.0.0.1:%d\n", state.Name, state.Port)
 	return nil
 }

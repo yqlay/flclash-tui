@@ -37,6 +37,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 	case tuiKeyBack:
 		if m.snapshot.Page == tuiPageSSH && m.snapshot.SSHDashboardFocus {
 			m.snapshot.SSHDashboardFocus = false
+			m.snapshot.SSHDetailRow = tuiSSHTunnelRow
 			m.snapshot.setStatus(newTUIMessage("ui.b2cb6c0f5d77"))
 		} else if m.snapshot.Page == tuiPageRequests && m.snapshot.HistoryDetailOpen {
 			m.snapshot.HistoryDetailOpen = false
@@ -495,39 +496,52 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 					state.snapshot.setStatus(newTUIMessage("ui.0b2f57406e10"))
 					return
 				}
-				autoStarted := false
-				if m.ownsCore && !state.coreRunning {
-					if !startTUIManagedCore(state, m.service) {
+				if state.settingsDirty && state.stagedSettings != nil {
+					if !prepareTUIBackendRevision(state, m.service) {
 						return
 					}
-					autoStarted = true
+					profileSettings, profileErr := tuiProfileSettingsForCommit(state, *state.stagedSettings)
+					if profileErr != nil {
+						state.snapshot.setStatus(newTUIMessage("ui.3b3a7b6817d8", profileErr.Error()))
+						return
+					}
+					status, err := state.service.applySettings(profileSettings, state.backendRevision)
+					if err != nil {
+						reportTUISettingsSaveError(state, err, "ui.3b3a7b6817d8")
+						return
+					}
+					applyTUIOperationServiceStatus(state, status)
+					clearTUISettingsDraft(state)
 				}
 				if !prepareTUIBackendRevision(state, m.service) {
 					return
 				}
-				status, err := state.service.setSystemProxy(
+				status, autoStarted, err := applyManagedSystemProxyForCommand(
+					state.service,
+					tuiServiceStatus{
+						Running:  state.coreRunning,
+						Mode:     state.snapshot.Settings.Mode,
+						Revision: state.backendRevision,
+					},
 					enabled,
-					state.backendRevision,
 				)
-				proxyUpdated := err == nil
 				if err != nil {
+					if status.Revision != 0 {
+						applyTUIOperationServiceStatus(state, status)
+					}
+					if autoStarted {
+						syncStoppedTUISettings(state)
+						state.snapshot.setStatus(newTUIMessage("ui.0b82797bddcd", err.Error()))
+						return
+					}
 					state.snapshot.setStatus(newTUIMessage("ui.3e34a530360a", err.Error()))
-				} else {
-					applyTUIOperationServiceStatus(state, status)
-					state.snapshot.setStatus(newTUIMessage("ui.a6478a4de097", cliOnOff(status.SystemProxy)))
+					return
 				}
-				if proxyUpdated {
-					state.systemProxyManaged = state.snapshot.Settings.SystemProxy
-					if autoStarted && state.snapshot.Settings.SystemProxy {
-						state.snapshot.setStatus(newTUIMessage("ui.648bc55423be", state.snapshot.Settings.MixedPort))
-
-					}
-				} else if autoStarted {
-					proxyError := state.snapshot.Status
-					if stopTUIManagedCore(state, m.service) {
-						state.snapshot.setStatus(newTUIMessage("ui.0b82797bddcd", proxyError))
-
-					}
+				applyTUIOperationServiceStatus(state, status)
+				state.systemProxyManaged = state.snapshot.Settings.SystemProxy
+				state.snapshot.setStatus(newTUIMessage("ui.a6478a4de097", cliOnOff(status.SystemProxy)))
+				if autoStarted && state.snapshot.Settings.SystemProxy {
+					state.snapshot.setStatus(newTUIMessage("ui.648bc55423be", state.snapshot.Settings.MixedPort))
 				}
 			})
 		}
@@ -600,8 +614,9 @@ func (m *tuiModel) dashboardPageHeight() int {
 }
 
 func (m *tuiModel) revealDashboardSelection() {
+	snapshot := m.cursorDashboardSnapshot()
 	rows := tuiCompactDashboardRows(
-		m.snapshot,
+		snapshot,
 		m.paths,
 		tuiLayoutAtSize(m.width, m.height, m.snapshot.Language).ContentWidth,
 		m.dashboardPageHeight(),
@@ -630,6 +645,16 @@ func (m *tuiModel) moveSelection(delta int) tea.Cmd {
 	switch m.snapshot.Page {
 	case tuiPageSSH:
 		if m.snapshot.SSHDashboardFocus {
+			count := m.sshDetailSelectableCount()
+			if m.snapshot.SSHDetailRow < 0 || m.snapshot.SSHDetailRow >= count {
+				m.snapshot.SSHDetailRow = tuiSSHTunnelRow
+			}
+			m.snapshot.SSHDetailRow = wrapTUIIndex(
+				m.snapshot.SSHDetailRow,
+				delta,
+				count,
+			)
+			m.syncSSHDetailRowStatus()
 			break
 		} else {
 			listLen := len(m.snapshot.SSHProfiles) + 1
@@ -678,10 +703,11 @@ func (m *tuiModel) moveSelection(delta int) tea.Cmd {
 			moveTUIGroup(&m.snapshot, delta)
 		}
 	case tuiPageDashboard:
+		m.snapshot.ExternalCore = !m.ownsCore
 		m.snapshot.SelectedDashboard = wrapTUIIndex(
 			m.snapshot.SelectedDashboard,
 			delta,
-			tuiDashboardRowCount,
+			tuiDashboardSelectableCount(m.cursorDashboardSnapshot()),
 		)
 		m.revealDashboardSelection()
 	case tuiPageTools:

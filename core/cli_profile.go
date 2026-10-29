@@ -144,7 +144,7 @@ func profileCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		status, err = client.reloadAtRevision(target, status.Revision)
+		status, err = activateManagedProfileForCommand(client, target, status.Revision)
 		if err != nil {
 			return err
 		}

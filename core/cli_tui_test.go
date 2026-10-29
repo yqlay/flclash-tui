@@ -316,8 +316,9 @@ func TestTUICompactDashboardCanScrollEverySection(t *testing.T) {
 
 	first := stripTUIANSI(model.View())
 	if !strings.Contains(first, "Core") ||
-		!strings.Contains(first, "Live traffic") ||
-		strings.Contains(first, "TUI frontends") {
+		!strings.Contains(first, "Public IP") ||
+		strings.Contains(first, "TUI frontends") ||
+		strings.Contains(first, "Live traffic") {
 		t.Fatalf("first compact viewport is wrong:\n%s", first)
 	}
 	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
@@ -751,6 +752,14 @@ func TestTUIDashboardRouteTestsAreSelectable(t *testing.T) {
 	model.snapshot.FocusSidebar = false
 	model.snapshot.SelectedDashboard = tuiDashboardMixedPortRow
 
+	model.moveSelection(1)
+	if model.snapshot.SelectedDashboard != tuiDashboardPublicIPRow {
+		t.Fatalf("Dashboard down selected %d, want public IP", model.snapshot.SelectedDashboard)
+	}
+	model.moveSelection(1)
+	if model.snapshot.SelectedDashboard != tuiDashboardIntranetRow {
+		t.Fatalf("Dashboard down selected %d, want intranet", model.snapshot.SelectedDashboard)
+	}
 	model.moveSelection(1)
 	if model.snapshot.SelectedDashboard != tuiDashboardDelayRow {
 		t.Fatalf("Dashboard down selected %d, want route delay", model.snapshot.SelectedDashboard)

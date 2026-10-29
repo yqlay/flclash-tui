@@ -81,31 +81,9 @@ func systemProxyCommand(args []string) error {
 		return nil
 	}
 	enabled := action == "enable" || action == "on"
-	if enabled && status.Mode == tuiSilentMode {
-		return errors.New("System proxy cannot be enabled in silent mode; switch mode first")
-	}
-	autoStarted := false
-	if enabled && !status.Running {
-		status, err = client.startAtRevision(status.Revision)
-		if err != nil {
-			return fmt.Errorf("start Core for System proxy: %w", err)
-		}
-		autoStarted = true
-	}
-	status, err = client.setSystemProxy(enabled, status.Revision)
+	status, _, err = applyManagedSystemProxyForCommand(client, status, enabled)
 	if err != nil {
-		if autoStarted {
-			if rolledBack, rollbackErr := client.stopAtRevision(status.Revision); rollbackErr != nil {
-				return fmt.Errorf(
-					"update System proxy: %v; automatic Core rollback failed: %w",
-					err,
-					rollbackErr,
-				)
-			} else {
-				status = rolledBack
-			}
-		}
-		return fmt.Errorf("update System proxy: %w", err)
+		return err
 	}
 	fmt.Printf(
 		"System proxy %s (revision %d)\n",
@@ -154,7 +132,7 @@ func tunCommand(args []string) error {
 		return nil
 	}
 	enabled := action == "enable" || action == "on"
-	status, err = client.setTun(enabled, scope, status.Revision)
+	status, err = applyManagedTunForCommand(client, enabled, scope, status.Revision)
 	if err != nil {
 		return err
 	}
@@ -191,7 +169,7 @@ func modeCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	status, err = client.setMode(mode, status.Revision)
+	status, err = applyManagedModeForCommand(client, mode, status.Revision)
 	if err != nil {
 		return err
 	}
@@ -235,12 +213,11 @@ func portCommand(args []string) error {
 	if err != nil || port < 0 || port > 65535 {
 		return errors.New("proxy port must be a number from 1 to 65535, or off")
 	}
-	client, status, settings, err := currentManagedSettings()
+	client, status, _, err := currentManagedSettings()
 	if err != nil {
 		return err
 	}
-	settings.MixedPort = port
-	status, err = client.applySettings(*settings, status.Revision)
+	status, err = applyManagedMixedPortForCommand(client, status.ConfigPath, port, status.Revision)
 	if err != nil {
 		return err
 	}
@@ -526,13 +503,18 @@ func networkCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	proxyPort := 0
-	if status.Running && status.Mode != tuiSilentMode {
-		proxyPort = status.ProxyPort
-	}
 	switch args[0] {
 	case "show", "refresh":
-		info := detectTUINetwork(proxyPort)
+		info := detectManagedNetworkForCommand(
+			client,
+			status.Running,
+			false,
+			status.Mode,
+			status.ActiveProxyPort,
+			status.ProxyPort,
+			status.ConfiguredProxyPort,
+			status.FLCOutbound,
+		)
 		fmt.Printf("Public IP:   %s\n", cliDisplayValue(info.PublicIP))
 		fmt.Printf("Country:     %s\n", cliDisplayValue(info.Country))
 		fmt.Printf("Intranet IP: %s\n", cliDisplayValue(info.IntranetIP))
@@ -542,20 +524,30 @@ func networkCommand(args []string) error {
 		}
 		return nil
 	case "delay":
-		if proxyPort <= 0 {
-			return errors.New("normal Proxy port is not active; use `flclash flc test` in silent mode")
-		}
-		delay, err := client.testRouteDelay(proxyPort, defaultCLITestURL)
+		delay, err := managedRouteDelayForCommand(
+			client,
+			status.Running,
+			false,
+			status.Mode,
+			status.ActiveProxyPort,
+			status.ProxyPort,
+			status.ConfiguredProxyPort,
+		)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("Route latency: %s\n", formatTUIDelay(delay))
 		return nil
 	case "speed":
-		if proxyPort <= 0 {
-			return errors.New("normal Proxy port is not active; use `flclash flc test` in silent mode")
-		}
-		result, err := client.testRouteSpeed(proxyPort)
+		result, err := managedRouteSpeedForCommand(
+			client,
+			status.Running,
+			false,
+			status.Mode,
+			status.ActiveProxyPort,
+			status.ProxyPort,
+			status.ConfiguredProxyPort,
+		)
 		if err != nil {
 			return err
 		}

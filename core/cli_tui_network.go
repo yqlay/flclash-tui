@@ -71,53 +71,24 @@ func (m *tuiModel) startNetworkCheck() tea.Cmd {
 	m.snapshot.Network.Loading = true
 	route := m.networkRoute()
 	coreRunning := m.coreRunning
-	ownsCore := m.ownsCore
+	probeWhenStopped := !m.ownsCore
+	mode := m.snapshot.Settings.Mode
+	activePort := m.snapshot.ActiveProxyPort
+	mixedPort := m.snapshot.Settings.MixedPort
+	outbound := m.snapshot.FLCOutbound
 	return func() tea.Msg {
-		resolved := route
-		if resolved.silent {
-			if ownsCore && !coreRunning {
-				return tuiNetworkResultMsg{
-					info: tuiNetworkInfo{
-						IntranetIP: detectTUIIntranetIP(),
-						Route:      "SILENT · Core stopped",
-						CheckedAt:  time.Now(),
-					},
-					route:      resolved.key,
-					generation: generation, sequence: sequence,
-				}
-			}
-			if resolved.service == nil {
-				return tuiNetworkResultMsg{
-					info: tuiNetworkInfo{
-						IntranetIP: detectTUIIntranetIP(),
-						Route:      "SILENT unavailable",
-						Error:      "silent network detection requires the managed Backend",
-						CheckedAt:  time.Now(),
-					},
-					route:      resolved.key,
-					generation: generation, sequence: sequence,
-				}
-			}
-			status, err := resolved.service.flcProxy()
-			if err != nil {
-				return tuiNetworkResultMsg{
-					info: tuiNetworkInfo{
-						IntranetIP: detectTUIIntranetIP(),
-						Route:      "SILENT unavailable",
-						Error:      err.Error(),
-						CheckedAt:  time.Now(),
-					},
-					route:      resolved.key,
-					generation: generation, sequence: sequence,
-				}
-			}
-			resolved.proxyURL = status.FLCProxyURL
-			resolved.outbound = status.FLCOutbound
-			resolved.label = "SILENT · " + cliDisplayValue(status.FLCOutbound)
-		}
 		return tuiNetworkResultMsg{
-			info:       detectTUINetworkRoute(resolved.proxyURL, resolved.label),
-			route:      resolved.key,
+			info: detectManagedNetworkForCommand(
+				route.service,
+				coreRunning,
+				probeWhenStopped,
+				mode,
+				activePort,
+				mixedPort,
+				mixedPort,
+				outbound,
+			),
+			route:      route.key,
 			generation: generation, sequence: sequence,
 		}
 	}
@@ -220,7 +191,7 @@ func detectTUINetwork(proxyPort int) tuiNetworkInfo {
 	if proxyPort > 0 {
 		label = fmt.Sprintf("PROXY 127.0.0.1:%d", proxyPort)
 	}
-	return detectTUINetworkRoute(proxyURL, label)
+	return detectTUINetworkRouteForCommand(proxyURL, label)
 }
 
 func detectTUINetworkRoute(proxyURL, routeLabel string) tuiNetworkInfo {

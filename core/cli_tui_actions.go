@@ -29,6 +29,8 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			return m.openProxiesForFLCOutbound()
 		case tuiDashboardMixedPortRow:
 			m.beginInput(tuiInputMixedPort)
+		case tuiDashboardPublicIPRow, tuiDashboardIntranetRow:
+			return m.startNetworkCheck()
 		case tuiDashboardDelayRow:
 			return m.testDashboardDelay()
 		case tuiDashboardSpeedRow:
@@ -105,6 +107,17 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			return nil
 		}
 		profile := m.snapshot.SSHProfiles[index]
+		if m.snapshot.SSHDashboardFocus {
+			switch m.snapshot.SSHDetailRow {
+			case tuiSSHProxyPortRow:
+				m.beginSSHProxyPortEdit()
+				return nil
+			case tuiSSHProxyIPRow:
+				return m.refreshSelectedSSHProxyIPs()
+			case tuiSSHInetRow, tuiSSHSpeedRow, tuiSSHTrafficRow:
+				return nil
+			}
+		}
 		if profile.NeedsUsername {
 			m.beginSSHForm(true)
 			if m.sshFormOpen {
@@ -119,6 +132,7 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			}
 			m.snapshot.SSHDetailName = profile.Name
 			m.snapshot.SSHDashboardFocus = true
+			m.snapshot.SSHDetailRow = tuiSSHTunnelRow
 			if profile.Connected && profile.Ready {
 				m.snapshot.setStatus(newTUIMessage("ui.4bb703bee905", profile.Name))
 				return m.refreshSelectedSSHDashboard()
@@ -213,7 +227,7 @@ func selectTUIServiceProxy(
 	if !prepareTUIBackendRevision(state, service) {
 		return
 	}
-	status, err := state.service.selectProxy(group.Name, node, state.backendRevision)
+	status, err := selectManagedProxyForCommand(state.service, group.Name, node, state.backendRevision)
 	if err != nil {
 		state.snapshot.setStatus(newTUIMessage("ui.0c8dbf711c49", err.Error()))
 		return
@@ -245,18 +259,17 @@ func switchTUIServiceProfile(
 		state.snapshot.setStatus(newTUIMessage("ui.4b591ed16c4b", message))
 		return
 	}
-	expectedSHA256, err := tuiFileSHA256(profile.Path)
-	if err != nil {
+	if _, err := tuiFileSHA256(profile.Path); err != nil {
 		state.snapshot.setStatus(newTUIMessage("ui.475d9c583566", err.Error()))
 		return
 	}
 	if !prepareTUIBackendRevision(state, service) {
 		return
 	}
-	status, err := state.service.reloadAtRevisionWithDigest(
+	status, err := activateManagedProfileForCommand(
+		state.service,
 		profile.Path,
 		state.backendRevision,
-		expectedSHA256,
 	)
 	if err != nil {
 		state.snapshot.setStatus(newTUIMessage("ui.7bae351770be", err.Error()))
@@ -338,7 +351,7 @@ func (m *tuiModel) runTool(index int) tea.Cmd {
 				syncStoppedTUISettings(state)
 			}
 		case 3:
-			if err := m.client.updateGeo(); err != nil {
+			if err := updateGeoForCommand(m.client); err != nil {
 				state.snapshot.setStatus(newTUIMessage("ui.a0a5ec4d845b", err.Error()))
 			} else {
 				state.snapshot.setStatus(newTUIMessage("ui.532856d3bd98"))

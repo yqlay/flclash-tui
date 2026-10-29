@@ -204,8 +204,10 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int, lan
 	)
 	listFocused := !snapshot.FocusSidebar && !snapshot.SSHDashboardFocus
 	statusWidth := 12
+	proxyWidth := 4
 	for _, profile := range snapshot.SSHProfiles {
 		statusWidth = maxTUIWidth(statusWidth, tuiDisplayWidth(tuiSSHListStatus(profile, language...)))
+		proxyWidth = maxTUIWidth(proxyWidth, tuiDisplayWidth(formatTUISSHProxyEndpoint(profile, language...)))
 	}
 	for visualIndex := start; visualIndex < end; visualIndex++ {
 		if visualIndex == 0 {
@@ -254,10 +256,12 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int, lan
 		if profile.Default {
 			name = "*" + truncateTUI(profile.Name, 15)
 		}
+		proxy := formatTUISSHProxyEndpoint(profile, language...)
 		row := tuiColumns(width-4,
 			tuiColumn{value: name, width: 18, minimum: 8},
 			tuiColumn{value: status, width: statusWidth, minimum: statusWidth},
-			tuiColumn{value: fmt.Sprintf("%s:%d", profile.Destination, profile.Port), width: maxTUIWidth(width-24-statusWidth, 8), minimum: 8, optional: true},
+			tuiColumn{value: proxy, width: proxyWidth, minimum: proxyWidth},
+			tuiColumn{value: fmt.Sprintf("%s:%d", profile.Destination, profile.Port), width: maxTUIWidth(width-26-statusWidth-proxyWidth, 8), minimum: 8, optional: true},
 		)
 		tuiRow(
 			b,
@@ -383,47 +387,66 @@ func drawTUISSHDetails(b *strings.Builder, snapshot tuiSnapshot, profile tuiSSHP
 	status, statusColor := tuiSSHTunnelStatus(profile, language...)
 	focused := !snapshot.FocusSidebar && snapshot.SSHDashboardFocus
 	subtitle := tr("ui.ca79eec78149")
-	if profile.Connected && profile.Ready {
+	switch {
+	case snapshot.SSHPortEditing:
+		subtitle = tr("ui.566b258d2d58")
+	case focused && snapshot.SSHDetailRow == tuiSSHProxyPortRow:
+		subtitle = tr("ssh.proxy_port_row")
+	case focused && snapshot.SSHDetailRow == tuiSSHProxyIPRow:
+		subtitle = tr("ssh.proxy_ip_row")
+	case focused && (snapshot.SSHDetailRow == tuiSSHInetRow ||
+		snapshot.SSHDetailRow == tuiSSHSpeedRow ||
+		snapshot.SSHDetailRow == tuiSSHTrafficRow):
+		subtitle = tr("ssh.detail_row")
+	case profile.Connected && profile.Ready:
 		subtitle = tr("ui.1f7f4087d744")
 	}
 	tuiTitle(b, tr("ui.7be2736a551d")+profile.Name, subtitle, width)
-	fields := []tuiField{tuiLabelField(tr("ui.ead00218114c"), status)}
-	fields[0].selected, fields[0].color = focused, statusColor
-	if !profile.Connected || !profile.Ready {
-		fields[0].truncate = true
-		fields[0].selected = true
-		rows := tuiSelectedRows(tuiFieldRows(fields, width), maxTUIWidth(height-(profileRows+3)-3, 1))
-		for index := range rows {
-			rows[index].selected = focused
+	proxyValue := formatTUISSHProxyEndpoint(profile, language...)
+	if snapshot.SSHPortEditing {
+		proxyValue = snapshot.SSHPortInput
+		if strings.TrimSpace(proxyValue) == "" {
+			proxyValue = " "
 		}
-		tuiWriteRows(b, rows, width)
-		tuiEndPanel(b, width)
-		return
 	}
-	inetIP := tuiSSHRemoteIntranetLabel(snapshot.SSHDirectProbe, language...)
-	if profile.SocksOnly {
-		inetIP = tr("ui.b2172a8fc3b3")
+	proxy := tuiLabelField(tr("ui.580605e99507"), proxyValue)
+	proxy.color = tuiCyan
+	fields := []tuiField{tuiLabelField(tr("ui.ead00218114c"), status), proxy}
+	fields[0].color = statusColor
+	if profile.Connected && profile.Ready {
+		inetIP := tuiSSHRemoteIntranetLabel(snapshot.SSHDirectProbe, language...)
+		if profile.SocksOnly {
+			inetIP = tr("ui.b2172a8fc3b3")
+		}
+		fields = append(fields,
+			tuiLabelField(tr("ui.d0e0f92fa371"), inetIP),
+			tuiLabelField(tr("ui.b5a2eb00c061"), tuiSSHNetworkLabel(snapshot.SSHNetwork, tr("ui.309ee924bee5"), language...)),
+			tuiTemplateField(tr("ui.205b4200a20d"), tuiTrafficChartDownload,
+				formatBytes(snapshot.SSHTraffic.Down),
+				tuiReset,
+				tuiTrafficChartUpload,
+				formatBytes(snapshot.SSHTraffic.Up),
+				tuiReset,
+			),
+			tuiTemplateField(tr("ui.21f42460546e"),
+				formatBytes(snapshot.SSHTotalTraffic.Up),
+				formatBytes(snapshot.SSHTotalTraffic.Down),
+			))
+		fields[2].color, fields[3].color = tuiGreen, tuiCyan
+	} else {
+		fields[0].truncate = true
 	}
-	fields = append(fields,
-		tuiLabelField(tr("ui.d0e0f92fa371"), inetIP),
-		tuiLabelField(tr("ui.b5a2eb00c061"), tuiSSHNetworkLabel(snapshot.SSHNetwork, tr("ui.309ee924bee5"), language...)),
-		tuiTemplateField(tr("ui.205b4200a20d"), tuiTrafficChartDownload,
-			formatBytes(snapshot.SSHTraffic.Down),
-			tuiReset,
-			tuiTrafficChartUpload,
-			formatBytes(snapshot.SSHTraffic.Up),
-			tuiReset,
-		),
-		tuiTemplateField(tr("ui.21f42460546e"),
-			formatBytes(snapshot.SSHTotalTraffic.Up),
-			formatBytes(snapshot.SSHTotalTraffic.Down),
-		))
-	fields[1].color, fields[2].color = tuiGreen, tuiCyan
+	for index := range fields {
+		fields[index].selected = focused && snapshot.SSHDetailRow == index
+	}
 	rows := tuiFieldRows(fields, width)
 	limit := maxTUIWidth(height-(profileRows+3)-3, 1)
 	visible := tuiSelectedRows(rows, limit)
 	tuiWriteRows(b, visible, width)
 	tuiEndPanel(b, width)
+	if !profile.Connected || !profile.Ready {
+		return
+	}
 
 	chartHeight := height - (profileRows + 3) - (len(visible) + 3) - 3
 	if chartHeight < 1 {

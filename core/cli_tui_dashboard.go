@@ -18,10 +18,26 @@ func tuiDashboardControlFields(snapshot tuiSnapshot, language ...string) []tuiFi
 		tuiTemplateField(tr("ui.1b54c40c04fc"), tuiFLCOutboundLabel(snapshot, language...)),
 		tuiTemplateField(tr("ui.4e7d696cd5d1"), tuiProxyPortLabel(snapshot, language...)),
 	}
-	for index := range fields {
-		fields[index].selected = index == snapshot.SelectedDashboard && !snapshot.FocusSidebar
-	}
+	applyTUIDashboardFieldSelection(snapshot, fields, tuiDashboardServiceRow)
 	return fields
+}
+
+func applyTUIDashboardFieldSelection(snapshot tuiSnapshot, fields []tuiField, start int) {
+	for index := range fields {
+		fields[index].selected = !snapshot.FocusSidebar && snapshot.SelectedDashboard == start+index
+	}
+}
+
+func tuiDashboardSelectableCount(snapshot tuiSnapshot) int {
+	return tuiDashboardOverviewStartRow + len(tuiDashboardOverviewFields(snapshot, cliPaths{}))
+}
+
+// cursorDashboardSnapshot matches renderTUIAtSize, which draws External Core
+// from ownsCore rather than the snapshot flag a refresh left behind.
+func (m *tuiModel) cursorDashboardSnapshot() tuiSnapshot {
+	snapshot := m.snapshot
+	snapshot.ExternalCore = !m.ownsCore
+	return snapshot
 }
 
 func tuiDashboardNetworkFields(snapshot tuiSnapshot, language ...string) []tuiField {
@@ -53,8 +69,7 @@ func tuiDashboardNetworkFields(snapshot tuiSnapshot, language ...string) []tuiFi
 	}
 	fields[0].color, fields[1].color = tuiCyan, tuiGreen
 	fields[2].color, fields[3].color = tuiCyan, tuiGreen
-	fields[2].selected = snapshot.SelectedDashboard == tuiDashboardDelayRow && !snapshot.FocusSidebar
-	fields[3].selected = snapshot.SelectedDashboard == tuiDashboardSpeedRow && !snapshot.FocusSidebar
+	applyTUIDashboardFieldSelection(snapshot, fields, tuiDashboardPublicIPRow)
 	return fields
 }
 
@@ -81,6 +96,7 @@ func tuiDashboardOverviewFields(snapshot tuiSnapshot, paths cliPaths, language .
 	)
 	// Long paths are opaque data, not a reason to consume the entire chart.
 	fields[len(fields)-1].truncate = true
+	applyTUIDashboardFieldSelection(snapshot, fields, tuiDashboardOverviewStartRow)
 	return fields
 }
 
@@ -108,17 +124,19 @@ func drawTUIDashboard(b *strings.Builder, snapshot tuiSnapshot, paths cliPaths, 
 	tuiTitle(b, tr("ui.3aae919b1bc0"), networkSubtitle, width)
 	tuiWriteRows(b, network, width)
 	tuiEndPanel(b, width)
+	// Overview stays with the other cursor rows. The chart is not a row, so it
+	// is drawn after them and Up/Down does not jump across the plot.
+	if height >= 17 {
+		tuiTitle(b, tr("ui.d4b1ea5708dd"), tr("ui.4abac76b607e")+tuiMemoryRefreshInterval.String()+tr("ui.b3db8b20fba3"), width)
+		tuiWriteRows(b, overview, width)
+		tuiEndPanel(b, width)
+	}
 	if height >= 33 && height > fixedRows {
 		chart := buildTUITrafficChart(snapshot.TrafficHistory, maxTUIWidth(width-4, 1), height-fixedRows)
 		tuiTrafficTitle(b, snapshot.Traffic, chart.peak, width, language...)
 		for _, line := range chart.lines {
 			writeTUIAnsiRow(b, line, width)
 		}
-		tuiEndPanel(b, width)
-	}
-	if height >= 17 {
-		tuiTitle(b, tr("ui.d4b1ea5708dd"), tr("ui.4abac76b607e")+tuiMemoryRefreshInterval.String()+tr("ui.b3db8b20fba3"), width)
-		tuiWriteRows(b, overview, width)
 		tuiEndPanel(b, width)
 	}
 }
@@ -156,6 +174,9 @@ func tuiCompactDashboardRows(snapshot tuiSnapshot, paths cliPaths, width, height
 	chartHeight := maxTUIWidth(tuiCompactTrafficChartHeight(height), height-3-fixedRows)
 	chart := buildTUITrafficChart(snapshot.TrafficHistory, maxTUIWidth(width-4, 1), chartHeight)
 	rows := append([]tuiDashboardCompactRow(nil), controls...)
+	rows = append(rows, network...)
+	rows = append(rows, tuiDashboardCompactRow{value: tr("ui.7f2565a40efe"), color: tuiCyan})
+	rows = append(rows, overview...)
 	rows = append(rows, tuiDashboardCompactRow{
 		value: tuiCyan + tr("ui.43e907bfbc87") + tuiReset + " · " + formatTUITrafficLegend(snapshot.Traffic, chart.peak, language...), ansi: true,
 	})
@@ -163,9 +184,7 @@ func tuiCompactDashboardRows(snapshot tuiSnapshot, paths cliPaths, width, height
 		rows = append(rows, tuiDashboardCompactRow{value: line, ansi: true})
 	}
 	rows = append(rows, tuiDashboardCompactRow{value: tr("ui.a8024f5e9c32") + strings.ToLower(tuiDashboardRouteName(snapshot, language...)) + tr("ui.e8595567c19b"), color: tuiCyan})
-	rows = append(rows, network...)
-	rows = append(rows, tuiDashboardCompactRow{value: tr("ui.7f2565a40efe"), color: tuiCyan})
-	return append(rows, overview...)
+	return rows
 }
 
 func tuiDashboardRouteName(snapshot tuiSnapshot, language ...string) string {

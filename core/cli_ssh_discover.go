@@ -1043,7 +1043,7 @@ func captureCLISSHCandidateContext(parent context.Context, candidate cliSSHCaptu
 		if candidate.ControlPath != "" {
 			return attachCLISSHProfileAtPathContext(ctx, profile.Name, candidate.ControlPath)
 		}
-		return attachCLISSHProfileContext(ctx, profile.Name)
+		return attachCLISSHProfileContextForCommand(ctx, profile.Name)
 	}
 }
 

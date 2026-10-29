@@ -57,7 +57,7 @@ func geoCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := managedController(status).updateGeo(); err != nil {
+		if err := updateGeoForCommand(managedController(status)); err != nil {
 			return err
 		}
 		fmt.Println("Geo database update started")

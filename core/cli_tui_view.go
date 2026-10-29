@@ -117,6 +117,23 @@ func (m *tuiModel) View() string {
 		snapshot.DangerConfirmMessage = m.dangerConfirmBodyText.text(snapshot.Language)
 	}
 	snapshot.SSHForm = m.sshFormView()
+	if m.sshProxyPortEditing {
+		snapshot.SSHPortEditing = true
+		snapshot.SSHDetailRow = tuiSSHProxyPortRow
+		cursor := m.sshProxyPortCursor
+		if cursor < 0 {
+			cursor = 0
+		}
+		if cursor > len(m.sshProxyPortInput) {
+			cursor = len(m.sshProxyPortInput)
+		}
+		width := tuiLayoutAtSize(m.width, m.height, snapshot.Language).ContentWidth
+		snapshot.SSHPortInput = tuiSafeInputViewport(
+			m.sshProxyPortInput,
+			cursor,
+			maxTUIWidth(width-18, 6),
+		)
+	}
 	snapshot.SSHCredentialPrompt = tuiSSHCredentialPromptView{
 		Open:     m.sshCredentialPromptOpen,
 		Profile:  m.sshCredentialProfile,

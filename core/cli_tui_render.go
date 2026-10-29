@@ -95,17 +95,78 @@ func renderTUIAtSize(snapshot tuiSnapshot, paths cliPaths, controllerAddress str
 		b.WriteByte('\n')
 	}
 
-	footer := tr("ui.a9b34ecb8fd7")
-	if width >= 110 {
-		footer = tr("ui.f43c74fbfff4")
-	}
-	if snapshot.Page == tuiPageDashboard && bodyHeight < 33 {
-		footer = tr("ui.e1db28b2e468")
-	} else if snapshot.Page == tuiPageSSH {
-		footer = tr("ui.cfc17a4264b8")
-	}
+	footer := tuiFullFooter(snapshot, width, bodyHeight, language...)
 	b.WriteString(tuiNotificationFooter(snapshot, footer, width, language...))
 	return b.String()
+}
+
+// tuiFullFooter keeps the wide hint only when that hint matches the key.
+// "d" runs a delay on Dashboard and on Proxies groups. On Connections it
+// closes the selected row. Everywhere else it does nothing, so the delay
+// clause is left out. SSH and the short Dashboard keep their own hints.
+func tuiFullFooter(snapshot tuiSnapshot, width, bodyHeight int, language ...string) string {
+	tr := tuiTranslator(language...)
+	if snapshot.Page == tuiPageSSH {
+		return tr("ui.cfc17a4264b8")
+	}
+	if snapshot.Page == tuiPageDashboard && bodyHeight < 33 {
+		return tr("ui.e1db28b2e468")
+	}
+	if width < 110 {
+		return tr("ui.a9b34ecb8fd7")
+	}
+	wide := tr("ui.f43c74fbfff4")
+	if tuiDelayKeyAdvertised(snapshot) {
+		return wide
+	}
+	replacement := ""
+	if snapshot.Page == tuiPageConnections {
+		replacement = tuiConnectionCloseFooterClause(language...)
+	}
+	return tuiRewriteDelayFooterClause(wide, replacement)
+}
+
+func tuiDelayKeyAdvertised(snapshot tuiSnapshot) bool {
+	if snapshot.Page == tuiPageDashboard {
+		return true
+	}
+	return snapshot.Page == tuiPageProxies &&
+		!snapshot.FocusSidebar &&
+		snapshot.ProxyView == tuiProxyViewGroups
+}
+
+func tuiConnectionCloseFooterClause(language ...string) string {
+	segments, _ := tuiSplitFooterSegments(tuiTranslator(language...)("ui.0cfe8e56a018"))
+	if len(segments) == 0 {
+		return ""
+	}
+	return segments[0]
+}
+
+func tuiRewriteDelayFooterClause(footer, replacement string) string {
+	segments, separator := tuiSplitFooterSegments(footer)
+	rewritten := make([]string, 0, len(segments))
+	replaced := false
+	for _, segment := range segments {
+		if !replaced && tuiFooterNamesDKey(segment) {
+			replaced = true
+			if replacement != "" {
+				rewritten = append(rewritten, replacement)
+			}
+			continue
+		}
+		rewritten = append(rewritten, segment)
+	}
+	if !replaced {
+		return footer
+	}
+	indent := footer[:len(footer)-len(strings.TrimLeft(footer, " "))]
+	return tuiJoinFooter(indent, separator, rewritten)
+}
+
+func tuiFooterNamesDKey(segment string) bool {
+	fields := strings.Fields(segment)
+	return len(fields) >= 2 && fields[0] == "d"
 }
 
 func renderTUICompact(
@@ -610,7 +671,7 @@ func tuiSSHFormFields(form tuiSSHFormView, language ...string) []tuiField {
 		tuiLabelField(tr("ui.3399bee80cd4"), form.Host),
 		tuiLabelField(tr("ui.fa98cd3e1313"), cliDisplayValue(form.Jump)),
 		tuiTemplateField(tr("ui.cfe13ac844d1"), form.Port),
-		tuiLabelField(tr("ui.580605e99507"), formatTUISSHLocalPort(form.LocalPort, language...)),
+		tuiLabelField(tr("ui.580605e99507"), formatTUISSHProxyAddress(form.LocalPort, language...)),
 		tuiLabelField(tr("ui.b4771c58ec60"), cliDisplayValue(form.Identity)),
 	}
 	passphrase := tr("ui.be5192ae9afa")
@@ -708,12 +769,19 @@ func tuiSSHFormEditingLabel(form tuiSSHFormView, language ...string) string {
 	return tr("ui.e9e16253d5f9")
 }
 
-func formatTUISSHLocalPort(port int, language ...string) string {
-	tr := tuiTranslator(language...)
+func formatTUISSHProxyAddress(port int, language ...string) string {
 	if port <= 0 {
-		return tr("ui.929260ad9b9e")
+		return tuiTranslator(language...)("ui.929260ad9b9e")
 	}
 	return "127.0.0.1:" + strconv.Itoa(port)
+}
+
+func formatTUISSHProxyEndpoint(profile tuiSSHProfile, language ...string) string {
+	port := profile.SocksPort
+	if port <= 0 {
+		port = profile.LocalPort
+	}
+	return formatTUISSHProxyAddress(port, language...)
 }
 
 const (
@@ -862,6 +930,15 @@ func tuiRow(b *strings.Builder, value string, width int, selected bool, color st
 	}
 	if color != "" {
 		b.WriteString(color)
+	}
+	if selected && strings.Contains(value, tuiReset) {
+		// Values such as the speed template reset SGR mid-row. Put the cursor
+		// background back so the whole row stays highlighted.
+		restore := tuiSelect
+		if color != "" {
+			restore += color
+		}
+		value = strings.ReplaceAll(value, tuiReset, tuiReset+restore)
 	}
 	b.WriteString("  " + value + "  ")
 	b.WriteString(tuiReset)

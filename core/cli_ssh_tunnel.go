@@ -729,13 +729,31 @@ func allocateCLISSHPort() (int, error) {
 	return listener.Addr().(*net.TCPAddr).Port, nil
 }
 
+func allocateCLISSHPublicPort(avoid int) (int, error) {
+	var lastErr error
+	for attempt := 0; attempt < 8; attempt++ {
+		port, err := allocateCLISSHPort()
+		if err != nil {
+			return 0, err
+		}
+		if port != avoid {
+			return port, nil
+		}
+		lastErr = fmt.Errorf("local proxy port %d is the SSH forward", port)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("could not allocate a local proxy port")
+	}
+	return 0, lastErr
+}
+
 func checkCLISSHPortAvailable(port int) error {
 	listener, err := net.Listen(
 		"tcp4",
 		net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
 	)
 	if err != nil {
-		return fmt.Errorf("local SSH SOCKS5 port %d is already in use: %w", port, err)
+		return fmt.Errorf("local proxy port %d is already in use: %w", port, err)
 	}
 	return listener.Close()
 }
@@ -753,6 +771,90 @@ func waitCLISSHPortAvailable(port int, timeout time.Duration) error {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+// rebindCLISSHPublicPort moves the public HTTP/SOCKS relay. port 0 allocates
+// one now and leaves the saved port on auto. A live tunnel keeps its SSH
+// session and hidden forward; only the local relay process is restarted.
+func rebindCLISSHPublicPort(name string, port int) (cliSSHTunnelState, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return cliSSHTunnelState{}, errors.New("SSH profile name is required")
+	}
+	if port < 0 || port > 65535 {
+		return cliSSHTunnelState{}, fmt.Errorf("invalid local proxy port %d", port)
+	}
+	lock, err := lockCLISSHTunnelOperation()
+	if err != nil {
+		return cliSSHTunnelState{}, err
+	}
+	defer lock.release()
+	state, active, err := activeCLIPersistentSSHTunnelForOperation()
+	if err != nil {
+		return cliSSHTunnelState{}, err
+	}
+	if !active || !strings.EqualFold(state.Name, name) {
+		if err := setCLISSHProfileLocalPort(name, port); err != nil {
+			return cliSSHTunnelState{}, err
+		}
+		return cliSSHTunnelState{Name: name, Port: port}, nil
+	}
+	savedPort := port
+	if port == 0 {
+		allocated, allocErr := allocateCLISSHPublicPort(state.UpstreamPort)
+		if allocErr != nil {
+			return state, allocErr
+		}
+		port = allocated
+	}
+	if port == state.Port {
+		if err := setCLISSHProfileLocalPort(name, savedPort); err != nil {
+			return state, err
+		}
+		return state, nil
+	}
+	if state.UpstreamPort < 1 || state.UpstreamPort > 65535 {
+		return state, errors.New("SSH forward port is unavailable")
+	}
+	if port == state.UpstreamPort {
+		return state, fmt.Errorf("local proxy port %d is the SSH forward", port)
+	}
+	if err := waitCLISSHPortAvailable(port, time.Second); err != nil {
+		return state, err
+	}
+	previous := state
+	if err := stopCLISSHRelay(state); err != nil && cliSSHRelayProcessAlive(state.RelayPID) {
+		return previous, err
+	}
+	state.Port = port
+	state.RelayPID = 0
+	state.RelayControl = ""
+	if err := startCLISSHRelayForOperation(&state); err != nil {
+		restore := previous
+		restore.RelayPID = 0
+		restore.RelayControl = ""
+		var restoreErr error
+		if waitErr := waitCLISSHPortAvailable(restore.Port, time.Second); waitErr != nil {
+			restoreErr = waitErr
+		} else if startErr := startCLISSHRelayForOperation(&restore); startErr != nil {
+			restoreErr = startErr
+		} else if restore.StatePath != "" {
+			restoreErr = saveCLISSHTunnelState(restore)
+		}
+		if restoreErr != nil {
+			return previous, errors.Join(err, fmt.Errorf("restore SSH proxy port: %w", restoreErr))
+		}
+		return previous, err
+	}
+	if state.StatePath != "" {
+		if err := saveCLISSHTunnelState(state); err != nil {
+			return state, err
+		}
+	}
+	if err := setCLISSHProfileLocalPort(name, savedPort); err != nil {
+		return state, err
+	}
+	return state, nil
 }
 
 func ensureCLISSHRuntimeDirectory() (string, error) {

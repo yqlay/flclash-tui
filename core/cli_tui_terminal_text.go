@@ -117,6 +117,7 @@ func safeTUISnapshotForRender(source tuiSnapshot) tuiSnapshot {
 	snapshot.DangerConfirmTitle, snapshot.DangerConfirmMessage = safeCLITerminalLine(snapshot.DangerConfirmTitle), safeCLITerminalText(snapshot.DangerConfirmMessage)
 	snapshot.ProfileDelete.Name, snapshot.ProfileDelete.Kind = safeCLITerminalLine(snapshot.ProfileDelete.Name), safeCLITerminalLine(snapshot.ProfileDelete.Kind)
 	snapshot.SSHDetailName = safeCLITerminalLine(snapshot.SSHDetailName)
+	snapshot.SSHPortInput = safeCLITerminalLine(snapshot.SSHPortInput)
 	snapshot.FLCOutbound = safeCLITerminalLine(snapshot.FLCOutbound)
 	snapshot.Network, snapshot.SSHNetwork, snapshot.SSHDirectNetwork = safeTUINetworkForRender(snapshot.Network), safeTUINetworkForRender(snapshot.SSHNetwork), safeTUINetworkForRender(snapshot.SSHDirectNetwork)
 	snapshot.SSHDirectProbe.IntranetIP, snapshot.SSHDirectProbe.Reason = safeCLITerminalLine(snapshot.SSHDirectProbe.IntranetIP), safeCLITerminalLine(snapshot.SSHDirectProbe.Reason)

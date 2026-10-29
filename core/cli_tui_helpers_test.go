@@ -542,6 +542,7 @@ func TestPreserveTUIInteractionKeepsSSHSelectionDashboardAndMetrics(t *testing.T
 	current := tuiSnapshot{
 		SSHDashboardFocus: true,
 		SSHDetailName:     "second",
+		SSHDetailRow:      tuiSSHProxyPortRow,
 		SelectedSSH:       1,
 		SSHNetwork:        tuiNetworkInfo{PublicIP: "203.0.113.8"},
 		SSHTrafficHistory: []trafficSnapshot{{Up: 10, Down: 20}},
@@ -560,6 +561,7 @@ func TestPreserveTUIInteractionKeepsSSHSelectionDashboardAndMetrics(t *testing.T
 	if merged.SelectedSSH != 0 ||
 		!merged.SSHDashboardFocus ||
 		merged.SSHDetailName != "second" ||
+		merged.SSHDetailRow != tuiSSHProxyPortRow ||
 		merged.SSHNetwork.PublicIP != "203.0.113.8" ||
 		len(merged.SSHTrafficHistory) != 1 {
 		t.Fatalf("SSH interaction was not preserved: %+v", merged)
@@ -571,6 +573,7 @@ func TestPreserveTUIInteractionClosesDeletedSSHDetail(t *testing.T) {
 		Page:              tuiPageSSH,
 		SelectedSSH:       0,
 		SSHDetailName:     "removed",
+		SSHDetailRow:      tuiSSHProxyPortRow,
 		SSHDashboardFocus: true,
 		SSHProfiles: []tuiSSHProfile{
 			{Name: "removed"},
@@ -579,7 +582,7 @@ func TestPreserveTUIInteractionClosesDeletedSSHDetail(t *testing.T) {
 	}
 	updated := tuiSnapshot{SSHProfiles: []tuiSSHProfile{{Name: "remaining"}}}
 	merged := preserveTUIInteraction(current, updated)
-	if merged.SSHDetailName != "" || merged.SSHDashboardFocus {
+	if merged.SSHDetailName != "" || merged.SSHDashboardFocus || merged.SSHDetailRow != tuiSSHTunnelRow {
 		t.Fatalf("deleted SSH profile detail survived refresh: %+v", merged)
 	}
 }

@@ -116,7 +116,7 @@ func (m *tuiModel) changeMode(mode string) tea.Cmd {
 		if !prepareTUIBackendRevision(state, service) {
 			return
 		}
-		status, err := state.service.setMode(mode, state.backendRevision)
+		status, err := applyManagedModeForCommand(state.service, mode, state.backendRevision)
 		if err != nil {
 			state.snapshot.setStatus(newTUIMessage("ui.411e4c2d2669", err.Error()))
 			return
@@ -432,9 +432,25 @@ func (m *tuiModel) submitInput() tea.Cmd {
 				state.settingsDraft = inputDraft
 				state.portEdit = &tuiPortEditDraft{Value: value, Base: inputDraft}
 			}
-			settings := state.snapshot.Settings
-			settings.MixedPort = port
-			commitTUIOperationSettings(state, m.service, m.client, settings)
+			if !prepareTUIBackendRevision(state, m.service) {
+				return
+			}
+			status, err := applyManagedMixedPortForCommand(
+				state.service,
+				state.paths.ConfigPath,
+				port,
+				state.backendRevision,
+			)
+			if err != nil {
+				reportTUISettingsSaveError(state, err, "ui.13f4425a0649")
+				return
+			}
+			state.snapshot.Settings.MixedPort = port
+			clearTUISettingsDraft(state)
+			state.snapshot.setStatus(newTUIMessage("ui.09838b9053bc", status.Revision))
+			refreshTUISnapshot(&state.snapshot, m.client)
+			applyTUIOperationServiceStatus(state, status)
+			state.networkChanged = true
 		})
 	case tuiInputSubscription:
 		if value == "" {

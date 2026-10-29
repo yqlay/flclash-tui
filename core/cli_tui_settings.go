@@ -45,10 +45,8 @@ func applyTUIOperationSetting(
 			return
 		}
 		scope := state.snapshot.Settings.TunScope
-		if scope == "" {
-			scope = tuiTunScopeUser
-		}
-		status, err := state.service.setTun(
+		status, err := applyManagedTunForCommand(
+			state.service,
 			!tuiRequestedTun(state.snapshot),
 			scope,
 			state.backendRevision,
@@ -65,6 +63,52 @@ func applyTUIOperationSetting(
 	settings := state.snapshot.Settings
 	if !changeTUISettingsValue(&settings, key) {
 		state.snapshot.setStatus(newTUIMessage("ui.7c247b59e634"))
+		return
+	}
+	if key == tuiKeyPortUp || key == tuiKeyPortDown {
+		if !prepareTUIBackendRevision(state, service) {
+			return
+		}
+		status, err := applyManagedMixedPortForCommand(
+			state.service,
+			state.paths.ConfigPath,
+			settings.MixedPort,
+			state.backendRevision,
+		)
+		if err != nil {
+			reportTUISettingsSaveError(state, err, "ui.13f4425a0649")
+			return
+		}
+		state.snapshot.Settings.MixedPort = settings.MixedPort
+		clearTUISettingsDraft(state)
+		state.snapshot.setStatus(newTUIMessage("ui.09838b9053bc", status.Revision))
+		refreshTUISnapshot(&state.snapshot, client)
+		applyTUIOperationServiceStatus(state, status)
+		state.networkChanged = true
+		return
+	}
+	if name, value, ok := tuiSettingsAssignment(key, settings); ok {
+		if !prepareTUIBackendRevision(state, service) {
+			return
+		}
+		status, err := applyManagedSettingForCommand(
+			state.service,
+			state.paths.ConfigPath,
+			name,
+			value,
+			state.backendRevision,
+			tuiRequestedTun(state.snapshot),
+		)
+		if err != nil {
+			reportTUISettingsSaveError(state, err, "ui.13f4425a0649")
+			return
+		}
+		state.snapshot.Settings = settings
+		clearTUISettingsDraft(state)
+		state.snapshot.setStatus(newTUIMessage("ui.09838b9053bc", status.Revision))
+		refreshTUISnapshot(&state.snapshot, client)
+		applyTUIOperationServiceStatus(state, status)
+		state.networkChanged = true
 		return
 	}
 	commitTUIOperationSettings(state, service, client, settings)
@@ -88,7 +132,7 @@ func applyTUITunScope(state *tuiOperationState, service *tuiServiceClient) {
 	} else {
 		scope = tuiTunScopeUser
 	}
-	status, err := state.service.setTun(false, scope, state.backendRevision)
+	status, err := applyManagedTunForCommand(state.service, false, scope, state.backendRevision)
 	if err != nil {
 		state.snapshot.setStatus(newTUIMessage("ui.b9d29efd3c14", err.Error()))
 		return

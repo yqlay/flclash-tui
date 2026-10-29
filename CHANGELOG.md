@@ -1,3 +1,11 @@
+## FlClash TUI v0.5.38
+
+- The SSH public loopback port accepts HTTP CONNECT, absolute-form HTTP, and SOCKS5 on the same address. The hidden OpenSSH dynamic forward stays SOCKS5. `flc ssh` still injects `http://127.0.0.1:PORT`.
+- On a connected SSH detail, Enter on the proxy-port row edits that port in place (`auto` or a number) and keeps the SSH session. The same port does not restart the relay.
+- Up/Down highlights each labeled row on Dashboard, SSH, Proxies, Profiles, Connections, History, Logs, Settings, and Maintenance. Enter runs that row's existing action. Chart samples and display-only rows stay highlight-only. The CLI and the TUI call the same operation for those actions.
+- The wide footer says `d delay` only on Dashboard and on Proxies groups. Connections says `d close selected`. The other pages omit that claim. `d` on Connections still asks before closing the selected flow.
+- Restart the Backend after upgrading so the CLI and TUI both run v0.5.38. Backend IPC remains v7.
+
 ## FlClash TUI v0.5.37
 
 - The SSH page keeps the opened connection, its delay, speed, and relay traffic when you leave the page. That view clears only when the profile itself is gone.

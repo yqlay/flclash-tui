@@ -119,61 +119,24 @@ func showManagedSettings() error {
 }
 
 func setManagedSetting(key, value string) error {
-	client, status, settings, err := currentManagedSettings()
+	client, status, _, err := currentManagedSettings()
 	if err != nil {
 		return err
 	}
-	switch strings.ToLower(key) {
-	case "tun-scope":
-		if cliTunRequested(status) {
-			return errors.New("Turn TUN off before changing its scope")
-		}
-		scope, err := normalizeTUITunScope(value)
-		if err != nil {
-			return err
-		}
-		status, err = client.setTun(false, scope, status.Revision)
-		if err != nil {
-			return err
-		}
+	status, err = applyManagedSettingForCommand(
+		client,
+		status.ConfigPath,
+		key,
+		value,
+		status.Revision,
+		cliTunRequested(status),
+	)
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(key, "tun-scope") {
 		fmt.Printf("tun-scope %s (revision %d)\n", status.TunScope, status.Revision)
 		return nil
-	case "allow-lan":
-		enabled, err := cliOnOffValue(value)
-		if err != nil {
-			return err
-		}
-		settings.AllowLAN = enabled
-	case "ipv6":
-		enabled, err := cliOnOffValue(value)
-		if err != nil {
-			return err
-		}
-		settings.IPv6 = enabled
-	case "unified-delay":
-		enabled, err := cliOnOffValue(value)
-		if err != nil {
-			return err
-		}
-		settings.UnifiedDelay = enabled
-	case "tcp-concurrent":
-		enabled, err := cliOnOffValue(value)
-		if err != nil {
-			return err
-		}
-		settings.TCPConcurrent = enabled
-	case "log-level":
-		level, err := cliLogLevelValue(value)
-		if err != nil {
-			return err
-		}
-		settings.LogLevel = level
-	default:
-		return fmt.Errorf("unknown setting %q", key)
-	}
-	status, err = client.applySettings(*settings, status.Revision)
-	if err != nil {
-		return err
 	}
 	fmt.Printf("%s %s (revision %d)\n", strings.ToLower(key), strings.ToLower(value), status.Revision)
 	return nil

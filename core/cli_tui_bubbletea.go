@@ -327,6 +327,10 @@ type tuiModel struct {
 	inputValue               []rune
 	inputCursor              int
 	inputSelectAll           bool
+	sshProxyPortEditing      bool
+	sshProxyPortInput        []rune
+	sshProxyPortCursor       int
+	sshProxyPortSelectAll    bool
 	modeSelectionOpen        bool
 	selectedMode             int
 	languageSelectionOpen    bool
@@ -451,6 +455,7 @@ func newTUIModel(
 			SelectedMenu:      int(tuiPageDashboard),
 			SelectedDashboard: tuiDashboardServiceRow,
 			FocusSidebar:      true,
+			ExternalCore:      !ownsCore,
 		},
 		client:           client,
 		paths:            paths,
@@ -664,6 +669,7 @@ func (m *tuiModel) Init() tea.Cmd {
 }
 
 func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
+	m.snapshot.ExternalCore = !m.ownsCore
 	switch message := message.(type) {
 	case tuiLanguageSavedMsg:
 		m.languageSaving = false
@@ -964,6 +970,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			previousSSH = m.snapshot.SSHProfiles[previousSSHIndex]
 		}
 		m.snapshot = mergeTUIRefresh(m.snapshot, message.snapshot)
+		m.closeSSHProxyPortEditIfDetailGone()
 		m.syncNetworkExit()
 		m.reflowTUI()
 		if m.snapshot.LogsInitialized {
@@ -1158,6 +1165,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.err == nil && message.action == "attach" {
 			m.snapshot.SSHDetailName = message.selectedName
 			m.snapshot.SSHDashboardFocus = true
+			m.snapshot.SSHDetailRow = tuiSSHTunnelRow
 		}
 		if message.err == nil && (message.action == "add" || message.action == "edit" || message.action == "attach") && message.selectedName != "" {
 			for index, profile := range m.snapshot.SSHProfiles {
@@ -1170,6 +1178,8 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.snapshot.SSHDetailName != "" && m.sshDetailProfileIndex() < 0 {
 			m.snapshot.SSHDetailName = ""
 			m.snapshot.SSHDashboardFocus = false
+			m.snapshot.SSHDetailRow = tuiSSHTunnelRow
+			m.cancelSSHProxyPortEdit()
 			m.resetSelectedSSHMetrics()
 		}
 		if message.err != nil {
@@ -1185,7 +1195,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.err == nil &&
 			strings.EqualFold(m.snapshot.SSHDetailName, message.selectedName) {
 			switch message.action {
-			case "connect", "attach":
+			case "connect", "attach", "port":
 				m.resetSelectedSSHMetrics()
 				commands = append(commands, m.refreshSelectedSSHDashboard())
 			case "disconnect":
@@ -1205,6 +1215,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.inputMode != tuiInputNone {
 			return m, m.handleInput(message)
+		}
+		if m.sshProxyPortEditing {
+			return m, m.handleSSHProxyPortInput(message)
 		}
 		if m.sshCredentialPromptOpen {
 			return m, m.handleSSHCredentialPrompt(message)

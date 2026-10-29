@@ -460,7 +460,7 @@ func TestTUISSHPageKeepsAuthenticationOutOfMetrics(t *testing.T) {
 		"SSH · school",
 		"school",
 		"CONNECTED",
-		"HTTP 127.0.0.1:45678",
+		"HTTP/SOCKS 127.0.0.1:45678",
 		"Proxy Inet IP",
 		"Proxy IP",
 		"Speed",
@@ -480,6 +480,50 @@ func TestTUISSHPageKeepsAuthenticationOutOfMetrics(t *testing.T) {
 	chinese := stripTUIANSI(renderTUIAtSize(snapshot, cliPaths{}, "private Unix socket", true, false, 96, 28))
 	if !strings.Contains(chinese, "n 添加") {
 		t.Fatalf("SSH list hint dropped add in Chinese:\n%s", chinese)
+	}
+}
+
+func TestTUISSHPageShowsHTTPProxyPort(t *testing.T) {
+	base := tuiSnapshot{
+		Page:          tuiPageSSH,
+		SSHDetailName: "school",
+		SSHProfiles: []tuiSSHProfile{{
+			Name:        "school",
+			Destination: "student@example.edu",
+			Port:        22,
+			LocalPort:   1080,
+		}},
+	}
+	configured := stripTUIANSI(renderTUIAtSize(base, cliPaths{}, "private Unix socket", true, false, 120, 24))
+	for _, expected := range []string{"127.0.0.1:1080", "HTTP/SOCKS", "student@example.edu:22"} {
+		if !strings.Contains(configured, expected) {
+			t.Fatalf("disconnected SSH page does not contain %q:\n%s", expected, configured)
+		}
+	}
+	base.SSHProfiles[0].LocalPort = 0
+	automatic := stripTUIANSI(renderTUIAtSize(base, cliPaths{}, "private Unix socket", true, false, 120, 24))
+	if strings.Contains(automatic, "127.0.0.1:") || !strings.Contains(automatic, "auto") {
+		t.Fatalf("automatic SSH profile did not stay on auto:\n%s", automatic)
+	}
+	base.SSHProfiles[0].LocalPort = 1080
+	base.SSHProfiles[0].Connected = true
+	base.SSHProfiles[0].Ready = true
+	base.SSHProfiles[0].SocksPort = 45678
+	live := stripTUIANSI(renderTUIAtSize(base, cliPaths{}, "private Unix socket", true, false, 120, 30))
+	if !strings.Contains(live, "127.0.0.1:45678") || strings.Contains(live, "127.0.0.1:1080") {
+		t.Fatalf("live proxy port did not replace the saved port:\n%s", live)
+	}
+	seen := false
+	for _, field := range tuiSSHFormFields(tuiSSHFormView{Port: 22, LocalPort: 1080}, "zh-Hans") {
+		if field.label == "HTTP/SOCKS" {
+			seen = true
+			if field.value != "127.0.0.1:1080" {
+				t.Fatalf("local proxy field = %q", field.value)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("SSH form has no HTTP/SOCKS field")
 	}
 }
 
@@ -504,7 +548,7 @@ func TestTUISSHPageDistinguishesBrokenSOCKSListener(t *testing.T) {
 		180,
 		30,
 	))
-	for _, expected := range []string{"BROKEN", "HTTP 127.0.0.1:45678 unavailable"} {
+	for _, expected := range []string{"BROKEN", "HTTP/SOCKS 127.0.0.1:45678 unavailable"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("broken SSH page does not contain %q:\n%s", expected, output)
 		}
@@ -541,7 +585,7 @@ func TestTUISSHDashboardShowsProxyMetricsAndRelayTraffic(t *testing.T) {
 		"192.168.1.20 (eth0)",
 		"Proxy IP",
 		"203.0.113.8  [SG]",
-		"HTTP 127.0.0.1:1080",
+		"HTTP/SOCKS 127.0.0.1:1080",
 		"Traffic total",
 		"4.0 KB",
 		"8.0 KB",
@@ -2834,14 +2878,14 @@ func TestActiveCLISSHTunnelKeepsBrokenForwardManageable(t *testing.T) {
 	}
 	listOutput := captureCLIOutput(t, func() error { return cliSSHListCommand(nil) })
 	if !strings.Contains(listOutput, "BROKEN") ||
-		!strings.Contains(listOutput, "HTTP 127.0.0.1:"+strconv.Itoa(port)+" unavailable") {
+		!strings.Contains(listOutput, "HTTP/SOCKS 127.0.0.1:"+strconv.Itoa(port)+" unavailable") {
 		t.Fatalf("broken SSH list output = %q", listOutput)
 	}
 	showOutput := captureCLIOutput(t, func() error {
 		return cliSSHShowCommand([]string{"school"})
 	})
 	if !strings.Contains(showOutput, "Connected:             running") ||
-		!strings.Contains(showOutput, "HTTP ready:") ||
+		!strings.Contains(showOutput, "Proxy ready:") ||
 		!strings.Contains(showOutput, "stopped") {
 		t.Fatalf("broken SSH show output = %q", showOutput)
 	}
@@ -3322,5 +3366,322 @@ func TestTUISSHToggleDefault(t *testing.T) {
 	_, _ = model.Update(message)
 	if !model.snapshot.SSHProfiles[1].Default || model.snapshot.SSHProfiles[1].Name != "school" {
 		t.Fatalf("school was not marked default: %+v", model.snapshot.SSHProfiles)
+	}
+}
+
+func TestRebindCLISSHPublicPortMovesRelayWithoutDisconnecting(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = t.TempDir()
+	previousActive := activeCLIPersistentSSHTunnelForOperation
+	previousStart := startCLISSHRelayForOperation
+	t.Cleanup(func() {
+		cliRuntimeDirectoryOverride = previousRuntime
+		activeCLIPersistentSSHTunnelForOperation = previousActive
+		startCLISSHRelayForOperation = previousStart
+	})
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:      "school",
+		Username:  "student",
+		Host:      "example.edu",
+		Port:      22,
+		LocalPort: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := availableCLITestPort(t)
+	next := availableCLITestPort(t)
+	for next == current {
+		next = availableCLITestPort(t)
+	}
+	upstream := availableCLITestPort(t)
+	for upstream == current || upstream == next {
+		upstream = availableCLITestPort(t)
+	}
+	activeState := cliSSHTunnelState{
+		Name:         "school",
+		Kind:         cliSSHAttachedSOCKSKind,
+		Port:         current,
+		UpstreamPort: upstream,
+		ControlPath:  "/tmp/flclash-ssh-test-control",
+	}
+	activeCLIPersistentSSHTunnelForOperation = func() (cliSSHTunnelState, bool, error) {
+		return activeState, true, nil
+	}
+	var started []cliSSHTunnelState
+	startCLISSHRelayForOperation = func(state *cliSSHTunnelState) error {
+		started = append(started, *state)
+		state.RelayPID = 4242
+		state.RelayControl = "stub"
+		return nil
+	}
+
+	moved, err := rebindCLISSHPublicPort("school", next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(started) != 1 || started[0].Port != next || started[0].UpstreamPort != upstream ||
+		started[0].Kind != cliSSHAttachedSOCKSKind || started[0].ControlPath == "" {
+		t.Fatalf("relay restart = %+v", started)
+	}
+	if moved.Port != next || moved.UpstreamPort != upstream {
+		t.Fatalf("rebound state = %+v", moved)
+	}
+	saved, err := loadCLISSHProfile("school")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.LocalPort != next || saved.Username != "student" || saved.Port != 22 {
+		t.Fatalf("saved profile = %+v", saved)
+	}
+
+	started = nil
+	same, err := rebindCLISSHPublicPort("school", current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(started) != 0 || same.Port != current {
+		t.Fatalf("same port restarted the relay: started=%d state=%+v", len(started), same)
+	}
+	saved, err = loadCLISSHProfile("school")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.LocalPort != current {
+		t.Fatalf("pinned local port = %d", saved.LocalPort)
+	}
+
+	started = nil
+	automatic, err := rebindCLISSHPublicPort("school", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if automatic.Port < 1 || automatic.Port == upstream {
+		t.Fatalf("automatic port = %d", automatic.Port)
+	}
+	if automatic.Port == current {
+		if len(started) != 0 {
+			t.Fatal("automatic allocation reused the live port and still restarted")
+		}
+	} else if len(started) != 1 || started[0].Port != automatic.Port || started[0].UpstreamPort != upstream {
+		t.Fatalf("automatic restart = %+v", started)
+	}
+	saved, err = loadCLISSHProfile("school")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.LocalPort != 0 {
+		t.Fatalf("automatic local port was pinned to %d", saved.LocalPort)
+	}
+
+	started = nil
+	if _, err := rebindCLISSHPublicPort("school", upstream); err == nil || !strings.Contains(err.Error(), "SSH forward") {
+		t.Fatalf("upstream port error = %v", err)
+	}
+	if len(started) != 0 {
+		t.Fatal("upstream collision restarted the relay")
+	}
+
+	var listener net.Listener
+	var busy int
+	for {
+		candidate, listenErr := net.Listen("tcp4", "127.0.0.1:0")
+		if listenErr != nil {
+			t.Fatal(listenErr)
+		}
+		busy = candidate.Addr().(*net.TCPAddr).Port
+		if busy != current && busy != upstream && busy != next {
+			listener = candidate
+			break
+		}
+		_ = candidate.Close()
+	}
+	defer listener.Close()
+	started = nil
+	if _, err := rebindCLISSHPublicPort("school", busy); err == nil || !strings.Contains(err.Error(), "already in use") {
+		t.Fatalf("busy port error = %v", err)
+	}
+	if len(started) != 0 {
+		t.Fatal("busy port stopped the live relay")
+	}
+
+	activeCLIPersistentSSHTunnelForOperation = func() (cliSSHTunnelState, bool, error) {
+		return cliSSHTunnelState{}, false, nil
+	}
+	started = nil
+	idle, err := rebindCLISSHPublicPort("school", next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(started) != 0 || idle.Port != next {
+		t.Fatalf("disconnected rebind started a relay: %+v started=%d", idle, len(started))
+	}
+	saved, err = loadCLISSHProfile("school")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.LocalPort != next {
+		t.Fatalf("disconnected local port = %d", saved.LocalPort)
+	}
+
+	activeCLIPersistentSSHTunnelForOperation = func() (cliSSHTunnelState, bool, error) {
+		return activeState, true, nil
+	}
+	calls := 0
+	startCLISSHRelayForOperation = func(state *cliSSHTunnelState) error {
+		calls++
+		if calls == 1 {
+			return errors.New("bind failed")
+		}
+		if state.Port != current || state.UpstreamPort != upstream {
+			t.Fatalf("restore state = %+v", *state)
+		}
+		return nil
+	}
+	if _, err := rebindCLISSHPublicPort("school", next); err == nil || !strings.Contains(err.Error(), "bind failed") {
+		t.Fatalf("failed rebind error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("restore attempts = %d", calls)
+	}
+	saved, err = loadCLISSHProfile("school")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.LocalPort != next {
+		t.Fatalf("failed rebind changed saved port to %d", saved.LocalPort)
+	}
+}
+
+func TestTUISSHDetailEditsProxyPortInPlace(t *testing.T) {
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.width = 120
+	model.height = 40
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.FocusSidebar = false
+	model.snapshot.SSHDashboardFocus = true
+	model.snapshot.SSHDetailName = "school"
+	model.snapshot.SSHProfiles = []tuiSSHProfile{{
+		Name:      "school",
+		Connected: true,
+		Ready:     true,
+		Attached:  true,
+		SocksPort: 43850,
+	}}
+	command := model.selectCurrent()
+	if command == nil || model.sshProxyPortEditing || !strings.Contains(model.snapshot.Status, "disconnect") {
+		t.Fatalf("tunnel row Enter = command:%t editing:%t status:%q", command != nil, model.sshProxyPortEditing, model.snapshot.Status)
+	}
+	model.sshBusy = false
+	model.syncLaneBusy()
+	_ = model.moveSelection(1)
+	if !model.snapshot.SSHDashboardFocus || model.snapshot.SSHDetailRow != tuiSSHProxyPortRow {
+		t.Fatalf("proxy row focus=%t row=%d", model.snapshot.SSHDashboardFocus, model.snapshot.SSHDetailRow)
+	}
+	model.snapshot.Language = "zh-Hans"
+	if !strings.Contains(stripTUIANSI(model.View()), "改端口") {
+		t.Fatal("Chinese SSH detail did not offer the port row")
+	}
+	model.snapshot.Language = "en"
+	if !strings.Contains(stripTUIANSI(model.View()), "Enter sets port") {
+		t.Fatal("SSH detail did not offer the port row")
+	}
+	if command = model.selectCurrent(); command != nil || model.sshBusy || !model.sshProxyPortEditing {
+		t.Fatalf("port row Enter = command:%t busy:%t editing:%t", command != nil, model.sshBusy, model.sshProxyPortEditing)
+	}
+	if string(model.sshProxyPortInput) != "43850" || !model.sshProxyPortSelectAll {
+		t.Fatalf("prefill = %q select=%t", string(model.sshProxyPortInput), model.sshProxyPortSelectAll)
+	}
+	_, _ = model.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1080a")})
+	if string(model.sshProxyPortInput) != "1080a" {
+		t.Fatalf("typed port = %q", string(model.sshProxyPortInput))
+	}
+	_, _ = model.update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	if strings.Contains(string(model.sshProxyPortInput), ":") {
+		t.Fatal("port editor accepted a colon")
+	}
+	_, _ = model.update(tea.KeyMsg{Type: tea.KeyUp})
+	if !model.sshProxyPortEditing || model.snapshot.SSHDetailRow != tuiSSHProxyPortRow {
+		t.Fatal("arrow key left the port editor")
+	}
+	plain := stripTUIANSI(model.View())
+	if !strings.Contains(plain, "1080a") || !strings.Contains(plain, "Enter confirm") {
+		t.Fatalf("inline port editor missing:\n%s", plain)
+	}
+	_, _ = model.update(tea.KeyMsg{Type: tea.KeyEsc})
+	if model.sshProxyPortEditing || model.snapshot.Status != "Input cancelled" {
+		t.Fatalf("Esc editing=%t status=%q", model.sshProxyPortEditing, model.snapshot.Status)
+	}
+	_ = model.moveSelection(1)
+	if !model.snapshot.SSHDashboardFocus || model.snapshot.SSHDetailRow != tuiSSHInetRow {
+		t.Fatal("detail move did not advance to Proxy Inet IP")
+	}
+}
+
+func TestTUICommitSSHProxyPortRebindsWithoutDisconnect(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	previousRuntime := cliRuntimeDirectoryOverride
+	cliRuntimeDirectoryOverride = t.TempDir()
+	previousActive := activeCLIPersistentSSHTunnelForOperation
+	previousStart := startCLISSHRelayForOperation
+	t.Cleanup(func() {
+		cliRuntimeDirectoryOverride = previousRuntime
+		activeCLIPersistentSSHTunnelForOperation = previousActive
+		startCLISSHRelayForOperation = previousStart
+	})
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name: "school", Username: "student", Host: "example.edu", Port: 22,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := availableCLITestPort(t)
+	next := availableCLITestPort(t)
+	for next == current {
+		next = availableCLITestPort(t)
+	}
+	upstream := availableCLITestPort(t)
+	activeCLIPersistentSSHTunnelForOperation = func() (cliSSHTunnelState, bool, error) {
+		return cliSSHTunnelState{
+			Name: "school", Kind: cliSSHAttachedSOCKSKind, Port: current, UpstreamPort: upstream,
+		}, true, nil
+	}
+	started := false
+	startCLISSHRelayForOperation = func(state *cliSSHTunnelState) error {
+		started = state.Port == next && state.UpstreamPort == upstream && state.Kind == cliSSHAttachedSOCKSKind
+		return nil
+	}
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.FocusSidebar = false
+	model.snapshot.SSHDashboardFocus = true
+	model.snapshot.SSHDetailRow = tuiSSHProxyPortRow
+	model.snapshot.SSHDetailName = "school"
+	model.snapshot.SSHProfiles = []tuiSSHProfile{{
+		Name: "school", Connected: true, Ready: true, Attached: true, SocksPort: current,
+	}}
+	model.sshProxyPortEditing = true
+	model.sshProxyPortInput = []rune(strconv.Itoa(next))
+	model.sshProxyPortCursor = len(model.sshProxyPortInput)
+	command := model.commitSSHProxyPortEdit()
+	if command == nil || model.sshProxyPortEditing || !model.sshBusy {
+		t.Fatal("port commit did not take the SSH write lane")
+	}
+	message := command().(tuiSSHCommandResultMsg)
+	if message.err != nil || message.action != "port" || !started {
+		t.Fatalf("port result action=%s err=%v started=%t", message.action, message.err, started)
+	}
+	if !strings.Contains(message.status, strconv.Itoa(next)) {
+		t.Fatalf("port status = %q", message.status)
+	}
+	_, _ = model.update(message)
+	if model.sshBusy {
+		t.Fatal("port change left the SSH write lane busy")
+	}
+	saved, err := loadCLISSHProfile("school")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.LocalPort != next {
+		t.Fatalf("committed local port = %d", saved.LocalPort)
 	}
 }

@@ -402,7 +402,9 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	updated.ProxyNodeFocus = current.ProxyNodeFocus
 	updated.SSHDashboardFocus = current.SSHDashboardFocus
 	updated.SSHDetailName = current.SSHDetailName
+	updated.SSHDetailRow = current.SSHDetailRow
 	updated.ManagedService = current.ManagedService
+	updated.ExternalCore = current.ExternalCore
 	updated.FocusSidebar = current.FocusSidebar
 	updated.ShowHelp = current.ShowHelp
 	updated.SSHNetwork = current.SSHNetwork
@@ -547,10 +549,18 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 			)
 		}
 	}
-	if updated.SSHDetailName != "" &&
-		findTUISSHProfile(updated.SSHProfiles, updated.SSHDetailName) < 0 {
-		updated.SSHDetailName = ""
-		updated.SSHDashboardFocus = false
+	if updated.SSHDetailName != "" {
+		index := findTUISSHProfile(updated.SSHProfiles, updated.SSHDetailName)
+		if index < 0 {
+			updated.SSHDetailName = ""
+			updated.SSHDashboardFocus = false
+			updated.SSHDetailRow = tuiSSHTunnelRow
+		} else if count := tuiSSHDetailSelectableCount(updated.SSHProfiles[index]); updated.SSHDetailRow < 0 || updated.SSHDetailRow >= count {
+			updated.SSHDetailRow = tuiSSHTunnelRow
+		}
+	}
+	if count := tuiDashboardSelectableCount(updated); updated.SelectedDashboard < 0 || updated.SelectedDashboard >= count {
+		updated.SelectedDashboard = tuiDashboardServiceRow
 	}
 	return updated
 }

@@ -44,6 +44,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 		SelectedMenu:      int(tuiPageDashboard),
 		SelectedDashboard: tuiDashboardServiceRow,
 		FocusSidebar:      true,
+		ExternalCore:      !ownsCore,
 	}
 	refreshTUISnapshot(&snapshot, client)
 	refreshTUIProfiles(&snapshot, paths)
@@ -299,7 +300,8 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 						moveTUIGroup(&snapshot, -1)
 					}
 				} else if snapshot.Page == tuiPageDashboard {
-					snapshot.SelectedDashboard = wrapTUIIndex(snapshot.SelectedDashboard, -1, tuiDashboardRowCount)
+					snapshot.ExternalCore = !ownsCore
+					snapshot.SelectedDashboard = wrapTUIIndex(snapshot.SelectedDashboard, -1, tuiDashboardSelectableCount(snapshot))
 				} else if snapshot.Page == tuiPageTools {
 					snapshot.SelectedTool = wrapTUIIndex(snapshot.SelectedTool, -1, tuiSettingsRowCount)
 				}
@@ -317,7 +319,8 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 						moveTUIGroup(&snapshot, 1)
 					}
 				} else if snapshot.Page == tuiPageDashboard {
-					snapshot.SelectedDashboard = wrapTUIIndex(snapshot.SelectedDashboard, 1, tuiDashboardRowCount)
+					snapshot.ExternalCore = !ownsCore
+					snapshot.SelectedDashboard = wrapTUIIndex(snapshot.SelectedDashboard, 1, tuiDashboardSelectableCount(snapshot))
 				} else if snapshot.Page == tuiPageTools {
 					snapshot.SelectedTool = wrapTUIIndex(snapshot.SelectedTool, 1, tuiSettingsRowCount)
 				}
@@ -368,6 +371,8 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 					case tuiDashboardMixedPortRow:
 						screen.invalidate()
 						setTUIMixedPort(&snapshot, client, &oldState)
+					case tuiDashboardPublicIPRow, tuiDashboardIntranetRow:
+						break
 					case tuiDashboardDelayRow:
 						snapshot.setStatus(newTUIMessage("ui.38480b0a5d4c"))
 					case tuiDashboardSpeedRow:

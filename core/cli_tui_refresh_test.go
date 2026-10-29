@@ -1716,8 +1716,9 @@ func TestTUIDashboardTrafficChartFillsRemainingHeight(t *testing.T) {
 			if managed {
 				fixedRows++
 			}
-			if chartTitle < 0 || overviewTitle-chartTitle-3 != height-fixedRows {
-				t.Fatalf("managed=%t height=%d: chart title=%d overview title=%d, want %d plot rows", managed, height, chartTitle, overviewTitle, height-fixedRows)
+			plotRows := len(lines) - chartTitle - 2
+			if overviewTitle < 0 || chartTitle < overviewTitle || plotRows != height-fixedRows {
+				t.Fatalf("managed=%t height=%d: chart title=%d overview title=%d plot=%d, want %d plot rows after overview", managed, height, chartTitle, overviewTitle, plotRows, height-fixedRows)
 			}
 		}
 	}

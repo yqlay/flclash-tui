@@ -207,9 +207,10 @@ flc sh -c 'curl -s https://example.com | jq .'
 SSH profiles and tunnels are independent of Mihomo, subscriptions, Core state,
 and the normal `flc` proxy. The machine running FlClash is always the traffic
 source and the configured SSH host is the network exit. For a persistent
-tunnel, FlClash exposes one loopback-only HTTP proxy and connects it to a
-hidden OpenSSH dynamic SOCKS5 forward. The public port accepts HTTP CONNECT and
-absolute-form HTTP. `flc ssh` injects
+tunnel, FlClash exposes one loopback-only proxy and connects it to a
+hidden OpenSSH dynamic SOCKS5 forward. The public port accepts HTTP CONNECT,
+absolute-form HTTP, and SOCKS5 (`socks5://` and `socks5h://`) on the same
+address. `flc ssh` injects
 `http://127.0.0.1:PORT` into the local child command's upper- and lower-case
 proxy environment. For example, if FlClash runs only on B and the profile points
 to A, B's selected traffic exits through A; A only needs an SSH server:
@@ -230,6 +231,7 @@ flclash ssh add school A --user user --identity ~/.ssh/id_ed25519 --passphrase -
 flclash ssh list
 flclash ssh test home
 ALL_PROXY=http://127.0.0.1:1080 curl https://example.com
+ALL_PROXY=socks5h://127.0.0.1:1080 curl https://example.com
 flclash ssh disconnect home
 ```
 
@@ -250,7 +252,7 @@ flclash ssh attach
 
 `--list` and the TUI Capture row should show `INBOUND` for `127.0.0.1:10808`. Traffic from B leaves through A. Capture only sees SOCKS already listening on this FlClash machine: `ssh -D` or ControlMaster here, or an inbound `ssh -R`. `ssh -D` on A is invisible to B.
 
-`--local-port PORT` gives persistent connections a stable loopback HTTP
+`--local-port PORT` gives persistent connections a stable loopback proxy
 address for other local applications. Use `--local-port auto` to return to
 automatic allocation. Temporary `flc ssh -u` tunnels always use an automatic
 port, so they cannot steal the persistent application endpoint. Fixed-port
@@ -270,7 +272,7 @@ Both persistent and temporary (`flc ssh -u NAME`) commands support `-d`.
 
 `flc ssh COMMAND` opens the default SSH profile, or the only configured
 profile, as a persistent tunnel when none is connected. If the persistent
-tunnel is present but its HTTP proxy is down, FlClash rebuilds it before
+tunnel is present but its proxy is down, FlClash rebuilds it before
 running the command. `flclash ssh connect` without a name uses the same
 resolution. If that host already has a live OpenSSH ControlMaster (for example
 `ControlMaster auto` in `~/.ssh/config`), connect reuses it: FlClash only adds a
@@ -334,8 +336,8 @@ The SSH TUI keeps a compact profile list above one detail view. The detail is
 empty on entry; Up/Down moves only the list highlight, and Enter opens the
 highlighted profile. Once opened, the detail stays on that profile until
 another profile is opened with Enter. It shows the
-tunnel's local HTTP proxy, the SSH host's `Proxy Inet IP`, the public
-`Proxy IP` seen through that HTTP proxy, live upload/download speed, cumulative
+tunnel's local HTTP/SOCKS proxy, the SSH host's `Proxy Inet IP`, the public
+`Proxy IP` seen through that proxy, live upload/download speed, cumulative
 relay totals, and
 an expanding relay-traffic graph. Disconnected profiles hide the network
 metrics. Opening a profile refreshes only local relay statistics; pressing
@@ -345,7 +347,7 @@ provide it. Tab cycles sidebar, list, and detail focus;
 Shift+Tab reverses it. In the list, Enter connects a disconnected profile or
 focuses the detail of a connected one without disconnecting. `n` adds, `e`
 edits, `u` toggles default, and `x` deletes. A `*` marks the default profile.
-With detail focused, Enter connects or disconnects the tunnel. Esc returns focus to the list,
+With detail focused, Up/Down moves through the tunnel, proxy port, and metric rows. Enter on the tunnel connects or disconnects. Enter on the proxy port edits it in place, as a number or `auto`, and keeps the SSH session. Enter on Proxy IP checks the addresses, the same as `n`. Inet, speed, and traffic totals stay on screen without an action. Esc returns focus to the list,
 then to the sidebar. Captured `-D` exits at the SSH server; captured `-R`
 exits at the SSH client, and the TUI labels the direction. In the form, use
 `Up/Down` or `Tab` to select a row and

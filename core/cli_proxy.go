@@ -110,7 +110,8 @@ func proxyCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		status, err = service.selectProxy(
+		status, err = selectManagedProxyForCommand(
+			service,
 			positional[0],
 			positional[1],
 			status.Revision,
