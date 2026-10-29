@@ -224,9 +224,9 @@ func readTUIKeysSynchronized(reader io.Reader, keys chan<- tuiKey, handled <-cha
 		case '4':
 			key = tuiKeyProfiles
 		case '5':
-			key = tuiKeyRequests
-		case '6':
 			key = tuiKeyConnections
+		case '6':
+			key = tuiKeyRequests
 		case '7':
 			key = tuiKeyLogs
 		case '8':
@@ -353,7 +353,6 @@ func handleTUIFocusNavigation(snapshot *tuiSnapshot, key tuiKey) bool {
 		snapshot.SelectedMenu = int(page)
 		snapshot.FocusSidebar = false
 		snapshot.ProxyNodeFocus = false
-		snapshot.SSHDashboardFocus = false
 		return true
 	}
 	switch key {
@@ -402,7 +401,6 @@ func handleTUIFocusNavigation(snapshot *tuiSnapshot, key tuiKey) bool {
 			snapshot.SelectedMenu = int(snapshot.Page)
 			snapshot.FocusSidebar = false
 			snapshot.ProxyNodeFocus = false
-			snapshot.SSHDashboardFocus = false
 		case tuiKeyLeft:
 		default:
 			return false
@@ -412,7 +410,6 @@ func handleTUIFocusNavigation(snapshot *tuiSnapshot, key tuiKey) bool {
 	switch key {
 	case tuiKeyLeft:
 		snapshot.FocusSidebar = true
-		snapshot.SSHDashboardFocus = false
 		snapshot.SelectedMenu = int(snapshot.Page)
 		return true
 	case tuiKeyRight:

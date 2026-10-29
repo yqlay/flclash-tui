@@ -754,10 +754,11 @@ func TestTUISSHRendersCaptureRow(t *testing.T) {
 	}
 	drawTUISSH(&output, snapshot, 120, 36)
 	plain := stripTUIANSI(output.String())
+	t.Log(plain)
 	for _, expected := range []string{
 		"Capture",
 		"THIS machine",
-		"ssh -D is captured on the client. ssh -R is captured here.",
+		cliSSHReverseTunnelCommand,
 	} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("SSH page missing %q:\n%s", expected, plain)

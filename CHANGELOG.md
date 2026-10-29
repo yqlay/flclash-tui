@@ -1,3 +1,12 @@
+## FlClash TUI v0.5.37
+
+- The SSH page keeps the opened connection, its delay, speed, and relay traffic when you leave the page. That view clears only when the profile itself is gone.
+- The footer packs the existing hints to the window width and keeps `q` and Ctrl+C.
+- Connections is above History. Digit `5` opens Connections and `6` opens History.
+- The SSH list hint shows add, edit, and delete again. Capture shows a copyable `ssh -f -N -R 10808 -p PORT -i KEY USER@HOST` template and does not embed a private host or key.
+- Retesting one node while a group test is still queued drops only the nodes that had not started and are not in the new test. Delay stays at 4 at a time, group speed at 2, and one node speed test still uses 4 download streams. The status line follows the new batch instead of the abandoned count.
+- Restart the Backend after upgrading so the CLI and TUI both run v0.5.37. Backend IPC remains v7.
+
 ## FlClash TUI v0.5.36
 
 - The SSH relay's public loopback port is an HTTP proxy. `CONNECT` carries HTTPS and absolute-form requests carry plain HTTP. A SOCKS5 greeting on that port is rejected. The hidden OpenSSH dynamic forward stays SOCKS5. `flc ssh` injects `http://127.0.0.1:PORT`.

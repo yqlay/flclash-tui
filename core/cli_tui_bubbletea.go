@@ -647,12 +647,6 @@ func (m *tuiModel) syncLiveMonitors() []tea.Cmd {
 }
 
 func (m *tuiModel) changeVisiblePage(page tuiPage) []tea.Cmd {
-	if m.snapshot.Page != page &&
-		(m.snapshot.Page == tuiPageSSH || page == tuiPageSSH) {
-		m.snapshot.SSHDetailName = ""
-		m.snapshot.SSHDashboardFocus = false
-		m.resetSelectedSSHMetrics()
-	}
 	m.snapshot.Page = page
 	return m.syncLiveMonitors()
 }

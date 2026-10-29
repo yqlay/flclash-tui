@@ -832,7 +832,8 @@ func TestCaptureEmptyHintMentionsReverseSOCKS(t *testing.T) {
 	})
 
 	hint := formatCLICaptureEmptyHint()
-	if !strings.Contains(hint, "ssh -R 10808 USER@THISHOST") {
+	t.Log(hint)
+	if !strings.Contains(hint, cliSSHReverseTunnelCommand) || !strings.Contains(hint, "then Capture again") {
 		t.Fatalf("expected the reverse-forward command, got: %q", hint)
 	}
 }

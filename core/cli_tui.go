@@ -35,8 +35,8 @@ const (
 	tuiPageSSH
 	tuiPageProxies
 	tuiPageProfiles
-	tuiPageRequests
 	tuiPageConnections
+	tuiPageRequests
 	tuiPageLogs
 	tuiPageTools
 	tuiPageMaintenance

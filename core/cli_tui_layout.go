@@ -15,7 +15,7 @@ type tuiLayout struct {
 
 var tuiSidebarKeys = []string{
 	"ui.0b0f3184ac1e", "ui.dbab3e8ce4ef", "ui.f98e848ae0ab",
-	"ui.81c96db54ca0", "ui.3a00ed8f7bcd", "ui.831a2c35bc4b",
+	"ui.81c96db54ca0", "ui.831a2c35bc4b", "ui.3a00ed8f7bcd",
 	"ui.4146a84e969e", "ui.7a3930e93388", "ui.564047817ced",
 }
 
@@ -115,11 +115,71 @@ func tuiFieldInputWidth(fields []tuiField, width int) int {
 	return available - column
 }
 
+// Pack existing hint clauses up to the exact width. Later clauses drop first.
+// q and ^C stay at the end, and the line is padded so the footer fills the row.
 func tuiShortFooter(value string, width int) string {
-	if tuiDisplayWidth(value) <= width {
-		return value
+	if width <= 0 {
+		return ""
 	}
-	return tuiPanelHeading("←→ ↑↓", "Enter · Esc · ? · q · ^C", width)
+	if tuiDisplayWidth(value) <= width {
+		return tuiPadRight(value, width)
+	}
+	indent := value[:len(value)-len(strings.TrimLeft(value, " "))]
+	segments, separator := tuiSplitFooterSegments(value)
+	optional := make([]string, 0, len(segments))
+	sticky := make([]string, 0, 2)
+	for _, segment := range segments {
+		if tuiFooterSegmentSticky(segment) {
+			sticky = append(sticky, segment)
+		} else {
+			optional = append(optional, segment)
+		}
+	}
+	chosen := make([]string, 0, len(optional)+len(sticky))
+	for _, segment := range optional {
+		trial := append(append([]string{}, chosen...), segment)
+		trial = append(trial, sticky...)
+		if tuiDisplayWidth(tuiJoinFooter(indent, separator, trial)) <= width {
+			chosen = append(chosen, segment)
+		}
+	}
+	chosen = append(chosen, sticky...)
+	line := tuiJoinFooter(indent, separator, chosen)
+	if tuiDisplayWidth(line) > width {
+		line = tuiJoinFooter("", separator, chosen)
+	}
+	return tuiPadRight(line, width)
+}
+
+func tuiSplitFooterSegments(value string) ([]string, string) {
+	separator := " · "
+	if !strings.Contains(value, separator) {
+		separator = "  "
+	}
+	parts := strings.Split(value, separator)
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			segments = append(segments, part)
+		}
+	}
+	return segments, separator
+}
+
+func tuiFooterSegmentSticky(segment string) bool {
+	if strings.Contains(segment, "^C") {
+		return true
+	}
+	segment = strings.TrimSpace(segment)
+	return segment == "q" || strings.HasPrefix(segment, "q ")
+}
+
+func tuiJoinFooter(indent, separator string, segments []string) string {
+	if len(segments) == 0 {
+		return indent
+	}
+	return indent + strings.Join(segments, separator)
 }
 
 func tuiOverlayHint(value string, width int) string {

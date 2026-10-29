@@ -456,6 +456,7 @@ func TestTUISSHPageKeepsAuthenticationOutOfMetrics(t *testing.T) {
 	))
 	for _, expected := range []string{
 		"SSH profiles · 1",
+		"n add",
 		"SSH · school",
 		"school",
 		"CONNECTED",
@@ -470,6 +471,15 @@ func TestTUISSHPageKeepsAuthenticationOutOfMetrics(t *testing.T) {
 	}
 	if strings.Contains(output, "id_ed25519") || strings.Contains(output, "passphrase") || strings.Contains(output, "password ****") {
 		t.Fatalf("SSH metrics leaked authentication details:\n%s", output)
+	}
+	narrow := stripTUIANSI(renderTUIAtSize(snapshot, cliPaths{}, "private Unix socket", true, false, 96, 28))
+	if !strings.Contains(narrow, "n add") {
+		t.Fatalf("SSH list hint dropped add at 96 columns:\n%s", narrow)
+	}
+	snapshot.Language = "zh-Hans"
+	chinese := stripTUIANSI(renderTUIAtSize(snapshot, cliPaths{}, "private Unix socket", true, false, 96, 28))
+	if !strings.Contains(chinese, "n 添加") {
+		t.Fatalf("SSH list hint dropped add in Chinese:\n%s", chinese)
 	}
 }
 

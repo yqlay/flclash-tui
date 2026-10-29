@@ -910,9 +910,9 @@ func tuiKeyFromTea(message tea.KeyMsg) (tuiKey, bool) {
 	case "4":
 		return tuiKeyProfiles, true
 	case "5":
-		return tuiKeyRequests, true
-	case "6":
 		return tuiKeyConnections, true
+	case "6":
+		return tuiKeyRequests, true
 	case "7":
 		return tuiKeyLogs, true
 	case "8":

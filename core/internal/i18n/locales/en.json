@@ -291,7 +291,7 @@
   "ui.76e6e653315b": "Subscription updates require the managed backend",
   "ui.78663835f459": "Select a provider before updating it",
   "ui.788011833a5a": "Notifications",
-  "ui.79403c9f1ae4": "Enter connect · a Capture",
+  "ui.79403c9f1ae4": "↑↓ select · Enter connect · a Capture · n add · e edit · x delete",
   "ui.797be7a3e1f9": "q exit TUI · ^C full exit",
   "ui.7a3930e93388": ":  Settings",
   "ui.7aa0c57afbd1": "Edited configuration could not be read: %s",

@@ -68,6 +68,65 @@ func TestTUILocalizedFieldsAlignInCells(t *testing.T) {
 	}
 }
 
+func TestTUIFooterPacksHintsToTheWindow(t *testing.T) {
+	dashboard := tuiTranslator("en")("ui.a9b34ecb8fd7")
+	ssh := tuiTranslator("en")("ui.cfc17a4264b8")
+	chineseSSH := tuiTranslator("zh-Hans")("ui.cfc17a4264b8")
+	if dashboard == ssh {
+		t.Fatal("Dashboard and SSH use the same footer hint")
+	}
+	for _, sample := range []string{dashboard, ssh, chineseSSH} {
+		for _, width := range []int{36, 72, 120} {
+			line := tuiShortFooter(sample, width)
+			if tuiDisplayWidth(line) != width {
+				t.Fatalf("footer width %d rendered %d cells: %q", width, tuiDisplayWidth(line), line)
+			}
+			if !strings.Contains(line, "q ") || !strings.Contains(line, "^C") {
+				t.Fatalf("footer width %d dropped exit keys: %q", width, line)
+			}
+		}
+	}
+	narrow := tuiShortFooter(dashboard, 40)
+	wide := tuiShortFooter(dashboard, 140)
+	if tuiFooterSegmentsPresent(wide, dashboard) <= tuiFooterSegmentsPresent(narrow, dashboard) {
+		t.Fatalf("wide footer did not keep more clauses:\nnarrow %q\nwide %q", narrow, wide)
+	}
+	if strings.Contains(narrow, "Esc nav") {
+		t.Fatalf("narrow footer kept a later optional clause: %q", narrow)
+	}
+	if !strings.Contains(wide, "Esc nav") || !strings.Contains(tuiShortFooter(ssh, 140), "Capture") {
+		t.Fatal("wide footer dropped a page-specific clause")
+	}
+
+	for _, page := range []tuiPage{tuiPageDashboard, tuiPageSSH} {
+		snapshot := populatedTUISnapshot(page)
+		widths := map[int]string{}
+		for _, width := range []int{48, 120} {
+			output := renderTUIAtSize(snapshot, cliPaths{}, "unix:///tmp/core.sock", true, true, width, 36)
+			lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+			last := stripTUIANSI(lines[len(lines)-1])
+			if tuiDisplayWidth(last) != width || !strings.Contains(last, "q ") || !strings.Contains(last, "^C") {
+				t.Fatalf("%v footer width %d rendered %d: %q", page, width, tuiDisplayWidth(last), last)
+			}
+			widths[width] = last
+		}
+		if tuiDisplayWidth(strings.TrimRight(widths[120], " ")) <= tuiDisplayWidth(strings.TrimRight(widths[48], " ")) {
+			t.Fatalf("%v wide footer did not show more than the narrow one:\n%q\n%q", page, widths[48], widths[120])
+		}
+	}
+}
+
+func tuiFooterSegmentsPresent(line, source string) int {
+	segments, _ := tuiSplitFooterSegments(source)
+	count := 0
+	for _, segment := range segments {
+		if strings.Contains(line, segment) {
+			count++
+		}
+	}
+	return count
+}
+
 func TestTUIResponsiveColumnsPreserveWideNamesAndStatus(t *testing.T) {
 	for _, name := range []string{"节点", "👩‍💻é", "क्ष"} {
 		line := tuiColumns(60, tuiColumn{value: name, width: 18, minimum: 8}, tuiColumn{value: "CONNECTED", width: 12, minimum: 9}, tuiColumn{value: "host:22", width: 20, minimum: 8})

@@ -153,9 +153,7 @@ func (m *tuiModel) enqueueDelayProbes(group string, nodes []string, summary bool
 	m.delayBatch.done = 0
 	m.delayBatch.ok = 0
 	m.delayBatch.summary = summary
-	m.delayQueue = filterProbeJobs(m.delayQueue, func(job tuiProxyProbeJob) bool {
-		return job.group != group
-	})
+	m.discardQueuedGroupProbes(&m.delayQueue, group, false)
 	testURL := m.tuiDelayTestURL()
 	for _, node := range nodes {
 		m.replaceQueuedProbe(&m.delayQueue, m.newProbeJob(tuiProbeDelay, group, node, testURL, 0, m.delayBatch.id))
@@ -178,15 +176,17 @@ func (m *tuiModel) enqueueSpeedProbes(group string, nodes []string, summary bool
 	m.speedBatch.done = 0
 	m.speedBatch.ok = 0
 	m.speedBatch.summary = summary
-	m.speedQueue = filterProbeJobs(m.speedQueue, func(job tuiProxyProbeJob) bool {
-		return job.group != group
-	})
+	m.discardQueuedGroupProbes(&m.speedQueue, group, true)
 	for _, node := range nodes {
 		m.replaceQueuedProbe(&m.speedQueue, m.newProbeJob(tuiProbeSpeed, group, node, "", 0, m.speedBatch.id))
 		setTUIGroupSpeed(&m.snapshot, group, node, tuiSpeedResult{Testing: true})
 	}
+	// The new batch owns the status line. A single-node retest must not keep
+	// the previous group summary's node count.
 	if summary {
 		m.snapshot.setStatus(newTUIMessage("ui.fffba2149b7e", group, len(nodes), len(nodes)*100))
+	} else if len(nodes) > 0 {
+		m.snapshot.setStatus(newTUIMessage("ui.be8bb45e2eb4", group, 0, len(nodes), nodes[0]))
 	}
 	return tea.Batch(m.pumpSpeedProbes()...)
 }
@@ -246,6 +246,44 @@ func (m *tuiModel) replaceQueuedProbe(queue *[]tuiProxyProbeJob, job tuiProxyPro
 	}
 	if !replaced {
 		*queue = append(*queue, job)
+	}
+}
+
+// Queued jobs have not started, so dropping them must clear the Testing
+// spinner. In-flight jobs are already off the queue and keep their slot.
+func (m *tuiModel) discardQueuedGroupProbes(queue *[]tuiProxyProbeJob, group string, speed bool) {
+	kept := make([]tuiProxyProbeJob, 0, len(*queue))
+	for _, job := range *queue {
+		if job.group == group {
+			if speed {
+				clearTUITestingSpeed(&m.snapshot, job.group, job.node)
+			} else {
+				clearTUITestingDelay(&m.snapshot, job.group, job.node)
+			}
+			continue
+		}
+		kept = append(kept, job)
+	}
+	*queue = kept
+}
+
+func clearTUITestingDelay(snapshot *tuiSnapshot, groupName, node string) {
+	for index := range snapshot.Groups {
+		group := &snapshot.Groups[index]
+		if group.Name != groupName || !group.Delays[node].Testing {
+			continue
+		}
+		delete(group.Delays, node)
+	}
+}
+
+func clearTUITestingSpeed(snapshot *tuiSnapshot, groupName, node string) {
+	for index := range snapshot.Groups {
+		group := &snapshot.Groups[index]
+		if group.Name != groupName || !group.Speeds[node].Testing {
+			continue
+		}
+		delete(group.Speeds, node)
 	}
 }
 

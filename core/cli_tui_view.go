@@ -44,11 +44,6 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 	if handleTUIFocusNavigation(&m.snapshot, key) {
 		var cmds []tea.Cmd
 		if previousPage != m.snapshot.Page {
-			if previousPage == tuiPageSSH || m.snapshot.Page == tuiPageSSH {
-				m.snapshot.SSHDetailName = ""
-				m.snapshot.SSHDashboardFocus = false
-				m.resetSelectedSSHMetrics()
-			}
 			m.refreshInFlight = false
 			cmds = append(cmds, m.syncLiveMonitors()...)
 			cmds = append(cmds, m.startRefresh())

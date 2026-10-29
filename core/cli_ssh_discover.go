@@ -879,7 +879,7 @@ func formatCLICaptureCandidate(candidate cliSSHCaptureCandidate) string {
 
 func formatCLICaptureEmptyHint() string {
 	if captureHasInboundSSHConnection() {
-		return "On the SSH client: ssh -R 10808 USER@THISHOST — then Capture again."
+		return "On the SSH client: " + cliSSHReverseTunnelCommand + " — then Capture again."
 	}
 	if cliRunningOnWSL() && lastWindowsSSHSnapshot.ProcessCount > 0 && !lastWindowsSSHSnapshot.HadSOCKS {
 		return "Capture 0 live · ssh.exe"

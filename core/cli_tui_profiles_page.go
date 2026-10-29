@@ -331,7 +331,7 @@ func drawTUISSHCapturePanel(
 
 func tuiSSHCaptureLines(snapshot tuiSnapshot) []string {
 	second := "This machine only sees SOCKS already listening here."
-	third := "ssh -D is captured on the client. ssh -R is captured here."
+	third := cliSSHReverseTunnelCommand
 	if snapshot.SSHCaptureFound > 0 {
 		return []string{
 			fmt.Sprintf("%d SOCKS on this machine · Enter to attach", snapshot.SSHCaptureFound),

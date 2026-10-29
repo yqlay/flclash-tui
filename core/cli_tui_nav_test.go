@@ -1099,8 +1099,8 @@ func TestTUISidebarMatchesGraphicalInformationArchitecture(t *testing.T) {
 		"SSH",
 		"Proxies",
 		"Profiles",
-		"History",
 		"Connections",
+		"History",
 		"Logs",
 		"Settings",
 		"Maintenance",
@@ -1145,8 +1145,8 @@ func TestTUISidebarOrderAndNumericShortcutsStayAligned(t *testing.T) {
 		{"2", tuiKeySSH, tuiPageSSH},
 		{"3", tuiKeyProxies, tuiPageProxies},
 		{"4", tuiKeyProfiles, tuiPageProfiles},
-		{"5", tuiKeyRequests, tuiPageRequests},
-		{"6", tuiKeyConnections, tuiPageConnections},
+		{"5", tuiKeyConnections, tuiPageConnections},
+		{"6", tuiKeyRequests, tuiPageRequests},
 		{"7", tuiKeyLogs, tuiPageLogs},
 		{"8", tuiKeyTools, tuiPageTools},
 		{"9", tuiKeyMaintenance, tuiPageMaintenance},
@@ -1181,6 +1181,111 @@ func TestTUISidebarOrderAndNumericShortcutsStayAligned(t *testing.T) {
 			snapshot.Page != test.page || snapshot.FocusSidebar {
 			t.Fatalf("sidebar position %d did not open %s: %+v", index, tuiPageName(test.page), snapshot)
 		}
+	}
+}
+
+func TestTUISSHOpenedConnectionSurvivesPageSwitch(t *testing.T) {
+	configRoot := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	if err := addCLISSHProfile(cliSSHProfile{
+		Name:     "school",
+		Username: "student",
+		Host:     "192.0.2.5",
+		Port:     22,
+	}); err != nil {
+		t.Fatalf("save SSH profile: %v", err)
+	}
+	configPath := filepath.Join(configRoot, "flclash", cliSSHConfigFilename)
+
+	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
+	defer model.stopTrafficMonitor()
+	defer model.stopCoreMemoryMonitor()
+	model.width, model.height = 120, 40
+	model.snapshot.Page = tuiPageSSH
+	model.snapshot.SelectedMenu = int(tuiPageSSH)
+	model.snapshot.FocusSidebar = false
+	model.snapshot.SSHProfiles = []tuiSSHProfile{{
+		Name:        "school",
+		Destination: "student@192.0.2.5",
+		Port:        22,
+		Connected:   true,
+		Ready:       true,
+		SocksPort:   10808,
+	}}
+	model.snapshot.SelectedSSH = 0
+	model.snapshot.SSHDetailName = "school"
+	model.snapshot.SSHDashboardFocus = true
+	model.snapshot.SSHDelay = tuiDelayResult{MedianMillis: 42}
+	model.snapshot.SSHTraffic = trafficSnapshot{Down: 4096}
+	model.snapshot.SSHNetwork = tuiNetworkInfo{PublicIP: "203.0.113.9"}
+	model.snapshot.Settings.Mode = "rule"
+	model.snapshot.Settings.MixedPort = 12345
+	model.snapshot.Network = tuiNetworkInfo{PublicIP: "198.51.100.10"}
+
+	_ = model.handleTeaKey(tea.KeyMsg{Type: tea.KeyLeft})
+	if !model.snapshot.FocusSidebar ||
+		model.snapshot.SSHDetailName != "school" ||
+		!model.snapshot.SSHDashboardFocus {
+		t.Fatalf("leaving the SSH detail for the sidebar forgot it: %+v", model.snapshot)
+	}
+	_ = model.handleTeaKey(tea.KeyMsg{Type: tea.KeyRight})
+	if model.snapshot.Page != tuiPageSSH ||
+		model.snapshot.FocusSidebar ||
+		model.snapshot.SSHDetailName != "school" ||
+		!model.snapshot.SSHDashboardFocus {
+		t.Fatalf("returning from the sidebar did not restore the SSH detail: %+v", model.snapshot)
+	}
+
+	_ = model.handleTeaKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	if model.snapshot.Page != tuiPageDashboard ||
+		model.snapshot.Settings.Mode != "rule" ||
+		model.snapshot.Settings.MixedPort != 12345 ||
+		model.snapshot.Network.PublicIP != "198.51.100.10" ||
+		model.snapshot.SSHNetwork.PublicIP != "203.0.113.9" {
+		t.Fatalf("Dashboard replaced SSH state: %+v", model.snapshot)
+	}
+	dashboard := stripTUIANSI(model.View())
+	if !strings.Contains(dashboard, "Public IP") ||
+		!strings.Contains(dashboard, "198.51.100.10") ||
+		!strings.Contains(dashboard, "rule") ||
+		strings.Contains(dashboard, "203.0.113.9") ||
+		strings.Contains(dashboard, "Proxy IP") {
+		t.Fatalf("Dashboard showed SSH proxy data:\n%s", dashboard)
+	}
+
+	_ = model.changeVisiblePage(tuiPageSSH)
+	_ = model.handleTeaKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	_ = model.handleTeaKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	if model.snapshot.Page != tuiPageSSH ||
+		model.snapshot.SSHDetailName != "school" ||
+		!model.snapshot.SSHDashboardFocus ||
+		model.snapshot.SSHDelay.MedianMillis != 42 ||
+		model.snapshot.SSHTraffic.Down != 4096 ||
+		model.snapshot.SSHNetwork.PublicIP != "203.0.113.9" ||
+		model.snapshot.Settings.Mode != "rule" ||
+		model.snapshot.Settings.MixedPort != 12345 ||
+		len(model.snapshot.SSHProfiles) != 1 ||
+		model.snapshot.SSHProfiles[0].Name != "school" {
+		t.Fatalf("SSH detail was not restored: %+v", model.snapshot)
+	}
+	sshPage := stripTUIANSI(model.View())
+	if !strings.Contains(sshPage, "SSH · school") ||
+		!strings.Contains(sshPage, "Proxy IP") ||
+		!strings.Contains(sshPage, "203.0.113.9") ||
+		strings.Contains(sshPage, "198.51.100.10") {
+		t.Fatalf("SSH page did not keep its own proxy view:\n%s", sshPage)
+	}
+
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("SSH config disappeared after the page switch: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("SSH config mode = %o", info.Mode().Perm())
+	}
+	loaded, err := loadCLISSHConfig()
+	if err != nil || len(loaded.Profiles) != 1 || loaded.Profiles[0].Name != "school" {
+		t.Fatalf("SSH config after page switch = %+v, err=%v", loaded, err)
 	}
 }
 

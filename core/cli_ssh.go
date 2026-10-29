@@ -17,6 +17,7 @@ import (
 
 const (
 	cliSSHConfigFilename       = ".flclash-ssh.json"
+	cliSSHReverseTunnelCommand = "ssh -f -N -R 10808 -p PORT -i KEY USER@HOST"
 	cliSSHConfigLockFilename   = ".flclash-ssh.lock"
 	cliSSHRuntimeDirectoryName = "ssh"
 	cliSSHPersistentStateFile  = "persistent.json"

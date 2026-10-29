@@ -239,8 +239,8 @@ func TestBubbleTeaProcessesBurstNavigationKeys(t *testing.T) {
 	if command != nil {
 		t.Fatal("navigation burst unexpectedly returned a command")
 	}
-	if model.snapshot.SelectedMenu != int(tuiPageConnections) {
-		t.Fatalf("selected menu = %d, want connections", model.snapshot.SelectedMenu)
+	if model.snapshot.SelectedMenu != int(tuiPageRequests) {
+		t.Fatalf("selected menu = %d, want history", model.snapshot.SelectedMenu)
 	}
 }
 

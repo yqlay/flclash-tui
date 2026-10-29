@@ -373,8 +373,8 @@ Live `flclash port PORT` changes are Backend transactions: target TCP/UDP availa
 2 SSH           profile list + tunnel, proxy IPs, live speed, and traffic graph
 3 Proxies       groups/nodes/Providers, selection, delay and speed tests
 4 Profiles      import URL/local profile, activate, update, rename, edit, delete non-active
-5 History        shared persistent flows, summaries, search/filter, details
-6 Connections    active flows, summaries, search, details, confirmed close actions
+5 Connections    active flows, summaries, search, details, confirmed close actions
+6 History        shared persistent flows, summaries, search/filter, details
 7 Logs           persistent Backend + TUI events, search/filter/details/export/clear
 8 Settings       complete traffic/Core/System proxy settings
 9 Maintenance    YAML edit, backup/restore, Geo, traffic reset, update check
