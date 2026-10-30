@@ -281,7 +281,7 @@ func exportManagedLogs() error {
 	if err != nil {
 		return err
 	}
-	path, err := exportTUILogs(homeDir, readTUIPersistentLogs(homeDir, 2000))
+	path, err := exportPersistentTUILogs(homeDir)
 	if err != nil {
 		return err
 	}

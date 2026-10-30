@@ -28,10 +28,14 @@ func managedListenerPort(reachable bool, mode string, activePort, proxyPort, con
 	return 0
 }
 
+func managedNetworkListenerPort(coreRunning bool, mode string, activePort, proxyPort, configuredPort int) int {
+	reachable := coreRunning || activePort > 0 || proxyPort > 0 || configuredPort > 0
+	return managedListenerPort(reachable, mode, activePort, proxyPort, configuredPort)
+}
+
 func detectManagedNetwork(
 	client *tuiServiceClient,
 	coreRunning bool,
-	probeWhenStopped bool,
 	mode string,
 	activePort, proxyPort, configuredPort int,
 	flcOutbound string,
@@ -67,7 +71,7 @@ func detectManagedNetwork(
 		}
 		return detectTUINetworkRouteForCommand(status.FLCProxyURL, "SILENT · "+cliDisplayValue(outbound))
 	}
-	port := managedListenerPort(coreRunning || probeWhenStopped, mode, activePort, proxyPort, configuredPort)
+	port := managedNetworkListenerPort(coreRunning, mode, activePort, proxyPort, configuredPort)
 	proxyURL := tuiLoopbackProxyURL(port)
 	label := "DIRECT"
 	if port > 0 {

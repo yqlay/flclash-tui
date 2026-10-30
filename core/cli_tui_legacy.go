@@ -214,7 +214,7 @@ func runLegacyTUI(client controllerClient, paths cliPaths, setupParams []byte, o
 				toggleCore()
 			case tuiKeyEdit:
 				if snapshot.Page == tuiPageLogs {
-					path, err := exportTUILogs(paths.HomeDir, snapshot.Logs)
+					path, err := exportPersistentTUILogs(paths.HomeDir)
 					if err != nil {
 						snapshot.setStatus(newTUIMessage("ui.a1978577d9c8", err.Error()))
 					} else {

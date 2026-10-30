@@ -204,14 +204,9 @@ func portCommand(args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: flclash port [PORT|off]")
 	}
-	value := strings.ToLower(args[0])
-	port := 0
-	var err error
-	if value != "off" {
-		port, err = strconv.Atoi(value)
-	}
-	if err != nil || port < 0 || port > 65535 {
-		return errors.New("proxy port must be a number from 1 to 65535, or off")
+	port, err := parseManagedProxyPort(args[0])
+	if err != nil {
+		return err
 	}
 	client, status, _, err := currentManagedSettings()
 	if err != nil {
@@ -229,6 +224,18 @@ func portCommand(args []string) error {
 	return nil
 }
 
+func parseManagedProxyPort(value string) (int, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "off" {
+		return 0, nil
+	}
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, errors.New("proxy port must be a number from 1 to 65535, or off")
+	}
+	return port, nil
+}
+
 func flcManagementCommand(args []string) error {
 	if cliSubcommandHelp(args) {
 		fmt.Println("Usage: flclash flc [status|select NAME|test|env|ssh ...]")
@@ -240,8 +247,21 @@ func flcManagementCommand(args []string) error {
 	if len(args) == 0 {
 		args = []string{"status"}
 	}
-	if args[0] == "ssh" {
+	switch args[0] {
+	case "ssh":
 		return flcSSHCommand(args[1:])
+	case "env":
+		return envCommand(args[1:])
+	case "status", "test":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: flclash flc %s", args[0])
+		}
+	case "select":
+		if len(args) != 2 {
+			return errors.New("usage: flclash flc select NAME")
+		}
+	default:
+		return fmt.Errorf("unknown flc command %q; use `flclash flc -help`", args[0])
 	}
 	client, status, err := currentManagedService()
 	if err != nil {
@@ -249,17 +269,11 @@ func flcManagementCommand(args []string) error {
 	}
 	switch args[0] {
 	case "status":
-		if len(args) != 1 {
-			return errors.New("usage: flclash flc status")
-		}
 		fmt.Printf("Mode:     %s\n", status.Mode)
 		fmt.Printf("Listener: %s\n", cliEnabledDisabled(status.FLCEnabled))
 		fmt.Printf("Exit:     %s\n", formatCLIFLCOutbound(status))
 		return nil
 	case "select":
-		if len(args) != 2 {
-			return errors.New("usage: flclash flc select NAME")
-		}
 		status, err = client.setFLCOutbound(args[1], status.Revision)
 		if err != nil {
 			return err
@@ -267,9 +281,6 @@ func flcManagementCommand(args []string) error {
 		fmt.Printf("flc exit %s (revision %d)\n", status.FLCOutbound, status.Revision)
 		return nil
 	case "test":
-		if len(args) != 1 {
-			return errors.New("usage: flclash flc test")
-		}
 		proxyAddress, err := activeCLIProxyURL()
 		if err != nil {
 			return err
@@ -296,8 +307,6 @@ func flcManagementCommand(args []string) error {
 			cliDisplayValue(status.FLCOutbound),
 		)
 		return nil
-	case "env":
-		return envCommand(args[1:])
 	default:
 		return fmt.Errorf("unknown flc command %q; use `flclash flc -help`", args[0])
 	}
@@ -312,7 +321,7 @@ func cliDisplayValue(value string) string {
 
 func historyCommand(args []string) error {
 	if cliSubcommandHelp(args) {
-		fmt.Println("Usage: flclash history show [--follow] [--json] [--source mixed|proxy|ssh] [--state all|active|done] [--search TEXT] [--limit N] | clear [--source mixed|proxy|ssh]")
+		fmt.Println("Usage: flclash history show [--follow] [--json] [--source mixed|proxy|ssh] [--state all|active|done|completed] [--search TEXT] [--limit N] | clear [--source mixed|proxy|ssh]")
 		fmt.Println("History is the shared recent connection history shown by the TUI.")
 		fmt.Println("Entries are labeled proxy (Mihomo) or ssh (independent reverse proxy).")
 		fmt.Println("Compatibility alias: flclash requests")
@@ -327,7 +336,7 @@ func historyCommand(args []string) error {
 		follow := fs.Bool("follow", args[0] == "watch", "follow new history entries")
 		jsonOutput := fs.Bool("json", false, "print JSON")
 		sourceFilter := fs.String("source", tuiTrafficSourceMixed, "filter by mixed, proxy, or ssh")
-		stateFilter := fs.String("state", "all", "filter by all, active, or done")
+		stateFilter := fs.String("state", "all", "filter by all, active, done, or completed")
 		search := fs.String("search", "", "match host, process, network, or proxy chain")
 		limit := fs.Int("limit", 0, "maximum matching entries; 0 shows all")
 		if err := parseCLIFlags(fs, args[1:]); err != nil {
@@ -337,15 +346,16 @@ func historyCommand(args []string) error {
 			return err
 		}
 		if len(fs.Args()) != 0 {
-			return errors.New("usage: flclash history show [--follow] [--json] [--source mixed|proxy|ssh] [--state all|active|done] [--search TEXT] [--limit N]")
+			return errors.New("usage: flclash history show [--follow] [--json] [--source mixed|proxy|ssh] [--state all|active|done|completed] [--search TEXT] [--limit N]")
 		}
 		if err := validateTrafficSourceFlag(*sourceFilter); err != nil {
 			return err
 		}
-		*stateFilter = strings.ToLower(strings.TrimSpace(*stateFilter))
-		if *stateFilter != "all" && *stateFilter != "active" && *stateFilter != "done" {
-			return errors.New("history state must be all, active, or done")
+		normalized, err := parseHistoryState(*stateFilter)
+		if err != nil {
+			return err
 		}
+		*stateFilter = normalized
 		if *limit < 0 || *limit > tuiRequestHistoryLimit {
 			return fmt.Errorf("history limit must be between 0 and %d", tuiRequestHistoryLimit)
 		}
@@ -426,6 +436,25 @@ func validateTrafficSourceFlag(value string) error {
 	}
 }
 
+func parseHistoryState(state string) (string, error) {
+	state = strings.ToLower(strings.TrimSpace(state))
+	switch state {
+	case "all", "active", "done", "completed":
+		return state, nil
+	default:
+		return "", errors.New("history state must be all, active, done, or completed")
+	}
+}
+
+func historyStateHidesActive(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "done", "completed":
+		return true
+	default:
+		return false
+	}
+}
+
 func filterCLIHistory(
 	history []tuiRequest,
 	sourceFilter,
@@ -440,7 +469,7 @@ func filterCLIHistory(
 			continue
 		}
 		if stateFilter == "active" && !request.Active ||
-			stateFilter == "done" && request.Active {
+			historyStateHidesActive(stateFilter) && request.Active {
 			continue
 		}
 		if needle != "" {
@@ -499,6 +528,11 @@ func networkCommand(args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: flclash net [show|refresh|delay|speed]")
 	}
+	switch args[0] {
+	case "show", "refresh", "delay", "speed":
+	default:
+		return fmt.Errorf("unknown net command %q; use `flclash net -help`", args[0])
+	}
 	client, status, err := currentManagedService()
 	if err != nil {
 		return err
@@ -508,7 +542,6 @@ func networkCommand(args []string) error {
 		info := detectManagedNetworkForCommand(
 			client,
 			status.Running,
-			false,
 			status.Mode,
 			status.ActiveProxyPort,
 			status.ProxyPort,

@@ -205,6 +205,8 @@ flclash exit                       # 完全退出前端、Backend、Core 和 SSH
 
 TUI：`q` 只退当前界面，并取消尚未完成的 SSH 连接；已连接的持久隧道保留。`Ctrl+C` 全停；Dashboard 管 Core、模式、flc、端口、TUN 和 System proxy；`?` 查看快捷键；`Ctrl+N` 查看通知。
 
+重新打开会恢复上次的标签，光标默认进入内容区；↑↓ 选择行，Enter 执行该行操作。仅保存标签，不保存行号、滚动位置或详情页。
+
 ## 连接、历史和日志
 
 - **Connections**：`/` 搜索，`f` 切换 mixed / proxy / ssh 来源，Enter 查看详情，`d` 关闭选中连接，`x` 关闭当前来源的全部连接（需确认）。关闭连接不会删除历史。

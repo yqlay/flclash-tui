@@ -199,7 +199,7 @@ func matchedTUIRequestIndexes(snapshot tuiSnapshot) []int {
 	filter := strings.ToLower(tuiDefaultValue(snapshot.HistoryFilter, "all"))
 	indexes := make([]int, 0, len(snapshot.Requests))
 	for index, request := range snapshot.Requests {
-		if filter == "active" && !request.Active || filter == "completed" && request.Active {
+		if filter == "active" && !request.Active || historyStateHidesActive(filter) && request.Active {
 			continue
 		}
 		if !trafficSourceMatches(snapshot.TrafficSource, tuiConnectionSource(request.TuiConnection)) {
@@ -433,6 +433,12 @@ func formatTUIDestination(host, port string) string {
 		return host
 	}
 	return net.JoinHostPort(host, port)
+}
+
+const tuiPersistentLogExportLimit = 2000
+
+func exportPersistentTUILogs(homeDir string) (string, error) {
+	return exportTUILogs(homeDir, readTUIPersistentLogs(homeDir, tuiPersistentLogExportLimit))
 }
 
 func exportTUILogs(homeDir string, logs []string) (string, error) {

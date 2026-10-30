@@ -62,6 +62,7 @@ func (m *tuiModel) beginSSHWrite() (uint64, bool) {
 	}
 	m.sshBusy = true
 	m.sshWriteSequence++
+	m.sshSnapshotRevision++
 	m.syncLaneBusy()
 	return m.sshWriteSequence, true
 }

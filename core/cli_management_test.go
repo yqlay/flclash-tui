@@ -82,7 +82,7 @@ func TestCompletionCoversPrimaryAndNestedCommands(t *testing.T) {
 		"backend shutdown exit profile",
 		"flc) words='status select test env ssh'",
 		"complete -F _flc flc",
-		"ssh) words='add edit delete list show connect disconnect status test default import probe --user --port --local-port --jump --identity --passphrase --clear-passphrase --password --clear-password --clear-jump --option --file'",
+		"ssh) words='add edit delete list show connect attach disconnect status test default import probe --user --port --local-port --jump --identity --passphrase --clear-passphrase --password --clear-password --clear-jump --option --file'",
 		"words='-d --direct -u --use'",
 		"config geo env doctor completion check update run version",
 		"COMP_WORDS[2]} == close",

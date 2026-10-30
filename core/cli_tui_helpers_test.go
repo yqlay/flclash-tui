@@ -232,7 +232,11 @@ func TestBubbleTeaProcessesBurstNavigationKeys(t *testing.T) {
 		nil,
 		false,
 	)
-	_, command := model.Update(tea.KeyMsg{
+	_, command := model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if command != nil || !model.snapshot.FocusSidebar {
+		t.Fatalf("left command %t sidebar %t", command != nil, model.snapshot.FocusSidebar)
+	}
+	_, command = model.Update(tea.KeyMsg{
 		Type:  tea.KeyRunes,
 		Runes: []rune("sssss"),
 	})

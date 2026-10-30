@@ -634,12 +634,10 @@ func (m *tuiModel) startEditor(path string) tea.Cmd {
 		m.snapshot.setStatus(newTUIMessage("ui.01b786e6983d"))
 		return nil
 	}
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		editor = "vi"
+	editor, err := configuredTextEditor()
+	if err != nil {
+		m.snapshot.setStatus(tuiMessage{Raw: err.Error()})
+		return nil
 	}
 	info, err := os.Lstat(path)
 	if err != nil {

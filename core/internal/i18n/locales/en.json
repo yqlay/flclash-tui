@@ -563,7 +563,7 @@
   "ui.e0d8c381bc7f": "SSH speed is live · press n to refresh proxy IPs",
   "ui.e107e1f4c746": "Editing SSH field · Enter confirm · Esc cancel",
   "ui.e1c7c4a7c00b": "Dashboard speed test requires the managed backend",
-  "ui.e1db28b2e468": "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  q exit TUI  ^C full exit",
+  "ui.e1db28b2e468": "  ←→ panel  ↑↓/ws select  PgUp/PgDn scroll  Enter apply  d delay  q exit TUI  ^C full exit",
   "ui.e247228cf04a": "Restore applied with errors: %s",
   "ui.e2575e46d735": "DISABLED · locked by silent mode",
   "ui.e257c8d7a2e3": "Backend watch interrupted: %s",

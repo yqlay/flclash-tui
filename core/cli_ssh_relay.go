@@ -318,16 +318,18 @@ func (r *cliSSHRelay) serveHTTP(client *cliRelayBufferedConn) {
 	}
 	target, err := cliHTTPProxyTarget(request)
 	if err != nil {
-		_ = request.Body.Close()
 		writeCLIHTTPProxyStatus(client, http.StatusBadRequest, "Bad Request")
+		_ = client.Close()
+		_ = request.Body.Close()
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	upstream, err := dialCLISSHRelayUpstream(ctx, r.upstreamPort, target)
 	if err != nil {
-		_ = request.Body.Close()
 		writeCLIHTTPProxyStatus(client, http.StatusBadGateway, "Bad Gateway")
+		_ = client.Close()
+		_ = request.Body.Close()
 		return
 	}
 	defer upstream.Close()
@@ -346,23 +348,32 @@ func (r *cliSSHRelay) serveHTTP(client *cliRelayBufferedConn) {
 	defer r.endFlow(flow)
 	r.connections.Add(1)
 	defer r.connections.Add(-1)
-	writeErr := request.Write(cliSSHCountingWriter{
-		writer:  upstream,
-		counter: &r.upload,
-		extra:   &flow.upload,
-	})
-	_ = request.Body.Close()
-	if writeErr != nil {
-		return
-	}
-	if tcp, ok := upstream.(*net.TCPConn); ok {
-		_ = tcp.CloseWrite()
-	}
+	// Read responses while uploading. A client may wait for 100 Continue
+	// before sending its body, and an origin may reject that body early.
+	// Serializing request.Write and response reads deadlocks both cases.
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		if err := request.Write(cliSSHCountingWriter{
+			writer:  upstream,
+			counter: &r.upload,
+			extra:   &flow.upload,
+		}); err != nil {
+			_ = upstream.Close()
+		}
+		_ = request.Body.Close()
+		closeCLIHalfClose(upstream)
+	}()
 	_, _ = io.Copy(cliSSHCountingWriter{
 		writer:  client,
 		counter: &r.download,
 		extra:   &flow.download,
 	}, upstream)
+	// An early final response must release the request-body reader as well as
+	// its upstream writer before endFlow snapshots the final byte counters.
+	_ = client.Close()
+	_ = upstream.Close()
+	<-written
 }
 
 func (r *cliSSHRelay) relayTunnel(client net.Conn, target string, upstream net.Conn) {

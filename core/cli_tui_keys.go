@@ -92,7 +92,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 		case tuiPageConnections:
 			m.cycleTrafficSource()
 		case tuiPageRequests:
-			filters := []string{"all", "active", "completed"}
+			filters := []string{"all", "active", "done", "completed"}
 			current := findTUIString(filters, tuiDefaultValue(m.snapshot.HistoryFilter, "all"))
 			m.snapshot.HistoryFilter = filters[wrapTUIIndex(current, 1, len(filters))]
 			m.snapshot.SelectedRequest = firstTUIRequestMatch(m.snapshot)
@@ -297,7 +297,7 @@ func (m *tuiModel) handleKey(key tuiKey) tea.Cmd {
 			return m.startEditor(m.snapshot.Profiles[m.snapshot.SelectedRow].Path)
 		case tuiPageLogs:
 			return m.startOperation(func(state *tuiOperationState) {
-				path, err := exportTUILogs(state.paths.HomeDir, state.snapshot.Logs)
+				path, err := exportPersistentTUILogs(state.paths.HomeDir)
 				if err != nil {
 					state.snapshot.setStatus(newTUIMessage("ui.a1978577d9c8", err.Error()))
 				} else {

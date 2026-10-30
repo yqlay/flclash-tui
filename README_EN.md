@@ -203,6 +203,8 @@ Proxy groups/list, nodes, select, delay, speed, and providers accept options bef
 
 In the TUI, `q` exits the current frontend and cancels its unfinished SSH connects, but preserves committed persistent tunnels; `Ctrl+C` is a full exit. Dashboard owns Core, mode, flc, proxy port, TUN, and System proxy. `?` lists keys; `Ctrl+N` opens notifications.
 
+Reopening restores the last visited tab with content focus. Use ↑↓ to select a row and Enter to run its action. Only the tab is saved, not the row, scroll position, or detail view.
+
 ## Connections, history, and logs
 
 - **Connections**: `/` searches, `f` selects mixed / proxy / ssh, Enter opens details, `d` closes the selected flow, and `x` closes all flows in the selected source after confirmation. Closing flows does not erase history.

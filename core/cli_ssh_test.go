@@ -725,6 +725,7 @@ func TestTUIEnterReconnectsBrokenSSHProfileFromProfileBox(t *testing.T) {
 	model.height = 30
 	model.snapshot.Page = tuiPageSSH
 	model.snapshot.FocusSidebar = false
+	model.snapshot.SelectedSSH = 0
 	model.snapshot.SSHProfiles = []tuiSSHProfile{{
 		Name:      "school",
 		Connected: true,
@@ -743,6 +744,7 @@ func TestTUIEnterFocusesDashboardForHealthySSHProfile(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.snapshot.Page = tuiPageSSH
 	model.snapshot.FocusSidebar = false
+	model.snapshot.SelectedSSH = 0
 	model.snapshot.SSHProfiles = []tuiSSHProfile{{
 		Name:      "school",
 		Connected: true,
@@ -764,6 +766,7 @@ func TestTUIEnterFocusesDashboardForHealthySSHProfile(t *testing.T) {
 func TestTUISSHProfileSelectionOnlyMovesListFocus(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.snapshot.Page = tuiPageSSH
+	model.snapshot.SelectedSSH = 0
 	model.snapshot.SSHProfiles = []tuiSSHProfile{
 		{Name: "first"},
 		{Name: "second", Connected: true, Ready: true, SocksPort: 1080},
@@ -792,6 +795,7 @@ func TestTUISSHDetailsOpenOnlyOnEnter(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.width, model.height = 120, 36
 	model.snapshot.Page = tuiPageSSH
+	model.snapshot.SelectedSSH = 0
 	model.snapshot.SSHProfiles = []tuiSSHProfile{
 		{Name: "first", Connected: true, Ready: true, SocksPort: 1080},
 		{Name: "second", Connected: true, Ready: true, SocksPort: 2080},
@@ -2276,6 +2280,7 @@ func TestTUISSHEditFormDeleteAction(t *testing.T) {
 	model := newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.snapshot.Page = tuiPageSSH
 	model.snapshot.FocusSidebar = false
+	model.snapshot.SelectedSSH = 0
 	refreshTUISSH(&model.snapshot)
 	model.beginSSHForm(true)
 	if row := model.sshFormDeleteRow(); row < 0 || row >= model.sshFormRowCount() {
@@ -2436,6 +2441,7 @@ func TestConnectedSSHProfileIsReadOnlyInTUIAndCLI(t *testing.T) {
 		Name:      "school",
 		Connected: true,
 	}}
+	model.snapshot.SelectedSSH = 0
 	model.beginSSHForm(true)
 	if !model.sshFormOpen || !model.sshFormReadOnly {
 		t.Fatalf("connected SSH form state = open:%t read-only:%t", model.sshFormOpen, model.sshFormReadOnly)
@@ -2477,6 +2483,7 @@ func TestConnectedSSHProfileIsReadOnlyInTUIAndCLI(t *testing.T) {
 	connected = false
 	model = newTUIModel(controllerClient{}, cliPaths{}, nil, true)
 	model.snapshot.SSHProfiles = []tuiSSHProfile{{Name: "school"}}
+	model.snapshot.SelectedSSH = 0
 	model.beginSSHForm(true)
 	if !model.sshFormOpen || model.sshFormReadOnly {
 		t.Fatal("disconnected SSH profile did not become editable after reopening")
@@ -3559,6 +3566,7 @@ func TestTUISSHDetailEditsProxyPortInPlace(t *testing.T) {
 	model.height = 40
 	model.snapshot.Page = tuiPageSSH
 	model.snapshot.FocusSidebar = false
+	model.snapshot.SelectedSSH = 0
 	model.snapshot.SSHDashboardFocus = true
 	model.snapshot.SSHDetailName = "school"
 	model.snapshot.SSHProfiles = []tuiSSHProfile{{

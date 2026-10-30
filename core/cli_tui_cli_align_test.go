@@ -72,6 +72,7 @@ func TestTUIContentCursorMatchesLabeledRows(t *testing.T) {
 	ssh.width = 141
 	ssh.height = 46
 	ssh.snapshot.Page = tuiPageSSH
+	ssh.snapshot.SelectedSSH = 0
 	ssh.snapshot.SSHDashboardFocus = true
 	ssh.snapshot.SSHDetailName = "row-enter"
 	ssh.snapshot.SSHDetailRow = tuiSSHTunnelRow

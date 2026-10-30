@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"core/internal/i18n"
@@ -121,6 +122,59 @@ const tuiPreferencesFilename = ".flclash-tui-preferences.json"
 
 type tuiPreferences struct {
 	Language string `json:"language"`
+	Page     string `json:"page,omitempty"`
+}
+
+var errTUIPreferenceSuperseded = errors.New("superseded TUI preference")
+
+func tuiPreferencePageName(page tuiPage) (string, bool) {
+	switch page {
+	case tuiPageDashboard:
+		return "dashboard", true
+	case tuiPageSSH:
+		return "ssh", true
+	case tuiPageProxies:
+		return "proxies", true
+	case tuiPageProfiles:
+		return "profiles", true
+	case tuiPageConnections:
+		return "connections", true
+	case tuiPageRequests:
+		return "history", true
+	case tuiPageLogs:
+		return "logs", true
+	case tuiPageTools:
+		return "settings", true
+	case tuiPageMaintenance:
+		return "maintenance", true
+	default:
+		return "", false
+	}
+}
+
+func tuiPageFromPreference(name string) (tuiPage, bool) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "dashboard":
+		return tuiPageDashboard, true
+	case "ssh":
+		return tuiPageSSH, true
+	case "proxies":
+		return tuiPageProxies, true
+	case "profiles":
+		return tuiPageProfiles, true
+	case "connections":
+		return tuiPageConnections, true
+	case "history":
+		return tuiPageRequests, true
+	case "logs":
+		return tuiPageLogs, true
+	case "settings":
+		return tuiPageTools, true
+	case "maintenance":
+		return tuiPageMaintenance, true
+	default:
+		return tuiPageDashboard, false
+	}
 }
 
 func loadTUIPreferences(homeDir string) (tuiPreferences, error) {
@@ -143,6 +197,42 @@ func saveTUILanguage(homeDir, language string) error {
 	if i18n.Normalize(language) != language {
 		return errors.New("unsupported TUI language")
 	}
+	value, err := json.Marshal(language)
+	if err != nil {
+		return err
+	}
+	return writeTUIPreferenceKey(homeDir, "language", value, nil)
+}
+
+type tuiPageSaver struct {
+	seq atomic.Uint64
+}
+
+func (s *tuiPageSaver) next() uint64 {
+	return s.seq.Add(1)
+}
+
+func (s *tuiPageSaver) current() uint64 {
+	return s.seq.Load()
+}
+
+func (s *tuiPageSaver) save(homeDir, name string, seq uint64) error {
+	if strings.TrimSpace(homeDir) == "" {
+		return nil
+	}
+	if _, ok := tuiPageFromPreference(name); !ok {
+		return errors.New("unsupported TUI page")
+	}
+	value, err := json.Marshal(name)
+	if err != nil {
+		return err
+	}
+	return writeTUIPreferenceKey(homeDir, "page", value, func() bool {
+		return s.seq.Load() == seq
+	})
+}
+
+func writeTUIPreferenceKey(homeDir, key string, value json.RawMessage, stillCurrent func() bool) error {
 	if err := os.MkdirAll(homeDir, 0o700); err != nil {
 		return err
 	}
@@ -163,6 +253,9 @@ func saveTUILanguage(homeDir, language string) error {
 		return err
 	}
 	defer lock.release()
+	if stillCurrent != nil && !stillCurrent() {
+		return errTUIPreferenceSuperseded
+	}
 	values := map[string]json.RawMessage{}
 	path := filepath.Join(homeDir, tuiPreferencesFilename)
 	if data, err := os.ReadFile(path); err == nil {
@@ -175,8 +268,7 @@ func saveTUILanguage(homeDir, language string) error {
 	if values == nil {
 		values = map[string]json.RawMessage{}
 	}
-	value, _ := json.Marshal(language)
-	values["language"] = value
+	values[key] = value
 	data, err := json.MarshalIndent(values, "", "  ")
 	if err != nil {
 		return err
@@ -198,6 +290,9 @@ func saveTUILanguage(homeDir, language string) error {
 	}
 	if err := file.Close(); err != nil {
 		return err
+	}
+	if stillCurrent != nil && !stillCurrent() {
+		return errTUIPreferenceSuperseded
 	}
 	return os.Rename(file.Name(), path)
 }

@@ -71,7 +71,6 @@ func (m *tuiModel) startNetworkCheck() tea.Cmd {
 	m.snapshot.Network.Loading = true
 	route := m.networkRoute()
 	coreRunning := m.coreRunning
-	probeWhenStopped := !m.ownsCore
 	mode := m.snapshot.Settings.Mode
 	activePort := m.snapshot.ActiveProxyPort
 	mixedPort := m.snapshot.Settings.MixedPort
@@ -81,7 +80,6 @@ func (m *tuiModel) startNetworkCheck() tea.Cmd {
 			info: detectManagedNetworkForCommand(
 				route.service,
 				coreRunning,
-				probeWhenStopped,
 				mode,
 				activePort,
 				mixedPort,
@@ -143,16 +141,13 @@ func (m *tuiModel) invalidateNetworkExit(configChanged bool) {
 }
 
 func (m *tuiModel) networkCheckProxyPort() int {
-	if strings.EqualFold(m.snapshot.Settings.Mode, tuiSilentMode) {
-		return 0
-	}
-	if m.coreRunning || !m.ownsCore {
-		if m.snapshot.ActiveProxyPort > 0 {
-			return m.snapshot.ActiveProxyPort
-		}
-		return m.snapshot.Settings.MixedPort
-	}
-	return 0
+	return managedNetworkListenerPort(
+		m.coreRunning,
+		m.snapshot.Settings.Mode,
+		m.snapshot.ActiveProxyPort,
+		m.snapshot.Settings.MixedPort,
+		m.snapshot.Settings.MixedPort,
+	)
 }
 
 func (m *tuiModel) networkCheckRoute() string {

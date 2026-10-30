@@ -1,3 +1,14 @@
+## FlClash TUI v0.5.39
+
+- Restore the last visited TUI page on startup and focus its default content row. All nine pages support immediate Enter; SSH starts on Capture. Supersede late page saves, preserve language/unknown preference keys, and flush pending page saves on exit.
+- Align TUI and CLI editor refusal, proxy-port validation, finished-history aliases (`done` / `completed`), and `ssh attach` completion. Profile Enter still activates; unset `VISUAL` / `EDITOR` no longer falls back to `vi`.
+- Export the same final 2000 persistent Backend log lines from TUI and CLI, including rotated logs. Use the same stopped-Core network-detection port and keep the short English Dashboard `d delay` hint.
+- Keep newer SSH connection/profile/Capture state when an older Core operation or asynchronous refresh completes. Reject stale local SSH refreshes after edits without blocking subsequent refreshes or independent Core updates.
+- Clear phantom proxy connections and complete their local history entries after a malformed controller proxy response.
+- Fix SSH HTTP uploads waiting for `100 Continue`, early rejection, or upstream failure. Forward responses concurrently with uploads and release both sides before finalizing relay traffic counters. HTTP CONNECT and SOCKS5 remain supported on the same port.
+- Validate malformed `net` / `flc` commands before contacting Backend, so usage errors remain actionable when Backend is stopped or unavailable.
+- Add immediate-Enter, real CLI log/history/network, stale-state, and HTTP upload regressions. Backend IPC remains v7; restart Backend after upgrading, and reconnect existing SSH relays to load the relay fixes.
+
 ## FlClash TUI v0.5.38
 
 - The SSH public loopback port accepts HTTP CONNECT, absolute-form HTTP, and SOCKS5 on the same address. The hidden OpenSSH dynamic forward stays SOCKS5. `flc ssh` still injects `http://127.0.0.1:PORT`.

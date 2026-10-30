@@ -47,6 +47,7 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 			m.refreshInFlight = false
 			cmds = append(cmds, m.syncLiveMonitors()...)
 			cmds = append(cmds, m.startRefresh())
+			cmds = append(cmds, m.persistVisiblePage())
 		}
 		return tea.Batch(cmds...)
 	}
@@ -66,7 +67,37 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 		m.snapshot.setStatus(newTUIMessage("ui.c90e0573178b"))
 		return nil
 	}
-	return m.handleKey(key)
+	command := m.handleKey(key)
+	if m.snapshot.Page != previousPage {
+		return tea.Batch(command, m.persistVisiblePage())
+	}
+	return command
+}
+
+type tuiPageSavedMsg struct {
+	Page tuiPage
+	Seq  uint64
+	Err  error
+}
+
+func (m *tuiModel) persistVisiblePage() tea.Cmd {
+	if strings.TrimSpace(m.paths.HomeDir) == "" {
+		return nil
+	}
+	name, ok := tuiPreferencePageName(m.snapshot.Page)
+	if !ok {
+		return nil
+	}
+	// A return to an already stored page must still retire the save of the
+	// page just left. The caller only reaches here when the visible page changed.
+	seq := m.pageSaver.next()
+	m.pageSavePending = true
+	homeDir := m.paths.HomeDir
+	page := m.snapshot.Page
+	saver := &m.pageSaver
+	return func() tea.Msg {
+		return tuiPageSavedMsg{Page: page, Seq: seq, Err: saver.save(homeDir, name, seq)}
+	}
 }
 
 func tuiKeyAllowedWhileBusy(key tuiKey) bool {

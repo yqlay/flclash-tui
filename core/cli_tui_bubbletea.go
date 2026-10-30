@@ -145,6 +145,7 @@ type tuiRefreshResultMsg struct {
 	backendUnavailable bool
 	generation         uint64
 	sequence           uint64
+	sshRevision        uint64
 	snapshot           tuiSnapshot
 	paths              cliPaths
 	configuredSettings *tuiSettings
@@ -313,6 +314,7 @@ type tuiModel struct {
 	editorBusy               bool
 	sshBusy                  bool
 	sshWriteSequence         uint64
+	sshSnapshotRevision      uint64
 	proxyProbeEpoch          uint64
 	proxyProbeSeq            map[string]uint64
 	delayInFlight            int
@@ -336,6 +338,9 @@ type tuiModel struct {
 	languageSelectionOpen    bool
 	languageSaving           bool
 	selectedLanguage         int
+	pageSaver                tuiPageSaver
+	persistedPage            tuiPage
+	pageSavePending          bool
 	renameProfilePath        string
 	editorPath               string
 	editorTempPath           string
@@ -443,6 +448,10 @@ func newTUIModel(
 		pendingMixedPort = &port
 	}
 	preferences, preferencesErr := loadTUIPreferences(paths.HomeDir)
+	restoredPage := tuiPageDashboard
+	if page, ok := tuiPageFromPreference(preferences.Page); ok {
+		restoredPage = page
+	}
 	model := &tuiModel{
 		snapshot: tuiSnapshot{
 			Language:          preferences.Language,
@@ -452,11 +461,14 @@ func newTUIModel(
 			SelectedGroup:     0,
 			SelectedNode:      0,
 			SelectedRow:       tuiProfileImportSubscriptionRow,
-			SelectedMenu:      int(tuiPageDashboard),
+			SelectedSSH:       tuiSSHCaptureRow,
+			Page:              restoredPage,
+			SelectedMenu:      int(restoredPage),
 			SelectedDashboard: tuiDashboardServiceRow,
-			FocusSidebar:      true,
+			FocusSidebar:      false,
 			ExternalCore:      !ownsCore,
 		},
+		persistedPage:    restoredPage,
 		client:           client,
 		paths:            paths,
 		setupParams:      append([]byte(nil), setupParams...),
@@ -671,6 +683,13 @@ func (m *tuiModel) Init() tea.Cmd {
 func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	m.snapshot.ExternalCore = !m.ownsCore
 	switch message := message.(type) {
+	case tuiPageSavedMsg:
+		if message.Err != nil || message.Page != m.snapshot.Page || message.Seq != m.pageSaver.current() {
+			return m, nil
+		}
+		m.persistedPage = message.Page
+		m.pageSavePending = false
+		return m, nil
 	case tuiLanguageSavedMsg:
 		m.languageSaving = false
 		if message.Err != nil {
@@ -964,6 +983,11 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.backendUnavailable {
 			message.snapshot = mergeTUIUnavailableBackend(m.snapshot, message.snapshot, message.paths, m.paths)
 		}
+		if m.sshBusy || message.sshRevision != m.sshSnapshotRevision {
+			message.snapshot = preserveTUIIndependentSSH(m.snapshot, message.snapshot)
+		} else {
+			m.sshSnapshotRevision++
+		}
 		previousSSHIndex := m.sshDetailProfileIndex()
 		var previousSSH tuiSSHProfile
 		if previousSSHIndex >= 0 {
@@ -1148,6 +1172,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.sequence != 0 && message.sequence != m.sshWriteSequence {
 			return m, nil
 		}
+		m.sshSnapshotRevision++
 		m.sshBusy = false
 		m.syncLaneBusy()
 		var credentialRequired *cliSSHCredentialRequiredError

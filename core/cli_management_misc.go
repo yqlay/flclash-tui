@@ -155,7 +155,7 @@ func completionCommand(args []string) error {
 		{"mode", "rule global direct silent"},
 		{"port", "off"},
 		{"flc", "status select test env ssh"},
-		{"ssh", "add edit delete list show connect disconnect status test default import probe --user --port --local-port --jump --identity --passphrase --clear-passphrase --password --clear-password --clear-jump --option --file"},
+		{"ssh", "add edit delete list show connect attach disconnect status test default import probe --user --port --local-port --jump --identity --passphrase --clear-passphrase --password --clear-password --clear-jump --option --file"},
 		{"net", "show refresh delay speed"},
 		{"status", "--json --watch"},
 		{"backend", "start stop restart status logs clients"},
@@ -502,18 +502,26 @@ func readManagedLogTo(
 	}
 }
 
+func configuredTextEditor() (string, error) {
+	editor := strings.TrimSpace(os.Getenv("VISUAL"))
+	if editor == "" {
+		editor = strings.TrimSpace(os.Getenv("EDITOR"))
+	}
+	if editor == "" {
+		return "", errors.New("set $VISUAL or $EDITOR before using config edit")
+	}
+	return editor, nil
+}
+
 func editManagedConfig(path string) error {
 	before, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 	expectedSHA256 := tuiBytesSHA256(before)
-	editor := strings.TrimSpace(os.Getenv("VISUAL"))
-	if editor == "" {
-		editor = strings.TrimSpace(os.Getenv("EDITOR"))
-	}
-	if editor == "" {
-		return errors.New("set $VISUAL or $EDITOR before using config edit")
+	editor, err := configuredTextEditor()
+	if err != nil {
+		return err
 	}
 	temporary, err := os.CreateTemp("", "flclash-edit-*.yaml")
 	if err != nil {

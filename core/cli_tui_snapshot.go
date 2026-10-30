@@ -74,6 +74,8 @@ func refreshTUISnapshot(snapshot *tuiSnapshot, client controllerClient) {
 	var response tuiProxyResponse
 	if err := json.Unmarshal(data, &response); err != nil {
 		snapshot.setStatus(newTUIMessage("ui.e44e826960b3", err.Error()))
+		applyTUISSHConnections(snapshot, nil, selectedConnectionID, selectedRequestID)
+		snapshot.UpdatedAt = time.Now()
 		return
 	}
 

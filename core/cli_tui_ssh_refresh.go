@@ -9,6 +9,7 @@ import (
 
 type tuiSSHLocalRefreshMsg struct {
 	sequence uint64
+	revision uint64
 	profiles []tuiSSHProfile
 	status   tuiMessage
 }
@@ -22,11 +23,12 @@ func (m *tuiModel) startSSHLocalRefresh() tea.Cmd {
 	m.sshLocalRefreshActive = true
 	m.sshLocalRefreshSequence++
 	sequence := m.sshLocalRefreshSequence
+	revision := m.sshSnapshotRevision
 	snapshot := cloneTUISnapshot(m.snapshot)
 	return func() tea.Msg {
 		previous := snapshot.Status
 		refreshTUISSH(&snapshot)
-		result := tuiSSHLocalRefreshMsg{sequence: sequence, profiles: snapshot.SSHProfiles}
+		result := tuiSSHLocalRefreshMsg{sequence: sequence, revision: revision, profiles: snapshot.SSHProfiles}
 		if previous != snapshot.Status {
 			result.status = snapshot.currentMessage()
 		}
@@ -39,9 +41,10 @@ func (m *tuiModel) applySSHLocalRefresh(message tuiSSHLocalRefreshMsg) tea.Cmd {
 		return nil
 	}
 	m.sshLocalRefreshActive = false
-	if m.sshBusy {
+	if m.sshBusy || message.revision != m.sshSnapshotRevision {
 		return nil
 	}
+	m.sshSnapshotRevision++
 	previousIndex := m.sshDetailProfileIndex()
 	var previous tuiSSHProfile
 	if previousIndex >= 0 {

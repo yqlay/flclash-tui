@@ -13,6 +13,7 @@ import (
 )
 
 func (m *tuiModel) shutdown() {
+	m.flushVisiblePage()
 	if m.sshOperationCancel != nil {
 		m.sshOperationCancel()
 	}
@@ -30,6 +31,28 @@ func (m *tuiModel) shutdown() {
 	if m.ownsCore {
 		cliHub.Shutdown()
 	}
+}
+
+func (m *tuiModel) flushVisiblePage() {
+	if strings.TrimSpace(m.paths.HomeDir) == "" {
+		return
+	}
+	if !m.pageSavePending && m.snapshot.Page == m.persistedPage {
+		return
+	}
+	name, ok := tuiPreferencePageName(m.snapshot.Page)
+	if !ok {
+		return
+	}
+	seq := m.pageSaver.next()
+	if err := m.pageSaver.save(m.paths.HomeDir, name, seq); err != nil {
+		return
+	}
+	if seq != m.pageSaver.current() {
+		return
+	}
+	m.persistedPage = m.snapshot.Page
+	m.pageSavePending = false
 }
 
 func tuiTickCommand() tea.Cmd {
@@ -79,6 +102,7 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 	m.refreshSequence++
 	sequence := m.refreshSequence
 	generation := m.backendGeneration
+	sshRevision := m.sshSnapshotRevision
 	scope := tuiIdleTickPlanFor(m.snapshot.Page)
 	m.refreshIncludesHistory = scope.FetchHistory
 	m.refreshIncludesLogs = scope.FetchLogs
@@ -99,7 +123,7 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 			refreshTUILocalSnapshot(&original, initialPaths)
 			applyTUISSHConnections(&original, filterConnectionsBySource(original.Connections, tuiTrafficSourceProxy), tuiSelectedConnectionID(original), tuiSelectedRequestID(original))
 			original.setStatus(newTUIMessage("ui.3dbb8b44d1fa", "Status: "+err.Error()))
-			return tuiRefreshResultMsg{sequence: sequence, generation: generation, snapshot: original, paths: initialPaths, backendUnavailable: true}
+			return tuiRefreshResultMsg{sequence: sequence, generation: generation, sshRevision: sshRevision, snapshot: original, paths: initialPaths, backendUnavailable: true}
 		}
 		if service != nil {
 			status, err := service.status()
@@ -172,6 +196,7 @@ func (m *tuiModel) startRefresh() tea.Cmd {
 		return tuiRefreshResultMsg{
 			generation:         generation,
 			sequence:           sequence,
+			sshRevision:        sshRevision,
 			snapshot:           snapshot,
 			serviceStatus:      serviceStatus,
 			configuredSettings: configuredSettings,
@@ -351,7 +376,18 @@ func mergeTUIOperation(current, result tuiSnapshot) tuiSnapshot {
 		current.TrafficHistory...,
 	)
 	result.TotalTraffic = current.TotalTraffic
+	// Core operations and SSH writes use independent lanes. An operation's
+	// captured SSH view must not undo a newer connect, edit or local refresh.
+	result = preserveTUIIndependentSSH(current, result)
 	return preserveTUIInteraction(current, result)
+}
+
+func preserveTUIIndependentSSH(current, updated tuiSnapshot) tuiSnapshot {
+	updated.SSHProfiles = append([]tuiSSHProfile(nil), current.SSHProfiles...)
+	for index := range updated.SSHProfiles {
+		updated.SSHProfiles[index].Options = append([]string(nil), current.SSHProfiles[index].Options...)
+	}
+	return updated
 }
 
 func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
@@ -403,6 +439,13 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	updated.SSHDashboardFocus = current.SSHDashboardFocus
 	updated.SSHDetailName = current.SSHDetailName
 	updated.SSHDetailRow = current.SSHDetailRow
+	// Capture results are owned by explicit discovery, never by an older
+	// Core operation or the periodic local-status snapshot.
+	updated.SSHCaptureKnown = current.SSHCaptureKnown
+	updated.SSHCaptureFound = current.SSHCaptureFound
+	updated.SSHCaptureHint = current.SSHCaptureHint
+	updated.SSHCaptureInbound = current.SSHCaptureInbound
+	updated.SSHCaptureLocal = current.SSHCaptureLocal
 	updated.ManagedService = current.ManagedService
 	updated.ExternalCore = current.ExternalCore
 	updated.FocusSidebar = current.FocusSidebar
