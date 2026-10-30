@@ -104,7 +104,7 @@ Profiles and configuration:
 
 ```bash
 flclash profile list [--json]
-flclash profile current
+flclash profile current [--json]
 flclash profile import URL
 flclash profile import-file /path/to/nodes.txt
 flclash profile use NAME
@@ -159,6 +159,11 @@ Authenticated loopback traffic from the private silent-mode FLC listener is incl
 `profile import` and `profile import-file` accept Mihomo/Clash YAML, raw URI lists, standard or URL-safe Base64-wrapped YAML/URI lists, SIP008 JSON, supported sing-box/Xray JSON outbounds, and common Surge/Quantumult X/Loon proxy lines. Local files may use any extension and are converted into a copied `.yaml` profile without modifying the source; duplicate file names gain `-2`, `-3`, and so on, while duplicate node names are renamed deterministically. Every converted node is validated by Mihomo, and an unsupported or malformed node rejects the whole import instead of being silently dropped. Internal `.flclash-silent-runtime-*` and `.flclash-managed-runtime-*` YAML files are never shown as Profiles.
 
 For URL subscriptions, Profiles also stores the provider's `subscription-userinfo` response header when present. Selecting a linked profile shows upload/download usage, quota, remaining traffic, expiry, and when the metadata was last fetched; `flclash profile list --json` exposes the same data. Import and `U`/`profile update` refresh it, including clearing old values when the provider omits the header. Local YAML files do not carry account limits or expiry, so those values are never inferred from the rules.
+
+Profile options can precede or follow names. `--json` returns structured output
+for every profile command except interactive `edit`. Mutations require the
+selected data directory to match the running Backend; an explicit `--directory`
+never silently redirects an import into another directory.
 
 TUN scope is explicit:
 
@@ -396,6 +401,17 @@ x               delete Profile/SSH; clear page data
 q               exit only this TUI               Ctrl+C        exit TUIs + Backend + Core + SSH
 ```
 
+Reopening restores the last visited tab. The SSH page also restores its list
+highlight, opened dashboard, list/detail focus, and selected detail row from
+`.flclash-tui-preferences.json`. Profiles are matched by name; deleted profiles
+fall back to Capture, and unavailable detail rows return to the tunnel row.
+Restoring the view reads local status without connecting or discovering SSH
+sessions. Other pages reopen at their initial row.
+Failed view saves show a warning without discarding the current view; the next
+idle refresh retries. Repeated failures do not reopen an acknowledged warning
+until saving succeeds. A final failure on exit is reported after the terminal
+has been restored.
+
 The Dashboard overlays upload (blue), download (green), and overlap (cyan) as
 line-only curves above a white dotted baseline on one shared-scale, 30-sample
 chart. The colored `↑` and `↓` speed values above the chart act as its legend.
@@ -412,7 +428,9 @@ color-coded summaries at the lower right. `Ctrl+N` opens the latest 50 entries
 inside the existing TUI frame: ↑/↓ selects an entry, PgUp/PgDn scrolls its full
 message, Enter confirms it, and Esc returns to the unchanged underlying page.
 Notifications are also written to Logs; repeated progress for one operation
-updates and moves its existing history entry instead of creating duplicates.
+updates and moves its own history entry instead of creating duplicates.
+Core, SSH, delay, and speed tasks keep separate progress notices; one task's
+completion does not overwrite another task's failure.
 
 Application events use timestamped INFO/WARN/ERROR records. The TUI reads the
 persistent Backend log and its rotated backup through the private versioned IPC,

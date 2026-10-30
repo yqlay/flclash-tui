@@ -53,6 +53,7 @@ func (m *tuiModel) applySSHLocalRefresh(message tuiSSHLocalRefreshMsg) tea.Cmd {
 	updated := cloneTUISnapshot(m.snapshot)
 	updated.SSHProfiles = message.profiles
 	m.snapshot = preserveTUIInteraction(m.snapshot, updated)
+	m.restorePendingSSHView()
 	m.closeSSHProxyPortEditIfDetailGone()
 	if message.status.Key != "" || message.status.Raw != "" {
 		m.snapshot.setStatus(message.status)

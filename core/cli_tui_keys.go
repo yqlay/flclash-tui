@@ -644,6 +644,7 @@ func (m *tuiModel) revealDashboardSelection() {
 func (m *tuiModel) moveSelection(delta int) tea.Cmd {
 	switch m.snapshot.Page {
 	case tuiPageSSH:
+		m.pendingSSHView = nil
 		if m.snapshot.SSHDashboardFocus {
 			count := m.sshDetailSelectableCount()
 			if m.snapshot.SSHDetailRow < 0 || m.snapshot.SSHDetailRow >= count {

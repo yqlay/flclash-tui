@@ -164,7 +164,7 @@ func TestTUILocalizedNotificationsRemainStructured(t *testing.T) {
 	data := "ERROR failed /tmp/Language saved.yaml 192.0.2.1"
 	message := newTUIMessage("ssh.saved", data)
 	model.snapshot.setStatus(message)
-	model.publishStatusNotification(tuiTickMsg{}, "")
+	model.publishStatusNotification(tuiTickMsg{}, "", "", false)
 	if len(model.notifications) != 1 || model.notifications[0].level != tuiNotificationSuccess {
 		t.Fatal("classified data as an error")
 	}

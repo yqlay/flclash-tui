@@ -1,4 +1,5 @@
 {
+  "preferences.save_failed": "TUI görnüşiniň ýagdaýyny saklap bolmady: %s",
   "settings.draft_conflict": "Sazlama taslamasynda gapma-garşylyk bar; giriş saklandy. Ýatda saklamazdan öň redaktirlemäni ýatyryň we häzirki sazlamany täzeden ýükläň.",
   "ui.00b20e67e88d": "SSH Profiller Elýeterli däl: %s",
   "ui.00fe8fa15732": "Fon hyzmaty  Duruz ↓",

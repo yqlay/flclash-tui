@@ -358,9 +358,13 @@ func rotateTUIServiceLog(path string) {
 	rotateTUIServiceLogUnlocked(path)
 }
 
-func rotateTUIServiceLogUnlocked(path string) {
+func rotateTUIServiceLogUnlocked(path string, incoming ...int) {
 	info, err := os.Stat(path)
-	if err != nil || info.Size() <= tuiServiceLogMaxBytes {
+	additional := int64(0)
+	if len(incoming) > 0 {
+		additional = int64(incoming[0])
+	}
+	if err != nil || info.Size() == 0 || info.Size()+additional <= tuiServiceLogMaxBytes {
 		return
 	}
 	backupPath := path + ".1"
@@ -421,7 +425,7 @@ func (w *tuiRotatingLogWriter) Write(data []byte) (int, error) {
 	if w.size+int64(len(data)) > tuiServiceLogMaxBytes {
 		_ = w.file.Close()
 		w.file = nil
-		rotateTUIServiceLogUnlocked(w.path)
+		rotateTUIServiceLogUnlocked(w.path, len(data))
 		if err := w.reopen(); err != nil {
 			return 0, err
 		}

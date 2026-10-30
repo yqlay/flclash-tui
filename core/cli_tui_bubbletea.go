@@ -134,10 +134,12 @@ type tuiMemoryResultMsg struct {
 
 type tuiCoreMemoryMsg struct {
 	update tuiCoreMemoryUpdate
+	source <-chan tuiCoreMemoryUpdate
 }
 
 type tuiTrafficMsg struct {
 	update tuiTrafficUpdate
+	source <-chan tuiTrafficUpdate
 }
 
 type tuiRefreshResultMsg struct {
@@ -341,6 +343,11 @@ type tuiModel struct {
 	pageSaver                tuiPageSaver
 	persistedPage            tuiPage
 	pageSavePending          bool
+	persistedSSHView         tuiSSHViewState
+	pendingSSHView           *tuiSSHViewState
+	sshViewDetailFocus       bool
+	sshViewSavePending       bool
+	viewSaveFailed           bool
 	renameProfilePath        string
 	editorPath               string
 	editorTempPath           string
@@ -483,6 +490,12 @@ func newTUIModel(
 		message := newTUIMessage("language.load_failed", preferencesErr.Error())
 		model.enqueueNotification(tuiNotification{level: tuiNotificationWarning, message: message.text("en"), text: message})
 	}
+	if preferences.SSHView != nil && *preferences.SSHView != (tuiSSHViewState{}) {
+		view := *preferences.SSHView
+		model.persistedSSHView = view
+		model.pendingSSHView = &view
+		model.sshViewDetailFocus = view.DetailFocus
+	}
 	model.sshOperationContext, model.sshOperationCancel = context.WithCancel(context.Background())
 	return model
 }
@@ -591,7 +604,9 @@ func runTUI(
 	_, runErr := program.Run()
 	close(done)
 	signal.Stop(terminalExit)
-	model.shutdown()
+	if saveErr := model.shutdown(); saveErr != nil {
+		fmt.Fprintln(os.Stderr, safeCLITerminalLine(newTUIMessage("preferences.save_failed", saveErr.Error()).text(model.snapshot.Language)))
+	}
 	logrus.SetOutput(os.Stdout)
 	if runErr != nil && !errors.Is(runErr, tea.ErrProgramKilled) {
 		return fmt.Errorf("run TUI: %w", runErr)
@@ -619,6 +634,8 @@ func (m *tuiModel) reconcileStoppedCoreState() {
 	if m.coreRunning {
 		return
 	}
+	m.snapshot.Traffic.Up = 0
+	m.snapshot.Traffic.Down = 0
 	selectedID := ""
 	if index := m.snapshot.SelectedConnection; index >= 0 && index < len(m.snapshot.Connections) {
 		selectedID = m.snapshot.Connections[index].ID
@@ -684,11 +701,20 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 	m.snapshot.ExternalCore = !m.ownsCore
 	switch message := message.(type) {
 	case tuiPageSavedMsg:
-		if message.Err != nil || message.Page != m.snapshot.Page || message.Seq != m.pageSaver.current() {
+		if message.Page != m.snapshot.Page || message.Seq != m.pageSaver.current() {
 			return m, nil
 		}
-		m.persistedPage = message.Page
 		m.pageSavePending = false
+		if message.Err != nil {
+			m.notifyViewSaveFailure(message.Err)
+			return m, nil
+		}
+		m.viewSaveFailed = false
+		m.persistedPage = message.Page
+		if message.SSHView != nil {
+			m.persistedSSHView = *message.SSHView
+		}
+		m.sshViewSavePending = false
 		return m, nil
 	case tuiLanguageSavedMsg:
 		m.languageSaving = false
@@ -800,6 +826,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.snapshot.Memory = message.info
 		return m, nil
 	case tuiCoreMemoryMsg:
+		if message.source != nil && message.source != m.coreMemoryUpdates {
+			return m, nil
+		}
 		if message.update.Closed {
 			return m, nil
 		}
@@ -814,8 +843,14 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.snapshot.Memory.CoreUpdated = message.update.UpdatedAt
 		return m, m.waitCoreMemoryUpdate()
 	case tuiTrafficMsg:
+		if message.source != nil && message.source != m.trafficUpdates {
+			return m, nil
+		}
 		if message.update.Closed {
 			return m, nil
+		}
+		if m.ownsCore && !m.coreRunning {
+			return m, m.waitTrafficUpdate()
 		}
 		m.snapshot.Traffic = message.update.Traffic
 		m.snapshot.TrafficHistory = appendTUITrafficHistory(
@@ -994,6 +1029,7 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			previousSSH = m.snapshot.SSHProfiles[previousSSHIndex]
 		}
 		m.snapshot = mergeTUIRefresh(m.snapshot, message.snapshot)
+		m.restorePendingSSHView()
 		m.closeSSHProxyPortEditIfDetailGone()
 		m.syncNetworkExit()
 		m.reflowTUI()
@@ -1262,12 +1298,16 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.Type == tea.KeyRunes && len(message.Runes) > 1 && !message.Paste {
 			commands := make([]tea.Cmd, 0, len(message.Runes))
 			for _, value := range message.Runes {
-				command := m.handleTeaKey(tea.KeyMsg{
+				_, command := m.Update(tea.KeyMsg{
 					Type:  tea.KeyRunes,
 					Runes: []rune{value},
+					Alt:   message.Alt,
 				})
 				if command != nil {
 					commands = append(commands, command)
+				}
+				if m.frontendExitRequested || m.shutdownRequested {
+					break
 				}
 			}
 			return m, tea.Batch(commands...)

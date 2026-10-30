@@ -738,10 +738,10 @@ func TestLoadCLISSHProfileViewsDoesNotProbeControlMaster(t *testing.T) {
 
 func TestTUISSHRendersCaptureRow(t *testing.T) {
 	var output strings.Builder
+	// Capture guidance is shown before any profile dashboard has been opened.
 	snapshot := tuiSnapshot{
-		Page:          tuiPageSSH,
-		SelectedSSH:   tuiSSHCaptureRow,
-		SSHDetailName: "home",
+		Page:        tuiPageSSH,
+		SelectedSSH: tuiSSHCaptureRow,
 		SSHProfiles: []tuiSSHProfile{{
 			Name:      "home",
 			Username:  "deploy",

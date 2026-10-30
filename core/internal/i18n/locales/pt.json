@@ -1,4 +1,5 @@
 {
+  "preferences.save_failed": "Não foi possível salvar o estado da interface: %s",
   "settings.draft_conflict": "Conflito no rascunho das definições; entrada mantida. Cancele a edição e recarregue a configuração atual antes de guardar.",
   "ui.00b20e67e88d": "SSH Perfis Indisponível: %s",
   "ui.00fe8fa15732": "Serviço de fundo  Parar ↓",

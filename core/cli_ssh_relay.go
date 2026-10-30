@@ -440,6 +440,9 @@ func cliHTTPProxyHostPort(host, defaultPort string) (string, error) {
 		return "", errors.New("HTTP proxy target is missing")
 	}
 	if _, _, err := net.SplitHostPort(host); err != nil {
+		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+		}
 		return net.JoinHostPort(host, defaultPort), nil
 	}
 	return host, nil

@@ -1,4 +1,5 @@
 {
+  "preferences.save_failed": "Tidak dapat menyimpan status antarmuka: %s",
   "settings.draft_conflict": "Draf pengaturan bertentangan; masukan disimpan. Batalkan penyuntingan dan muat ulang konfigurasi saat ini sebelum menyimpan.",
   "ui.00b20e67e88d": "SSH Profil Tidak tersedia: %s",
   "ui.00fe8fa15732": "Layanan latar  Hentikan ↓",

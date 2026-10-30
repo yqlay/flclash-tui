@@ -74,8 +74,8 @@ func TestActiveCLIBackendOwnerRequiresHeldLock(t *testing.T) {
 	if err != nil || active || owner.PID != 0 {
 		t.Fatalf("released owner = (%+v, %t, %v)", owner, active, err)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("stale backend lock was not removed: %v", err)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("inactive backend lock inode was removed: %v", err)
 	}
 }
 

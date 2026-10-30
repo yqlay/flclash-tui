@@ -1,4 +1,5 @@
 {
+  "preferences.save_failed": "Der Zustand der Oberfläche konnte nicht gespeichert werden: %s",
   "settings.draft_conflict": "Konflikt im Einstellungsentwurf; Eingabe behalten. Bearbeitung abbrechen und vor dem Speichern die aktuelle Konfiguration neu laden.",
   "ui.00b20e67e88d": "SSH Profile Nicht verfügbar: %s",
   "ui.00fe8fa15732": "Hintergrunddienst  Stoppen ↓",

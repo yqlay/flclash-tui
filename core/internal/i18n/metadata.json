@@ -1,4 +1,9 @@
 {
+  "preferences.save_failed": {
+    "kind": "preferences_error",
+    "level": "WARNING",
+    "progress": false
+  },
   "settings.draft_conflict": {
     "kind": "settings_conflict",
     "level": "WARNING",

@@ -127,6 +127,7 @@ func (m *tuiModel) beginSSHCapture() tea.Cmd {
 		m.snapshot.setStatus(newTUIMessage("ui.f08d600f6d61"))
 		return nil
 	}
+	m.pendingSSHView = nil
 	profiles := append([]tuiSSHProfile(nil), m.snapshot.SSHProfiles...)
 	current := m.selectedSSHName()
 	m.sshCaptureGeneration++

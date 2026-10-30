@@ -61,6 +61,7 @@ func (m *tuiModel) beginSSHWrite() (uint64, bool) {
 		return 0, false
 	}
 	m.sshBusy = true
+	m.pendingSSHView = nil
 	m.sshWriteSequence++
 	m.sshSnapshotRevision++
 	m.syncLaneBusy()

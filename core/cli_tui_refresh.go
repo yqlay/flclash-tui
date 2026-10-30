@@ -12,8 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func (m *tuiModel) shutdown() {
-	m.flushVisiblePage()
+func (m *tuiModel) shutdown() error {
+	saveErr := m.flushVisiblePage()
 	if m.sshOperationCancel != nil {
 		m.sshOperationCancel()
 	}
@@ -23,36 +23,47 @@ func (m *tuiModel) shutdown() {
 		_ = os.Remove(m.editorTempPath)
 	}
 	if m.frontendExitRequested || !m.shutdownRequested || !m.ownsCore {
-		return
+		return saveErr
 	}
 	if m.service != nil {
-		return
+		return saveErr
 	}
 	if m.ownsCore {
 		cliHub.Shutdown()
 	}
+	return saveErr
 }
 
-func (m *tuiModel) flushVisiblePage() {
+func (m *tuiModel) flushVisiblePage() error {
 	if strings.TrimSpace(m.paths.HomeDir) == "" {
-		return
+		return nil
 	}
-	if !m.pageSavePending && m.snapshot.Page == m.persistedPage {
-		return
+	view := m.currentSSHView()
+	if !m.pageSavePending && !m.sshViewSavePending && !m.viewSaveFailed && m.snapshot.Page == m.persistedPage && view == m.persistedSSHView {
+		return nil
 	}
 	name, ok := tuiPreferencePageName(m.snapshot.Page)
 	if !ok {
-		return
+		return nil
 	}
 	seq := m.pageSaver.next()
-	if err := m.pageSaver.save(m.paths.HomeDir, name, seq); err != nil {
-		return
+	var changedView *tuiSSHViewState
+	if view != m.persistedSSHView || m.sshViewSavePending {
+		changedView = &view
+	}
+	if err := m.pageSaver.saveView(m.paths.HomeDir, name, changedView, seq); err != nil {
+		m.notifyViewSaveFailure(err)
+		return err
 	}
 	if seq != m.pageSaver.current() {
-		return
+		return nil
 	}
 	m.persistedPage = m.snapshot.Page
+	m.persistedSSHView = view
 	m.pageSavePending = false
+	m.sshViewSavePending = false
+	m.viewSaveFailed = false
+	return nil
 }
 
 func tuiTickCommand() tea.Cmd {
@@ -77,6 +88,9 @@ func (m *tuiModel) idleTickCommand() tea.Cmd {
 	}
 	if plan.PollSSH {
 		cmds = append(cmds, m.startSSHLocalRefresh(), m.pollSelectedSSHRelay())
+	}
+	if !m.pageSavePending && (m.viewSaveFailed || m.snapshot.Page != m.persistedPage || m.sshViewSavePending || m.currentSSHView() != m.persistedSSHView) {
+		cmds = append(cmds, m.persistVisiblePage())
 	}
 	return tea.Batch(cmds...)
 }
@@ -525,6 +539,7 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	}
 	if updated.SelectedConnection < 0 || findTUIInt(matchedTUIConnectionIndexes(updated), updated.SelectedConnection) < 0 {
 		updated.ConnectionsDetailOpen = false
+		updated.SelectedConnection = -1
 	}
 	if !updated.ConnectionsDetailOpen {
 		updated.ConnectionsDetailScroll = 0
@@ -541,6 +556,7 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	}
 	if updated.SelectedRequest < 0 || findTUIInt(matchedTUIRequestIndexes(updated), updated.SelectedRequest) < 0 {
 		updated.HistoryDetailOpen = false
+		updated.SelectedRequest = -1
 	}
 	if !updated.HistoryDetailOpen {
 		updated.HistoryDetailScroll = 0

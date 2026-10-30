@@ -95,6 +95,7 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			syncStoppedTUISettings(state)
 		})
 	case tuiPageSSH:
+		m.pendingSSHView = nil
 		if !m.snapshot.SSHDashboardFocus && m.snapshot.SelectedSSH == tuiSSHCaptureRow {
 			return m.beginSSHCapture()
 		}
@@ -144,23 +145,35 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 		}
 		return m.runSelectedSSHAction("connect")
 	case tuiPageRequests:
-		if len(matchedTUIRequestIndexes(m.snapshot)) == 0 {
+		indexes := matchedTUIRequestIndexes(m.snapshot)
+		if len(indexes) == 0 {
 			m.snapshot.setStatus(newTUIMessage("ui.0b3f2bb4a168"))
 			return nil
+		}
+		if findTUIInt(indexes, m.snapshot.SelectedRequest) < 0 {
+			m.snapshot.SelectedRequest = indexes[0]
 		}
 		m.snapshot.HistoryDetailOpen = true
 		m.snapshot.HistoryDetailScroll = 0
 	case tuiPageConnections:
-		if len(matchedTUIConnectionIndexes(m.snapshot)) == 0 {
+		indexes := matchedTUIConnectionIndexes(m.snapshot)
+		if len(indexes) == 0 {
 			m.snapshot.setStatus(newTUIMessage("ui.09de56663b60"))
 			return nil
+		}
+		if findTUIInt(indexes, m.snapshot.SelectedConnection) < 0 {
+			m.snapshot.SelectedConnection = indexes[0]
 		}
 		m.snapshot.ConnectionsDetailOpen = true
 		m.snapshot.ConnectionsDetailScroll = 0
 	case tuiPageLogs:
-		if len(matchedTUILogIndexes(m.snapshot)) == 0 {
+		indexes := matchedTUILogIndexes(m.snapshot)
+		if len(indexes) == 0 {
 			m.snapshot.setStatus(newTUIMessage("ui.119328193809"))
 			return nil
+		}
+		if findTUIInt(indexes, m.snapshot.SelectedLog) < 0 {
+			m.snapshot.SelectedLog = indexes[len(indexes)-1]
 		}
 		m.snapshot.LogDetailOpen = true
 		m.snapshot.LogDetailScroll = 0

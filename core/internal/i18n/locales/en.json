@@ -1,4 +1,5 @@
 {
+  "preferences.save_failed": "Could not save TUI view state: %s",
   "settings.draft_conflict": "Settings draft conflict; input kept. Cancel editing and reload the current configuration before saving.",
   "ui.00b20e67e88d": "SSH profiles unavailable: %s",
   "ui.00fe8fa15732": "Backend is shutting down",

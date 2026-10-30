@@ -140,10 +140,10 @@ func EnsureRuntimeDirectory() (string, error) {
 	}
 	info, err := os.Lstat(directory)
 	if os.IsNotExist(err) {
-		if err := os.Mkdir(directory, 0o700); err != nil {
+		if err := os.Mkdir(directory, 0o700); err != nil && !os.IsExist(err) {
 			return "", err
 		}
-		return directory, nil
+		info, err = os.Lstat(directory)
 	}
 	if err != nil {
 		return "", err
@@ -406,7 +406,9 @@ func ActiveBackendOwner() (ProcessOwner, bool, error) {
 	)
 	if lockErr == nil {
 		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-		_ = os.Remove(path)
+		// Keep the named inode stable. A competing starter may already have
+		// opened it and be about to acquire flock; unlinking would let a third
+		// process acquire an unrelated inode under the same lock pathname.
 		return ProcessOwner{}, false, nil
 	}
 	if !errors.Is(lockErr, syscall.EWOULDBLOCK) &&

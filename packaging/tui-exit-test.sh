@@ -63,6 +63,26 @@ if comm -13 "$test_dir/before" "$test_dir/after" | grep -q .; then
   exit 1
 fi
 
+# A failed final view save must not hold q open or disappear with the TUI.
+# Using a directory as the preference file makes writes fail even under the
+# isolated root UID; it does not depend on filesystem permission heuristics.
+preferences_home="${test_dir}/view-save-failure"
+mkdir -p "$preferences_home/.flclash-tui-preferences.json"
+timeout 5s bash -c '
+  (sleep 0.2; printf "\033]11;rgb:0000/0000/0000\007\033[1;1R"; sleep 0.4; printf 2; sleep 0.2; printf q) |
+    script -qfec "$1 tui --no-start --directory $2 --config /dev/null --controller 127.0.0.1:1" /dev/null >"$3" 2>&1
+' bash "$binary" "$preferences_home" "$test_dir/preferences-transcript"
+python3 - "$test_dir/preferences-transcript" <<'PY'
+import pathlib
+import sys
+
+output = pathlib.Path(sys.argv[1]).read_bytes()
+restored = output.rfind(b'\x1b[?1049l')
+warning = output.rfind(b'Could not save TUI view state:')
+if restored < 0 or warning <= restored:
+    raise SystemExit('view-save failure was not reported after restoring the terminal')
+PY
+
 managed_dir="${test_dir}/managed-home"
 mkdir -p "$managed_dir"
 backend_started=true

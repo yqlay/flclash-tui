@@ -1,4 +1,5 @@
 {
+  "preferences.save_failed": "Impossible d’enregistrer l’état de l’interface : %s",
   "settings.draft_conflict": "Conflit du brouillon des paramètres ; saisie conservée. Annulez la modification et rechargez la configuration actuelle avant d’enregistrer.",
   "ui.00b20e67e88d": "SSH Profils Indisponible: %s",
   "ui.00fe8fa15732": "Service d’arrière-plan  Arrêter ↓",

@@ -32,14 +32,54 @@ type tuiNotification struct {
 
 const tuiNotificationHistoryLimit = 50
 
+type tuiNotificationActivity struct {
+	core, editor, ssh bool
+	delay, speed      uint64
+}
+
 func (m *tuiModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	previousStatus := m.snapshot.Status
+	previousActivity := tuiNotificationActivity{
+		core: m.coreBusy, editor: m.editorBusy, ssh: m.sshBusy,
+		delay: m.delayBatch.id, speed: m.speedBatch.id,
+	}
 	model, command := m.update(message)
-	m.publishStatusNotification(message, previousStatus)
+	task, started := m.notificationTask(message, previousActivity)
+	m.publishStatusNotification(message, previousStatus, task, started)
 	return model, command
 }
 
-func (m *tuiModel) publishStatusNotification(message tea.Msg, previousStatus string) {
+// Writes are serialized within each lane, but Core, SSH and probes can overlap.
+// An unrelated lane must never turn a result into progress or consume its notice.
+func (m *tuiModel) notificationTask(message tea.Msg, before tuiNotificationActivity) (string, bool) {
+	switch {
+	case !before.core && m.coreBusy || !before.editor && m.editorBusy:
+		return "core", true
+	case !before.ssh && m.sshBusy:
+		return "ssh-write", true
+	case before.speed != m.speedBatch.id && m.speedBatch.total > 0:
+		return "proxy-speed", true
+	case before.delay != m.delayBatch.id && m.delayBatch.total > 0:
+		return "proxy-delay", true
+	}
+	switch message := message.(type) {
+	case tuiOperationResultMsg, tuiEditorResultMsg:
+		return "core", false
+	case tuiSSHCommandResultMsg:
+		return "ssh-write", false
+	case tuiProxyDelayResultMsg:
+		return "proxy-delay", false
+	case tuiProxyGroupSpeedResultMsg:
+		if message.pooled {
+			return "proxy-speed", false
+		}
+		return "core", false
+	default:
+		return "", false
+	}
+}
+
+func (m *tuiModel) publishStatusNotification(message tea.Msg, previousStatus, task string, started bool) {
 	status := strings.TrimSpace(m.snapshot.Status)
 	text := m.snapshot.currentMessage()
 	if status == "" || text.Info.Kind == "hint" {
@@ -55,28 +95,15 @@ func (m *tuiModel) publishStatusNotification(message tea.Msg, previousStatus str
 	if level == "" {
 		level = tuiNotificationInfo
 	}
-	progress := m.busy || text.Info.Progress
-	operationID := ""
-	if progress || m.hasProgressNotification() {
-		operationID = "operation"
-	}
+	progress := (started || text.Info.Progress) && level != tuiNotificationError
 	m.enqueueNotification(tuiNotification{
-		id:       operationID,
+		id:       task,
 		level:    level,
 		title:    tuiNotificationTitle(level, progress),
 		message:  status,
 		text:     text,
 		progress: progress,
 	})
-}
-
-func (m *tuiModel) hasProgressNotification() bool {
-	for _, notification := range m.notifications {
-		if notification.progress {
-			return true
-		}
-	}
-	return false
 }
 
 func tuiNotificationNavigationKey(message tea.KeyMsg) bool {
@@ -98,6 +125,7 @@ func tuiNotificationNavigationKey(message tea.KeyMsg) bool {
 		tuiKeyDashboard,
 		tuiKeyProxies,
 		tuiKeyProfiles,
+		tuiKeySSH,
 		tuiKeyRequests,
 		tuiKeyConnections,
 		tuiKeyLogs,
@@ -150,13 +178,11 @@ func (m *tuiModel) enqueueNotification(notification tuiNotification) {
 	match := -1
 	for index := range m.notifications {
 		current := m.notifications[index]
-		if current.message == notification.message {
+		if current.message == notification.message && current.id == notification.id {
 			match = index
 			break
 		}
-		if notification.id != "" &&
-			(current.id == notification.id ||
-				(notification.id == "operation" && current.progress)) {
+		if notification.id != "" && current.id == notification.id {
 			match = index
 			break
 		}
@@ -173,7 +199,7 @@ func (m *tuiModel) enqueueNotification(notification tuiNotification) {
 	} else if m.notificationDetailOpen && len(m.notifications) > 0 {
 		m.notificationSelected++
 	}
-	if notification.id == "operation" && !notification.progress {
+	if !notification.progress {
 		notification.id = ""
 	}
 	m.notifications = append(

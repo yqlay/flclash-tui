@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -41,7 +42,13 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	previousPage := m.snapshot.Page
+	previousSidebar := m.snapshot.FocusSidebar
+	m.rememberSSHContentFocus()
+	defer m.rememberSSHContentFocus()
 	if handleTUIFocusNavigation(&m.snapshot, key) {
+		if m.snapshot.Page == tuiPageSSH && (previousPage != tuiPageSSH || previousSidebar && (key == tuiKeySelect || key == tuiKeyRight)) {
+			m.restoreSSHContentFocus()
+		}
 		var cmds []tea.Cmd
 		if previousPage != m.snapshot.Page {
 			m.refreshInFlight = false
@@ -75,9 +82,10 @@ func (m *tuiModel) handleTeaKey(message tea.KeyMsg) tea.Cmd {
 }
 
 type tuiPageSavedMsg struct {
-	Page tuiPage
-	Seq  uint64
-	Err  error
+	Page    tuiPage
+	Seq     uint64
+	Err     error
+	SSHView *tuiSSHViewState
 }
 
 func (m *tuiModel) persistVisiblePage() tea.Cmd {
@@ -88,16 +96,33 @@ func (m *tuiModel) persistVisiblePage() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	// A return to an already stored page must still retire the save of the
-	// page just left. The caller only reaches here when the visible page changed.
+	// Retire any earlier page/view save, including a return to a previously
+	// saved state while its replacement's completion message is still queued.
 	seq := m.pageSaver.next()
 	m.pageSavePending = true
 	homeDir := m.paths.HomeDir
 	page := m.snapshot.Page
+	view := m.currentSSHView()
+	var changedView *tuiSSHViewState
+	if view != m.persistedSSHView || m.sshViewSavePending {
+		changedView = &view
+		m.sshViewSavePending = true
+	}
 	saver := &m.pageSaver
 	return func() tea.Msg {
-		return tuiPageSavedMsg{Page: page, Seq: seq, Err: saver.save(homeDir, name, seq)}
+		return tuiPageSavedMsg{Page: page, Seq: seq, SSHView: changedView, Err: saver.saveView(homeDir, name, changedView, seq)}
 	}
+}
+
+func (m *tuiModel) notifyViewSaveFailure(err error) {
+	if err == nil || m.viewSaveFailed || errors.Is(err, errTUIPreferenceSuperseded) {
+		return
+	}
+	m.viewSaveFailed = true
+	message := newTUIMessage("preferences.save_failed", err.Error())
+	m.enqueueNotification(tuiNotification{
+		level: tuiNotificationWarning, message: message.text("en"), text: message,
+	})
 }
 
 func tuiKeyAllowedWhileBusy(key tuiKey) bool {

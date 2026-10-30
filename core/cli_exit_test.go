@@ -20,7 +20,6 @@ func TestCompleteCLIExitIsIdempotentWithoutRuntime(t *testing.T) {
 	for _, name := range []string{
 		tuiServiceSocketFilename,
 		tuiCoreSocketFilename,
-		cliRuntimeLockFilename,
 	} {
 		if _, err := os.Stat(filepath.Join(runtimeDirectory, name)); !os.IsNotExist(err) {
 			t.Fatalf("runtime artifact %q remains: %v", name, err)

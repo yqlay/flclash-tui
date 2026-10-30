@@ -14,7 +14,7 @@ import (
 	"syscall"
 )
 
-const cliVersion = "0.5.39"
+const cliVersion = "0.5.40"
 
 type controllerOptions struct {
 	address    string

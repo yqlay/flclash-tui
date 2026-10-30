@@ -164,7 +164,7 @@ func (m *tuiModel) waitCoreMemoryUpdate() tea.Cmd {
 		if !open {
 			update.Closed = true
 		}
-		return tuiCoreMemoryMsg{update: update}
+		return tuiCoreMemoryMsg{update: update, source: updates}
 	}
 }
 

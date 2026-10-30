@@ -71,7 +71,7 @@ func appendCLIApplicationLog(homeDir, level, event, detail string) {
 	path := filepath.Join(homeDir, tuiServiceLogFilename)
 	cliPersistentLogMu.Lock()
 	defer cliPersistentLogMu.Unlock()
-	rotateTUIServiceLogUnlocked(path)
+	rotateTUIServiceLogUnlocked(path, len(line)+1)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return

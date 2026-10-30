@@ -63,7 +63,7 @@ func (m *tuiModel) waitTrafficUpdate() tea.Cmd {
 		if !open {
 			update.Closed = true
 		}
-		return tuiTrafficMsg{update: update}
+		return tuiTrafficMsg{update: update, source: updates}
 	}
 }
 

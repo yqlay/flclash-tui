@@ -299,7 +299,7 @@ func drawTUISSHDashboard(
 	height,
 	profileRows int, language ...string,
 ) {
-	if snapshot.SelectedSSH == tuiSSHCaptureRow {
+	if snapshot.SSHDetailName == "" && snapshot.SelectedSSH == tuiSSHCaptureRow {
 		drawTUISSHCapturePanel(b, snapshot, width, height, profileRows, language...)
 		return
 	}

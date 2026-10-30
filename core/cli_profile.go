@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,31 +18,74 @@ func profileCommand(args []string) error {
 		fmt.Println("Usage: flclash profile list|import|import-file|current|use|update|rename|edit|delete|link")
 		fmt.Println("Import accepts Mihomo YAML, URI/Base64 lists, supported JSON, and common client proxy lines.")
 		fmt.Println("Profile names resolve inside the active FlClash data directory.")
+		fmt.Println("Options may precede or follow names; -- ends option parsing.")
+		fmt.Println("--json returns structured results except for interactive edit.")
 		return nil
 	}
 	command := args[0]
-	fs := flag.NewFlagSet("profile "+command, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
+	fs := newCLIFlagSet("profile " + command)
 	configArg := fs.String("config", "", "profile YAML path")
 	directoryArg := fs.String("directory", "", "FlClash data directory")
 	jsonOutput := fs.Bool("json", false, "print JSON")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseCLIFlags(fs, args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return profileCommand([]string{"--help"})
+		}
 		return err
+	}
+	positional := fs.Args()
+	switch command {
+	case "list", "current":
+		if len(positional) != 0 {
+			return fmt.Errorf("usage: flclash profile %s [--json]", command)
+		}
+	case "import", "import-file", "use", "delete", "link":
+		if len(positional) != 1 {
+			return fmt.Errorf("profile %s requires exactly one argument", command)
+		}
+	case "rename":
+		if len(positional) != 2 {
+			return errors.New("usage: flclash profile rename NAME NEW_NAME")
+		}
+	case "edit", "update":
+		if len(positional) > 1 {
+			return fmt.Errorf("profile %s accepts at most one profile name", command)
+		}
+	default:
+		return fmt.Errorf("unknown profile command %q; use `flclash profile -help`", command)
 	}
 	paths, err := resolvePaths(*configArg, *directoryArg)
 	if err != nil {
 		return err
 	}
-	if *configArg == "" && *directoryArg == "" {
+	if *configArg == "" {
 		_, status, statusErr := currentManagedService()
-		if statusErr == nil {
+		if statusErr == nil && status.HomeDir != "" &&
+			(*directoryArg == "" || filepath.Clean(status.HomeDir) == filepath.Clean(paths.HomeDir)) {
 			paths.HomeDir = status.HomeDir
 			paths.ConfigPath = status.ConfigPath
 		} else if restored, restoreErr := restoreTUIActiveProfile(paths); restoreErr == nil {
 			paths = restored
 		}
 	}
-	positional := fs.Args()
+	currentService := func() (*tuiServiceClient, tuiServiceStatus, error) {
+		client, status, err := currentManagedService()
+		if err == nil {
+			// Profile commands may target a different file within this Backend's
+			// home, but an explicit --directory must never import into another.
+			err = validateTUIServiceTarget(paths, status, false, true)
+		}
+		return client, status, err
+	}
+	printResult := func(path, message string, revision uint64) error {
+		if *jsonOutput {
+			return writeCLIJSON(os.Stdout, map[string]any{
+				"operation": command, "path": path, "revision": revision,
+			})
+		}
+		fmt.Println(safeCLITerminalLine(message))
+		return nil
+	}
 	switch command {
 	case "list":
 		profiles, err := listCLIProfiles(paths)
@@ -62,7 +104,7 @@ func profileCommand(args []string) error {
 			if profile.SubscriptionURL != "" {
 				kind = "subscription"
 			}
-			fmt.Printf("%s %-32s %s", marker, profile.Name, kind)
+			fmt.Printf("%s %-32s %s", marker, safeCLITerminalLine(profile.Name), kind)
 			if profile.SubscriptionInfo != nil {
 				fmt.Printf(" · %s · %s", tuiSubscriptionCompact(profile.SubscriptionInfo), tuiSubscriptionExpiry(profile.SubscriptionInfo))
 			}
@@ -70,7 +112,10 @@ func profileCommand(args []string) error {
 		}
 		return nil
 	case "current":
-		fmt.Println(paths.ConfigPath)
+		if *jsonOutput {
+			return writeCLIJSON(os.Stdout, map[string]string{"path": paths.ConfigPath})
+		}
+		fmt.Println(safeCLITerminalLine(paths.ConfigPath))
 		return nil
 	case "import":
 		if len(positional) != 1 {
@@ -80,7 +125,7 @@ func profileCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		client, status, err := currentManagedService()
+		client, status, err := currentService()
 		if err != nil {
 			return err
 		}
@@ -100,8 +145,7 @@ func profileCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(status.ResultPath)
-		return nil
+		return printResult(status.ResultPath, status.ResultPath, status.Revision)
 	case "import-file":
 		if len(positional) != 1 {
 			return errors.New("usage: flclash profile import-file PATH")
@@ -111,7 +155,7 @@ func profileCommand(args []string) error {
 			appendCLIApplicationLog(paths.HomeDir, "ERROR", "profile_import_file", "local profile validation failed")
 			return err
 		}
-		client, status, err := currentManagedService()
+		client, status, err := currentService()
 		if err != nil {
 			return err
 		}
@@ -130,8 +174,7 @@ func profileCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(status.ResultPath)
-		return nil
+		return printResult(status.ResultPath, status.ResultPath, status.Revision)
 	case "use":
 		if len(positional) != 1 {
 			return errors.New("usage: flclash profile use NAME")
@@ -140,7 +183,7 @@ func profileCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		client, status, err := currentManagedService()
+		client, status, err := currentService()
 		if err != nil {
 			return err
 		}
@@ -148,8 +191,7 @@ func profileCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Active profile: %s (revision %d)\n", filepath.Base(target), status.Revision)
-		return nil
+		return printResult(target, fmt.Sprintf("Active profile: %s (revision %d)", filepath.Base(target), status.Revision), status.Revision)
 	case "update":
 		target, err := cliProfileTarget(paths, positional)
 		if err != nil {
@@ -174,11 +216,11 @@ func profileCommand(args []string) error {
 				return fmt.Errorf("preserve local settings: %w", err)
 			}
 		}
-		client, status, err := currentManagedService()
+		client, status, err := currentService()
 		if err != nil {
 			return err
 		}
-		if _, err := client.putProfile(
+		status, err = client.putProfile(
 			target,
 			updated,
 			tuiBytesSHA256(previous),
@@ -186,11 +228,11 @@ func profileCommand(args []string) error {
 			&sourceURL,
 			status.Revision,
 			parseTUISubscriptionInfo(payload.UserInfo),
-		); err != nil {
+		)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("Updated %s\n", filepath.Base(target))
-		return nil
+		return printResult(target, "Updated "+filepath.Base(target), status.Revision)
 	case "rename":
 		if len(positional) != 2 {
 			return errors.New("usage: flclash profile rename NAME NEW_NAME")
@@ -202,7 +244,7 @@ func profileCommand(args []string) error {
 		if filepath.Clean(target) == filepath.Clean(paths.ConfigPath) {
 			return errors.New("activate another profile before renaming the current profile")
 		}
-		client, status, err := currentManagedService()
+		client, status, err := currentService()
 		if err != nil {
 			return err
 		}
@@ -210,9 +252,11 @@ func profileCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(status.ResultPath)
-		return nil
+		return printResult(status.ResultPath, status.ResultPath, status.Revision)
 	case "edit":
+		if *jsonOutput {
+			return errors.New("profile edit does not support --json; it opens an interactive editor")
+		}
 		target, err := cliProfileTarget(paths, positional)
 		if err != nil {
 			return err
@@ -229,15 +273,15 @@ func profileCommand(args []string) error {
 		if filepath.Clean(target) == filepath.Clean(paths.ConfigPath) {
 			return errors.New("cannot delete the active profile")
 		}
-		client, status, err := currentManagedService()
+		client, status, err := currentService()
 		if err != nil {
 			return err
 		}
-		if _, err := client.deleteProfile(target, status.Revision); err != nil {
+		status, err = client.deleteProfile(target, status.Revision)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("Deleted %s\n", filepath.Base(target))
-		return nil
+		return printResult(target, "Deleted "+filepath.Base(target), status.Revision)
 	case "link":
 		if len(positional) != 1 {
 			return errors.New("usage: flclash profile link [--config PATH] URL")
@@ -249,19 +293,19 @@ func profileCommand(args []string) error {
 		if _, err := newTUISubscriptionRequest(sourceURL); err != nil {
 			return err
 		}
-		client, status, err := currentManagedService()
+		client, status, err := currentService()
 		if err != nil {
 			return err
 		}
-		if _, err := client.linkProfile(
+		status, err = client.linkProfile(
 			paths.ConfigPath,
 			sourceURL,
 			status.Revision,
-		); err != nil {
+		)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("Linked %s to its subscription source\n", filepath.Base(paths.ConfigPath))
-		return nil
+		return printResult(paths.ConfigPath, "Linked "+filepath.Base(paths.ConfigPath)+" to its subscription source", status.Revision)
 	default:
 		return fmt.Errorf("unknown profile command %q; use `flclash profile -help`", command)
 	}

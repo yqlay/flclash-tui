@@ -219,6 +219,19 @@ func cleanupCLIExitArtifacts(excludePID int) error {
 	}
 	backendAlive := active && owner.PID != excludePID
 	if !backendAlive {
+		// Hold the startup lock across socket cleanup so a new Backend cannot
+		// bind a socket between the liveness check and Remove.
+		if !active {
+			lock, lockErr := acquireCLIBackendLock(cliProcessOwner{Kind: "exit-cleanup"})
+			if lockErr != nil {
+				var busy *cliLockBusyError
+				if errors.As(lockErr, &busy) {
+					return nil
+				}
+				return lockErr
+			}
+			defer lock.release()
+		}
 		for _, name := range []string{
 			tuiServiceSocketFilename,
 			tuiCoreSocketFilename,
@@ -235,13 +248,6 @@ func cleanupCLIExitArtifacts(excludePID int) error {
 	}
 	if len(frontends) != 0 {
 		return fmt.Errorf("TUI frontend lock(s) remain: %s", formatCLIPIDs(frontends))
-	}
-	lockPath, err := cliRuntimeLockPath()
-	if err != nil {
-		return err
-	}
-	if !active && owner.PID != excludePID {
-		_ = os.Remove(lockPath)
 	}
 	return nil
 }

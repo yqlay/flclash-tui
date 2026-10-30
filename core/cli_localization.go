@@ -121,8 +121,9 @@ func (notification tuiNotification) displayTitle(language string) string {
 const tuiPreferencesFilename = ".flclash-tui-preferences.json"
 
 type tuiPreferences struct {
-	Language string `json:"language"`
-	Page     string `json:"page,omitempty"`
+	Language string           `json:"language"`
+	Page     string           `json:"page,omitempty"`
+	SSHView  *tuiSSHViewState `json:"ssh_view,omitempty"`
 }
 
 var errTUIPreferenceSuperseded = errors.New("superseded TUI preference")
@@ -233,6 +234,10 @@ func (s *tuiPageSaver) save(homeDir, name string, seq uint64) error {
 }
 
 func writeTUIPreferenceKey(homeDir, key string, value json.RawMessage, stillCurrent func() bool) error {
+	return writeTUIPreferenceKeys(homeDir, map[string]json.RawMessage{key: value}, stillCurrent)
+}
+
+func writeTUIPreferenceKeys(homeDir string, updates map[string]json.RawMessage, stillCurrent func() bool) error {
 	if err := os.MkdirAll(homeDir, 0o700); err != nil {
 		return err
 	}
@@ -268,7 +273,9 @@ func writeTUIPreferenceKey(homeDir, key string, value json.RawMessage, stillCurr
 	if values == nil {
 		values = map[string]json.RawMessage{}
 	}
-	values[key] = value
+	for key, value := range updates {
+		values[key] = value
+	}
 	data, err := json.MarshalIndent(values, "", "  ")
 	if err != nil {
 		return err

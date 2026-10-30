@@ -1,3 +1,14 @@
+## FlClash TUI v0.5.40
+
+- Restore the SSH list highlight, opened dashboard, list/detail focus, and selected detail row across navigation and TUI restarts. Match profiles by name, handle deleted profiles, and keep highlight separate from Enter-confirmed selection. Restoring the view does not reconnect or discover SSH sessions.
+- Report failed view saves, retry on idle refresh, and flush the final state on exit without losing language or other preference keys. Show a final save failure after restoring the terminal.
+- Dispatch batched keystrokes through the current input/dialog context. Keep Core, SSH, delay, and speed progress notifications independent so an unrelated operation cannot replace an error.
+- Keep the Backend lock inode stable during status checks and exit cleanup. Hold the startup lock while removing stale sockets and tolerate concurrent runtime-directory creation.
+- Honor profile options before or after names, reject unexpected arguments, and return structured JSON for current and noninteractive mutations. Respect explicit data directories and retain the active profile when its directory is specified.
+- Prevent History, Connections, and Logs from opening filtered-out selections. Discard retired traffic/memory updates and clear stale live speeds after managed Core stops.
+- Fix bracketed IPv6 targets in the SSH HTTP proxy and rotate Backend/application logs before an incoming write crosses the size limit.
+- Add SSH view, input/notification, CLI, lifecycle, relay, and stream regressions. Required terminal tests, Go tests/vet, installer tests, isolated process-lifecycle tests, and AMD64/ARM64 builds pass. Backend IPC remains v7; restart Backend after upgrading and reconnect existing SSH relays to load those fixes.
+
 ## FlClash TUI v0.5.39
 
 - Restore the last visited TUI page on startup and focus its default content row. All nine pages support immediate Enter; SSH starts on Capture. Supersede late page saves, preserve language/unknown preference keys, and flush pending page saves on exit.

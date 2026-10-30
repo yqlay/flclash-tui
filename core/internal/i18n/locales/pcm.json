@@ -1,4 +1,5 @@
 {
+  "preferences.save_failed": "No fit save di TUI screen state: %s",
   "settings.draft_conflict": "Settings draft get conflict; we keep your input. Cancel editing and reload the current config before you save.",
   "ui.00b20e67e88d": "SSH Profiles No dey available: %s",
   "ui.00fe8fa15732": "Backend  Stop ↓",
