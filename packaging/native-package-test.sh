@@ -29,11 +29,23 @@ docker run --rm --entrypoint /bin/sh \
       pacman --noconfirm -U "$stem.pkg.tar.zst"
       ;;
     alpine) apk add --no-cache --allow-untrusted "$stem.apk" ;;
-    openwrt) opkg install "$stem.ipk" ;;
+    openwrt)
+      # The rootfs image has not booted, so init has not created volatile dirs.
+      mkdir -p /var/lock
+      opkg install "$stem.ipk"
+      ;;
   esac
   /usr/bin/flclash version | grep -F "FlClash TUI $VERSION "
   /usr/bin/flc version | grep -F "flc $VERSION "
   test -L /usr/bin/flc
+  # Exercise the same ownership query used by flclash update.
+  case "$DISTRO" in
+    debian) dpkg-query -S /usr/bin/flclash | grep -F "flclash-tui:" ;;
+    fedora|rocky|opensuse) rpm -qf --qf "%{NAME}" /usr/bin/flclash | grep -Fx flclash-tui ;;
+    arch) pacman -Qoq /usr/bin/flclash | grep -Fx flclash-tui ;;
+    alpine) apk info --who-owns /usr/bin/flclash | grep -F " is owned by flclash-tui-" ;;
+    openwrt) opkg search /usr/bin/flclash | grep -F "flclash-tui - " ;;
+  esac
   if [ "$DISTRO" = alpine ]; then
     test -x /etc/init.d/flclash-tun-helper
   elif [ "$DISTRO" != openwrt ]; then
