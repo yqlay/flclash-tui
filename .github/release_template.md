@@ -1,29 +1,32 @@
+## Linux packages
 
-## Linux TUI packages
-
-Recommended installation (automatically selects AMD64 or ARM64):
+Recommended installation (selects AMD64/ARM64 and the package manager):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh | bash
 ```
 
-The installer verifies the GitHub-provided SHA-256 asset digest before installing.
-Debian and Ubuntu receive the native package with the TUN helper; other Linux
-distributions receive the user-scoped portable build.
-
-Manual downloads:
-
-| Architecture | Debian / Ubuntu | Portable archive |
+| Format / systems | AMD64 | ARM64 |
 | --- | --- | --- |
-| AMD64 | [`flclash-tui_VERSION_amd64.deb`](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_amd64.deb) | [`flclash-tui_VERSION_amd64.tar.gz`](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_amd64.tar.gz) |
-| ARM64 | [`flclash-tui_VERSION_arm64.deb`](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_arm64.deb) | [`flclash-tui_VERSION_arm64.tar.gz`](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_arm64.tar.gz) |
+| Debian / Ubuntu | [DEB](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_amd64.deb) | [DEB](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_arm64.deb) |
+| Fedora / RHEL / Rocky / Alma / openSUSE | [RPM](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_amd64.rpm) | [RPM](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_arm64.rpm) |
+| Arch / Manjaro / Arch Linux ARM | [Arch package](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_amd64.pkg.tar.zst) | [Arch package](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_arm64.pkg.tar.zst) |
+| Alpine | [APK](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_amd64.apk) | [APK](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_arm64.apk) |
+| OpenWrt with opkg | [IPK, x86_64](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_amd64.ipk) | [IPK, aarch64_generic](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_arm64.ipk) |
+| Other Linux / user installation | [Portable](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_amd64.tar.gz) | [Portable](https://github.com/yqlay/flclash-tui/releases/download/vVERSION/flclash-tui_VERSION_arm64.tar.gz) |
 
-`SHA256SUMS` contains checksums for all architecture-specific packages. GitHub also
-displays its own SHA-256 digest for every uploaded asset.
+The installer and updater verify GitHub SHA-256 asset digests. `SHA256SUMS`
+covers every architecture-specific package. Native updates use the package
+manager that owns the running executable; managed portable updates preserve
+their installation directories.
 
-The Debian package installs `flclash`, the `flc` command wrapper, bundled Geo data,
-and the restricted system TUN helper service. The portable archive does not install
-the system service and is intended for user-scoped operation.
+Debian, RPM and Arch include the systemd TUN helper; Alpine includes OpenRC
+integration. TUN also requires cgroup v2 and suitable kernel/routing support.
+OpenWrt IPK and portable packages do not install a privileged helper. OpenWrt
+firmware must accept the IPK architecture; OpenWrt systems using apk should use
+the portable archive, not the Alpine APK. Other CPU architectures are not
+release targets.
 
-See the [中文文档](https://github.com/yqlay/flclash-tui/blob/main/README.md)
-or [English documentation](https://github.com/yqlay/flclash-tui/blob/main/README_EN.md).
+See [中文用法](https://github.com/yqlay/flclash-tui/blob/main/README.md),
+[English usage](https://github.com/yqlay/flclash-tui/blob/main/README_EN.md), and
+[package notes](https://github.com/yqlay/flclash-tui/blob/main/packaging/README.md).

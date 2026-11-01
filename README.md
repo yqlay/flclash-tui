@@ -43,9 +43,20 @@ curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh |
 curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh | bash -s -- --method portable
 ```
 
-如果 GitHub 连接不稳定，从 [Releases](https://github.com/yqlay/flclash-tui/releases) 下载对应架构的 `.deb` 或 `.tar.gz`，scp 过去，再 `sudo dpkg -i` 安装。不要写死版本号，始终用最新 Release。
+安装脚本自动选择包管理器，提供 **AMD64 / ARM64**：
 
-检查更新用 `flclash update --check`；`.deb` 安装可用 `flclash update` 确认升级。便携安装重新运行上面的便携安装命令。升级保留订阅、SSH 配置和语言偏好；完成后重新打开 TUI。
+| 系统 | 安装包 |
+| --- | --- |
+| Debian / Ubuntu | `.deb` |
+| Fedora / RHEL / Rocky / AlmaLinux / openSUSE | `.rpm` |
+| Arch / Manjaro / Arch Linux ARM | `.pkg.tar.zst` |
+| Alpine | `.apk` |
+| OpenWrt（opkg） | `.ipk`，需匹配固件架构 |
+| 其它 Linux（如 Gentoo、Void、Slackware、NixOS） | 便携 `.tar.gz` |
+
+如果 GitHub 连接不稳定，从 [Releases](https://github.com/yqlay/flclash-tui/releases) 下载对应架构的包，scp 过去，再用系统包管理器安装。Alpine / OpenWrt 使用安装脚本前需备好 Bash、curl 和证书。OpenWrt 的 apk 系统使用便携包，不能安装 Alpine APK；目前不提供其它 CPU 架构。详见[安装包说明](packaging/README.md)。
+
+检查更新用 `flclash update --check`；`flclash update` 按当前程序的安装方式选择包并确认升级。旧便携安装先重新运行一次便携安装命令。升级保留订阅、SSH 配置和语言偏好；完成后重新打开 TUI。出现版本不一致时用 `type -a flclash flc` 检查旧入口。
 
 ## 第二步：导入订阅并选择节点
 

@@ -27,6 +27,62 @@ fi
 
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/flclash-install-test.XXXXXX")
 trap 'rm -rf -- "$test_dir"' EXIT
+for method in deb rpm apk ipk; do
+  assert_equal "$method" "$(package_extension "$method")" "$method package extension"
+done
+assert_equal pkg.tar.zst "$(package_extension archlinux)" 'Arch package extension'
+assert_equal tar.gz "$(package_extension portable)" 'portable package extension'
+
+# Detect package-manager families without depending on the test host's distro.
+for family in deb rpm archlinux apk ipk portable; do
+  distro_root="$test_dir/distro-$family"
+  mkdir -p "$distro_root/etc"
+  case "$family" in
+    deb) touch "$distro_root/etc/debian_version"; available=' apt-get dpkg ' ;;
+    rpm) available=' rpm dnf ' ;;
+    archlinux) available=' pacman ' ;;
+    apk) touch "$distro_root/etc/alpine-release"; available=' apk ' ;;
+    ipk) available=' opkg ' ;;
+    portable) available=' apk ' ;; # OpenWrt apk is not an Alpine package target.
+  esac
+  detected=$(
+    command() {
+      if [[ "$1" == -v ]]; then
+        [[ "$available" == *" $2 "* ]]
+      else
+        builtin command "$@"
+      fi
+    }
+    detect_install_method "$distro_root"
+  )
+  assert_equal "$family" "$detected" "$family package-manager detection"
+done
+
+# Native installs use a dependency-resolving manager with one literal path arg.
+for manager in dnf dnf5 yum zypper pacman apk opkg; do
+  available=" rpm $manager "
+  case "$manager" in
+    dnf|dnf5|yum|zypper) family=rpm ;;
+    pacman) family=archlinux ;;
+    *) family=$manager; [[ "$manager" != opkg ]] || family=ipk ;;
+  esac
+  actual=$(
+    command() {
+      if [[ "$1" == -v ]]; then [[ "$available" == *" $2 "* ]]; else builtin command "$@"; fi
+    }
+    run_as_root() { printf '<%s>' "$@"; }
+    install_native "$family" '/tmp/package with spaces'
+  )
+  case "$manager" in
+    dnf|dnf5|yum) expected="<$manager><--assumeyes><install></tmp/package with spaces>" ;;
+    zypper) expected='<zypper><--non-interactive><install><--allow-unsigned-rpm></tmp/package with spaces>' ;;
+    pacman) expected='<pacman><--noconfirm><-U></tmp/package with spaces>' ;;
+    apk) expected='<apk><add><--allow-untrusted></tmp/package with spaces>' ;;
+    opkg) expected='<opkg><install></tmp/package with spaces>' ;;
+  esac
+  assert_equal "$expected" "$actual" "$manager install arguments"
+done
+
 fixture="${test_dir}/release.json"
 cat > "$fixture" <<'EOF'
 {
@@ -118,6 +174,23 @@ bash "${ROOT_DIR}/install.sh" \
   exit 1
 }
 assert_equal 'fixture flclash' "$("${bin_dir}/flclash")" 'installed portable executable'
+marker="$(dirname "$(readlink "${bin_dir}/flclash")")/.flclash-install"
+assert_equal portable-v1 "$(head -n 1 "$marker")" 'portable installation marker'
+assert_equal "$install_dir" "$(sed -n '2p' "$marker")" 'portable installation root'
+assert_equal "$bin_dir" "$(sed -n '3p' "$marker")" 'portable command directory'
+
+# Auto must retain the active portable install, including its custom paths.
+PATH="${bin_dir}:$PATH" \
+FLCLASH_INSTALL_API_ROOT="file://${test_dir}/api" \
+FLCLASH_INSTALL_DOWNLOAD_ROOT="file://${test_dir}/downloads" \
+FLCLASH_INSTALL_ASSET_PATH="${download_dir}/${asset_name}" \
+bash "${ROOT_DIR}/install.sh" --version "$version" --arch "$arch" >/dev/null
+assert_equal 'fixture flclash' "$("${bin_dir}/flclash")" 'auto retains portable installation'
+if (PATH="${bin_dir}:$PATH"; verify_native_entry) >"$test_dir/shadow-error" 2>&1; then
+  printf 'FAIL: a shadowed system installation was reported as active\n' >&2
+  exit 1
+fi
+[[ $(cat "$test_dir/shadow-error") == *shadows* ]] || { printf 'FAIL: shadowed entry was not explained\n' >&2; exit 1; }
 
 # Relative directory arguments must produce absolute, usable command targets.
 (

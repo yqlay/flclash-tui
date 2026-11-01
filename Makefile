@@ -5,7 +5,7 @@ BUILDKIT := plugins/setup/buildkit/run_build_tool.sh
 ARCH_ARG := $(if $(ARCH),--arch $(ARCH),)
 TARGET_PLATFORM_ARG := $(if $(TARGET_PLATFORM),--target-platform $(TARGET_PLATFORM),)
 
-.PHONY: help submodules core core-macos core-linux core-windows core-android cli-linux package-linux-deb
+.PHONY: help submodules core core-macos core-linux core-windows core-android cli-linux package-linux-deb package-linux
 
 help:
 	@echo 'make core                         # build macOS core by default'
@@ -14,6 +14,7 @@ help:
 	@echo 'make core-android ARCH=arm64'
 	@echo 'make cli-linux                    # build Linux TUI/CLI'
 	@echo 'make package-linux-deb            # build Debian and tar.gz packages'
+	@echo 'make package-linux                # build deb/rpm/Arch/apk/ipk/tar.gz packages'
 	@echo 'make core-android TARGET_PLATFORM=android-arm64'
 
 submodules:
@@ -49,3 +50,6 @@ cli-linux:
 
 package-linux-deb:
 	bash packaging/build-deb.sh
+
+package-linux:
+	bash packaging/build-linux.sh

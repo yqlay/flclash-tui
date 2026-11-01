@@ -1,0 +1,97 @@
+name: flclash-tui
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+release: 1
+section: net
+priority: optional
+maintainer: yqlay <yqlay@users.noreply.github.com>
+description: |
+  Linux terminal proxy manager derived from FlClash
+  Interactive Mihomo and SSH proxy management with scriptable command wrappers.
+homepage: https://github.com/yqlay/flclash-tui
+license: GPL-3.0-only
+contents:
+  - src: ${PACKAGE_ROOT}/usr/bin/flclash
+    dst: /usr/bin/flclash
+    expand: true
+    file_info:
+      mode: 0755
+  - src: flclash
+    dst: /usr/bin/flc
+    type: symlink
+  - src: ${PACKAGE_ROOT}/usr/share/doc/flclash-tui/
+    dst: /usr/share/doc/flclash-tui
+    type: tree
+    expand: true
+  - src: ${PACKAGE_ROOT}/usr/share/flclash-tui/
+    dst: /usr/share/flclash-tui
+    type: tree
+    expand: true
+  - src: packaging/flclash-tun-helper.service
+    dst: /usr/lib/systemd/system/flclash-tun-helper.service
+    packager: deb
+  - src: packaging/flclash-tun-helper.service
+    dst: /usr/lib/systemd/system/flclash-tun-helper.service
+    packager: rpm
+  - src: packaging/flclash-tun-helper.service
+    dst: /usr/lib/systemd/system/flclash-tun-helper.service
+    packager: archlinux
+  - src: packaging/org.flclash.tun.policy
+    dst: /usr/share/polkit-1/actions/org.flclash.tun.policy
+    packager: deb
+  - src: packaging/org.flclash.tun.policy
+    dst: /usr/share/polkit-1/actions/org.flclash.tun.policy
+    packager: rpm
+  - src: packaging/org.flclash.tun.policy
+    dst: /usr/share/polkit-1/actions/org.flclash.tun.policy
+    packager: archlinux
+  - src: packaging/org.flclash.tun.policy
+    dst: /usr/share/polkit-1/actions/org.flclash.tun.policy
+    packager: apk
+  - src: packaging/flclash-tun-helper.openrc
+    dst: /etc/init.d/flclash-tun-helper
+    packager: apk
+    file_info:
+      mode: 0755
+overrides:
+  deb:
+    depends: [iproute2, iptables, 'polkitd | policykit-1']
+    recommends: [openssh-client]
+    conflicts: [flclash-cli]
+    replaces: [flclash-cli]
+    provides: [flclash-cli]
+    scripts:
+      postinstall: packaging/scripts/systemd-install.sh
+      preremove: packaging/scripts/deb-remove.sh
+      postremove: packaging/scripts/systemd-reload.sh
+  rpm:
+    depends: ['/usr/sbin/ip', '/usr/sbin/iptables', '/usr/bin/pkcheck']
+    recommends: [openssh-clients]
+    scripts:
+      postinstall: packaging/scripts/systemd-install.sh
+      preremove: packaging/scripts/rpm-remove.sh
+      postremove: packaging/scripts/systemd-reload.sh
+  archlinux:
+    depends: [iproute2, iptables, polkit]
+    recommends: [openssh]
+    scripts:
+      postinstall: packaging/scripts/systemd-install.sh
+      preremove: packaging/scripts/systemd-remove.sh
+      postremove: packaging/scripts/systemd-reload.sh
+  apk:
+    depends: [iproute2, iptables, polkit]
+    recommends: [openssh-client-default]
+    scripts:
+      postinstall: packaging/scripts/openrc-install.sh
+      preremove: packaging/scripts/openrc-remove.sh
+apk:
+  scripts:
+    postupgrade: packaging/scripts/openrc-install.sh
+archlinux:
+  scripts:
+    postupgrade: packaging/scripts/systemd-install.sh
+rpm:
+  compression: gzip
+ipk:
+  arch: '@IPK_ARCH@'

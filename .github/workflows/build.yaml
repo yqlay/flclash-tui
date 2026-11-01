@@ -85,7 +85,7 @@ jobs:
 
       - name: Test installer
         run: |
-          bash -n install.sh packaging/install-script-test.sh packaging/tui-exit-test.sh packaging/tui-exit-isolated-test.sh
+          bash -n install.sh packaging/build-linux.sh packaging/build-deb.sh packaging/native-package-test.sh packaging/install-script-test.sh packaging/tui-exit-test.sh packaging/tui-exit-isolated-test.sh
           bash packaging/install-script-test.sh
 
       - name: Test Windows helper
@@ -95,7 +95,7 @@ jobs:
           cargo clippy --all-features -- -D warnings
 
   build:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [ test ]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -118,12 +118,37 @@ jobs:
           go-version: '1.26.6'
           cache-dependency-path: core/go.sum
 
+      - name: Install packaging tools
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.48.0
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends rpm
+
       - name: Build TUI packages
         env:
           ARCH: ${{ matrix.arch }}
           VERSION: ${{ github.ref_name }}
         run: |
-          VERSION="${VERSION#v}" packaging/build-deb.sh
+          if [[ "$VERSION" == v* ]]; then
+            VERSION="${VERSION#v}" packaging/build-linux.sh
+          else
+            unset VERSION
+            packaging/build-linux.sh
+          fi
+
+      - name: Verify built package metadata
+        working-directory: core
+        env:
+          FLCLASH_TEST_PACKAGE_DIR: ${{ github.workspace }}/dist
+          FLCLASH_TEST_PACKAGE_ARCH: ${{ matrix.arch }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          if [[ "$VERSION" == v* ]]; then
+            package_version="${VERSION#v}"
+          else
+            package_version=$(sed -n 's/^const cliVersion = "\(.*\)"/\1/p' cli_main.go)
+          fi
+          FLCLASH_TEST_PACKAGE_VERSION="$package_version" CGO_ENABLED=0 GOOS=linux go test -tags cli ./internal/update -run '^TestBuiltLinuxPackages$' -count=1 -v
 
       - name: Upload
         uses: actions/upload-artifact@v7
@@ -132,6 +157,31 @@ jobs:
           path: ./dist
           if-no-files-found: error
           overwrite: true
+
+  package-smoke:
+    needs: [ build ]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian, fedora, rocky, opensuse, arch, alpine, openwrt]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: artifact-linux-amd64
+          path: dist
+      - name: Install, run, and remove native package
+        env:
+          VERSION: ${{ github.ref_name }}
+          DISTRO: ${{ matrix.distro }}
+        run: |
+          if [[ "$VERSION" == v* ]]; then
+            package_version="${VERSION#v}"
+          else
+            package_version=$(sed -n 's/^const cliVersion = "\(.*\)"/\1/p' core/cli_main.go)
+          fi
+          bash packaging/native-package-test.sh "$DISTRO" "$PWD/dist" "$package_version"
 
   changelog:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
@@ -189,9 +239,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   upload:
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
-    needs: [ build ]
+    needs: [ build, package-smoke ]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -211,7 +262,7 @@ jobs:
           install -m 0755 install.sh ./dist/install.sh
           (
             cd ./dist
-            sha256sum flclash-tui_*.deb flclash-tui_*.tar.gz > SHA256SUMS
+            sha256sum flclash-tui_* > SHA256SUMS
           )
 
       - name: Generate release.md

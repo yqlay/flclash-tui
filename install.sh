@@ -29,7 +29,7 @@ Install the latest FlClash TUI release for this Linux architecture.
 
 Options:
   --version VERSION       Install a specific version instead of latest
-  --method METHOD         auto, deb, or portable (default: auto)
+  --method METHOD         auto, deb, rpm, archlinux, apk, ipk, portable
   --arch ARCH             Override architecture detection: amd64 or arm64
   --install-dir PATH      Portable version storage directory
   --bin-dir PATH          Portable command symlink directory
@@ -125,6 +125,87 @@ install_deb() {
   sudo apt-get install --yes "$package_path"
 }
 
+run_as_root() {
+  if [[ $(id -u) -eq 0 ]]; then
+    "$@"
+  else
+    require_command sudo
+    sudo "$@"
+  fi
+}
+
+detect_install_method() {
+  local distro_root=${1:-}
+  if [[ -f "$distro_root/etc/debian_version" ]] && command -v apt-get >/dev/null && command -v dpkg >/dev/null; then
+    printf '%s\n' deb
+  elif command -v rpm >/dev/null && { command -v dnf >/dev/null || command -v dnf5 >/dev/null || command -v yum >/dev/null || command -v zypper >/dev/null; }; then
+    printf '%s\n' rpm
+  elif command -v pacman >/dev/null; then
+    printf '%s\n' archlinux
+  elif [[ -f "$distro_root/etc/alpine-release" ]] && command -v apk >/dev/null; then
+    printf '%s\n' apk
+  elif command -v opkg >/dev/null; then
+    printf '%s\n' ipk
+  else
+    printf '%s\n' portable
+  fi
+}
+
+package_extension() {
+  case "$1" in
+    portable) printf '%s\n' tar.gz ;;
+    archlinux) printf '%s\n' pkg.tar.zst ;;
+    deb|rpm|apk|ipk) printf '%s\n' "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
+install_native() {
+  local method=$1 package_path=$2
+  case "$method" in
+    deb) install_deb "$package_path" ;;
+    rpm)
+      require_command rpm
+      if command -v zypper >/dev/null; then
+        run_as_root zypper --non-interactive install --allow-unsigned-rpm "$package_path"
+      elif command -v dnf >/dev/null; then
+        run_as_root dnf --assumeyes install "$package_path"
+      elif command -v dnf5 >/dev/null; then
+        run_as_root dnf5 --assumeyes install "$package_path"
+      elif command -v yum >/dev/null; then
+        run_as_root yum --assumeyes install "$package_path"
+      else
+        die 'RPM installation requires dnf, dnf5, yum, or zypper to resolve dependencies'
+      fi
+      ;;
+    archlinux)
+      require_command pacman
+      run_as_root pacman --noconfirm -U "$package_path"
+      ;;
+    apk)
+      require_command apk
+      # This local package was verified against GitHub's SHA-256 digest.
+      run_as_root apk add --allow-untrusted "$package_path"
+      ;;
+    ipk)
+      require_command opkg
+      run_as_root opkg install "$package_path"
+      ;;
+  esac
+}
+
+verify_native_entry() {
+  local selected
+  selected=$(command -v flclash || true)
+  if [[ -n "$selected" && "$(readlink -f -- "$selected")" != "$(readlink -f -- /usr/bin/flclash)" ]]; then
+    die "system package installed, but $selected still shadows /usr/bin/flclash; inspect 'type -a flclash flc' and use /usr/bin/flclash"
+  fi
+  selected=$(command -v flc || true)
+  if [[ -n "$selected" && "$(readlink -f -- "$selected")" != "$(readlink -f -- /usr/bin/flc)" ]]; then
+    die "system package installed, but $selected still shadows /usr/bin/flc; inspect 'type -a flclash flc' and use /usr/bin/flc"
+  fi
+}
+
 prepare_portable_link() {
   local link_path=$1
   if [[ -e "$link_path" && ! -L "$link_path" ]]; then
@@ -187,6 +268,8 @@ install_portable() (
   # that a frontend/backend may still be executing, even for the same version.
   destination=$(mktemp -d "${install_root}/${version}-${arch}.XXXXXX") || die 'could not create portable instance'
   cp -a -- "${source_dir}/." "$destination/" || die 'could not stage portable files'
+  [[ "$install_root" != *$'\n'* && "$bin_dir" != *$'\n'* ]] || die 'portable paths cannot contain newlines'
+  printf 'portable-v1\n%s\n%s\n' "$install_root" "$bin_dir" > "$destination/.flclash-install"
   link_stage=$(mktemp -d "${bin_dir}/.flclash-links.XXXXXX") || die 'could not stage command links'
   ln -s -- "${destination}/flclash" "${link_stage}/flclash" || die 'could not stage flclash link'
   ln -s -- "${destination}/flc" "${link_stage}/flc" || die 'could not stage flc link'
@@ -266,13 +349,24 @@ main() {
 
   case "$requested_method" in
     auto)
-      if [[ -f /etc/debian_version ]] && command -v dpkg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-        requested_method='deb'
+      # Retain an existing managed portable installation, even on Debian/RPM.
+      local executable marker
+      executable=$(command -v flclash || true)
+      executable=$(readlink -f -- "$executable" 2>/dev/null || true)
+      marker="${executable%/*}/.flclash-install"
+      if [[ -f "$marker" && "$(head -n 1 "$marker")" == portable-v1 ]]; then
+        local saved_root saved_bin
+        saved_root=$(sed -n '2p' "$marker")
+        saved_bin=$(sed -n '3p' "$marker")
+        [[ "$saved_root" == /* && "$saved_bin" == /* && "$(readlink -f -- "$saved_bin/flclash")" == "$executable" ]] || die 'invalid portable installation marker'
+        requested_method=portable
+        install_root=${install_root:-$saved_root}
+        bin_dir=${bin_dir:-$saved_bin}
       else
-        requested_method='portable'
+        requested_method=$(detect_install_method)
       fi
       ;;
-    deb|portable) ;;
+    deb|rpm|archlinux|apk|ipk|portable) ;;
     *) die "unsupported installation method: $requested_method" ;;
   esac
 
@@ -280,7 +374,7 @@ main() {
     local dpkg_arch
     dpkg_arch=$(dpkg --print-architecture)
     [[ "$dpkg_arch" == "$arch" ]] || die "dpkg architecture $dpkg_arch does not match detected architecture $arch"
-  else
+  elif [[ "$requested_method" == portable ]]; then
     require_command tar
   fi
 
@@ -307,10 +401,8 @@ main() {
     die "release version $version does not match requested version $requested_version"
   fi
 
-  local extension='deb'
-  if [[ "$requested_method" == 'portable' ]]; then
-    extension='tar.gz'
-  fi
+  local extension
+  extension=$(package_extension "$requested_method")
   local asset_name="flclash-tui_${version}_${arch}.${extension}"
   local digest
   digest=$(parse_release_asset_digest "$release_file" "$asset_name")
@@ -319,11 +411,16 @@ main() {
   local asset_path="${work_dir}/${asset_name}"
   local asset_url="${FLCLASH_DOWNLOAD_ROOT}/${tag}/${asset_name}"
   log "downloading $asset_name"
-  download_file "$asset_url" "$asset_path"
+  if [[ -n "${FLCLASH_INSTALL_ASSET_PATH:-}" ]]; then
+    cp -- "$FLCLASH_INSTALL_ASSET_PATH" "$asset_path"
+  else
+    download_file "$asset_url" "$asset_path"
+  fi
   verify_sha256 "$asset_path" "$digest"
 
-  if [[ "$requested_method" == 'deb' ]]; then
-    install_deb "$asset_path"
+  if [[ "$requested_method" != portable ]]; then
+    install_native "$requested_method" "$asset_path"
+    verify_native_entry
   else
     [[ -n "${HOME:-}" ]] || die 'HOME is required for a portable installation'
     install_root=${install_root:-${XDG_DATA_HOME:-${HOME}/.local/share}/flclash-tui}

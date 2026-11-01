@@ -82,6 +82,7 @@ The terminal client lives in `core/` and is selected with the `cli` build tag. I
 
 ```bash
 make cli-linux
+make package-linux # requires nFPM v2.48.0, creates all Linux package formats
 cd core && CGO_ENABLED=0 GOOS=linux go test -tags cli ./...
 cd core && CGO_ENABLED=0 GOOS=linux go vet -tags cli ./...
 bash packaging/tui-exit-isolated-test.sh dist/flclash

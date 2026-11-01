@@ -10,7 +10,7 @@ make cli-linux
 ./dist/flclash
 ```
 
-`dist/flclash` is the manager and `dist/flc` is the command-wrapper entry point. Keep `dist/data/` beside a portable build. Debian packages install `/usr/bin/flclash`, `/usr/bin/flc`, documentation, and bundled Geo data.
+`dist/flclash` is the manager and `dist/flc` is the command-wrapper entry point. Keep `dist/data/` beside a portable build. Native packages install `/usr/bin/flclash`, `/usr/bin/flc`, documentation, and bundled Geo data. `make package-linux` builds deb, rpm, Arch, Alpine apk, OpenWrt ipk, and portable archives with nFPM; see [packaging/README.md](packaging/README.md) for dependencies and supported architectures.
 
 Portable installs accept relative directory arguments but store absolute command-link targets. Reinstalling even the same version stages a complete fresh instance and switches command links atomically; old instances remain available to running processes. Failed staging or link switches preserve/restore the previous commands.
 
@@ -174,7 +174,7 @@ flclash tun system on       # Polkit authorization; exclusive for the machine
 flclash tun status
 ```
 
-Multiple user-scoped leases may coexist. A system-scoped lease conflicts with every other TUN lease and is released automatically when its owning Backend exits. User scope restores after Backend restart; system scope stays off until authorized again. The `.deb` installs `flclash-tun-helper.service`; portable tar installations retain non-TUN features but report that the helper is unavailable.
+Multiple user-scoped leases may coexist. A system-scoped lease conflicts with every other TUN lease and is released automatically when its owning Backend exits. User scope restores after Backend restart; system scope stays off until authorized again. Debian, RPM and Arch packages install `flclash-tun-helper.service`; Alpine installs an OpenRC helper. TUN requires a suitable kernel, cgroup v2 and routing tools. Portable and OpenWrt IPK installations retain non-TUN features and do not install a privileged helper.
 
 Other commands:
 
@@ -188,6 +188,14 @@ flclash update [--yes] [--download-only]
 flclash run [--config PATH]            # advanced foreground mode
 flclash version
 ```
+
+Updates follow the package database owner of the running executable: Debian,
+RPM (dnf/dnf5/yum/zypper), Arch, Alpine or OpenWrt opkg. Package name, version,
+architecture and GitHub asset digest are verified before installation. Managed
+portable installations update their recorded directories and switch both command
+links atomically. Older portable installations need one installer rerun to record
+their locations. Unmanaged executable copies are rejected instead of updating an
+unrelated system package; inspect `type -a flclash flc` when versions differ.
 
 Compatibility aliases include `service`, `system-proxy`, `outbound-mode`, `mixed-port`, `requests`, `connections close-all`, and `flclash exec -- COMMAND`. Prefer `backend`, `sys`, `mode`, `port`, `history`, `connections close all`, and `flc COMMAND` in new scripts.
 

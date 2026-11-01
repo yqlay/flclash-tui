@@ -58,7 +58,7 @@ func acquireTUITunLease(scope string) (*tuiTunLease, tuiTunHelperResponse, error
 	connection, err := net.Dial("unix", tunHelperSocketPath())
 	if err != nil {
 		return nil, tuiTunHelperResponse{}, fmt.Errorf(
-			"TUN helper is unavailable: %w; install the Debian package and start flclash-tun-helper.service",
+			"TUN helper is unavailable: %w; install a native systemd/OpenRC package and start flclash-tun-helper",
 			err,
 		)
 	}

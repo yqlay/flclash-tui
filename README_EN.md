@@ -41,9 +41,20 @@ Force a portable installation:
 curl -fsSL https://raw.githubusercontent.com/yqlay/flclash-tui/main/install.sh | bash -s -- --method portable
 ```
 
-If GitHub is unstable, download the matching `.deb` or `.tar.gz` from [Releases](https://github.com/yqlay/flclash-tui/releases), copy it over, then `sudo dpkg -i`. Do not pin a version string; always use the latest Release.
+The installer selects the package manager automatically. AMD64 and ARM64 builds include:
 
-Use `flclash update --check` to check for updates. For `.deb` installations, run `flclash update` and confirm; for portable installations, rerun the portable installer above. Upgrades preserve profiles, SSH settings, and the language preference. Reopen the TUI afterwards.
+| System | Package |
+| --- | --- |
+| Debian / Ubuntu | `.deb` |
+| Fedora / RHEL / Rocky / AlmaLinux / openSUSE | `.rpm` |
+| Arch / Manjaro / Arch Linux ARM | `.pkg.tar.zst` |
+| Alpine | `.apk` |
+| OpenWrt with opkg | `.ipk`, matching the firmware architecture |
+| Other Linux, including Gentoo / Void / Slackware / NixOS | Portable `.tar.gz` |
+
+If GitHub is unstable, download a matching package from [Releases](https://github.com/yqlay/flclash-tui/releases), copy it over, and install with the system package manager. Alpine/OpenWrt need Bash, curl and CA certificates to run the installer. OpenWrt systems using apk need the portable archive, not the Alpine APK. Other CPU architectures are not release targets; see [package notes](packaging/README.md).
+
+Use `flclash update --check` to check for updates. `flclash update` selects the package format of the running installation and asks for confirmation. Older portable installations need one reinstall using the portable command above. Upgrades preserve profiles, SSH settings, and the language preference. Reopen the TUI afterwards. If the version is unexpected, inspect old command entries with `type -a flclash flc`.
 
 ## Step 2: Import a subscription and pick a node
 

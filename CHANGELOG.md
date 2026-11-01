@@ -1,3 +1,10 @@
+## FlClash TUI v0.5.41
+
+- Publish AMD64/ARM64 Debian, RPM, Arch Linux, Alpine APK, OpenWrt IPK, and portable packages from one nFPM configuration. Add systemd helper integration for RPM/Arch and OpenRC integration for Alpine; IPK and portable packages do not install a privileged helper.
+- Select a native package manager in the unified installer, retain existing managed portable installations, and report command paths that shadow a newly installed native package.
+- Make `flclash update` follow the package owner of the running executable, validate the selected package format, and use its dependency-resolving package manager. Managed portable updates retain custom directories, verify the release installer, and switch both command links atomically. Refuse unmanaged executable copies instead of silently upgrading an unrelated system installation.
+- Verify all twelve built packages and gate publication on native install/run/remove checks in Debian, Fedora, Rocky, openSUSE, Arch, Alpine, and OpenWrt containers. Document the two supported CPU architectures, OpenWrt ABI restrictions, portable fallbacks, and TUN prerequisites.
+
 ## FlClash TUI v0.5.40
 
 - Restore the SSH list highlight, opened dashboard, list/detail focus, and selected detail row across navigation and TUI restarts. Match profiles by name, handle deleted profiles, and keep highlight separate from Enter-confirmed selection. Restoring the view does not reconnect or discover SSH sessions.

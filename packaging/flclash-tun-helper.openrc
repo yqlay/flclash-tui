@@ -1,0 +1,15 @@
+#!/sbin/openrc-run
+description="FlClash privileged TUN lease helper"
+command="/usr/bin/flclash"
+command_args="tun-helper serve"
+command_background=true
+pidfile="/run/flclash/tun-helper.pid"
+
+depend() {
+    need localmount
+    after cgroups
+}
+
+start_pre() {
+    checkpath --directory --mode 0755 /run/flclash
+}

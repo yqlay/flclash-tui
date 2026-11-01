@@ -105,6 +105,18 @@ func Command(args []string) error {
 	if *checkOnly {
 		return nil
 	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	target, err := detectCLIInstallation(executable, queryCLIInstalledPackage)
+	if err != nil {
+		return err
+	}
+	if err := checkCLIUpdateEntries(target, exec.LookPath); err != nil {
+		return err
+	}
+	fmt.Printf("Installation: %s (%s)\n", target.Method, target.Executable)
 	if !*yes {
 		if !isInteractiveInput() {
 			return errors.New("confirmation required; rerun with --yes after reviewing the warning")
@@ -119,7 +131,7 @@ func Command(args []string) error {
 		}
 	}
 
-	debAsset, err := selectCLIUpdateAsset(release, latestVersion, runtime.GOARCH)
+	asset, err := selectCLIUpdatePackage(release, latestVersion, runtime.GOARCH, target.Method)
 	if err != nil {
 		return err
 	}
@@ -130,34 +142,35 @@ func Command(args []string) error {
 	if err := os.MkdirAll(updateDirectory, 0o700); err != nil {
 		return fmt.Errorf("create update directory: %w", err)
 	}
-	debPath := filepath.Join(updateDirectory, debAsset.Name)
-	fmt.Printf("Downloading %s...\n", debAsset.Name)
+	packagePath := filepath.Join(updateDirectory, asset.Name)
+	fmt.Printf("Downloading %s...\n", asset.Name)
 	if err := downloadCLIUpdateAssetWithProgress(
 		ctx,
 		cliUpdateHTTPClient,
-		debAsset,
-		debPath,
+		asset,
+		packagePath,
 		os.Stdout,
 		isCLIProgressTerminal(os.Stdout),
 	); err != nil {
 		return err
 	}
-	if err := verifyCLIUpdateDigest(debPath, debAsset.Digest); err != nil {
+	if err := verifyCLIUpdateDigest(packagePath, asset.Digest); err != nil {
 		return fmt.Errorf("verify update: %w", err)
 	}
-	if err := validateCLIUpdateDebianPackage(
-		debPath,
+	if err := validateCLIUpdatePackage(
+		packagePath,
 		latestVersion,
 		runtime.GOARCH,
+		target.Method,
 	); err != nil {
 		return fmt.Errorf("validate update package: %w", err)
 	}
-	fmt.Printf("Verified SHA-256: %s\n", debPath)
+	fmt.Printf("Verified SHA-256: %s\n", packagePath)
 	if *downloadOnly {
-		fmt.Printf("Downloaded update. Install when ready:\n  sudo dpkg -i %s\n", debPath)
+		fmt.Printf("Downloaded and verified %s update: %s\n", target.Method, packagePath)
 		return nil
 	}
-	if err := installCLIUpdate(debPath); err != nil {
+	if err := installCLIUpdatePackage(ctx, target, release, packagePath, latestVersion); err != nil {
 		return err
 	}
 	fmt.Printf("FlClash TUI %s installed. Start flclash again to use it.\n", latestVersion)
@@ -369,63 +382,8 @@ func cliVersionIdentifierNumeric(value string) bool {
 	return true
 }
 
-func selectCLIUpdateAsset(
-	release cliRelease,
-	version,
-	goArch string,
-) (cliReleaseAsset, error) {
-	debArch := cliDebianArchitecture(goArch)
-	if debArch == "" {
-		return cliReleaseAsset{}, fmt.Errorf(
-			"automatic update is not supported on architecture %s",
-			goArch,
-		)
-	}
-	var debAsset cliReleaseAsset
-	bestDebScore := -1
-	for _, asset := range release.Assets {
-		score := scoreCLIUpdateDebAsset(asset.Name, version, goArch)
-		if score > bestDebScore {
-			debAsset = asset
-			bestDebScore = score
-		} else if score >= 0 && score == bestDebScore {
-			return cliReleaseAsset{}, fmt.Errorf(
-				"release %s contains multiple equally suitable %s packages",
-				release.TagName,
-				debArch,
-			)
-		}
-	}
-	if bestDebScore < 0 || debAsset.DownloadURL == "" {
-		return cliReleaseAsset{}, fmt.Errorf(
-			"release %s does not contain a recognizable FlClash %s Debian package",
-			release.TagName,
-			debArch,
-		)
-	}
-	if _, err := parseCLIUpdateDigest(debAsset.Digest); err != nil {
-		return cliReleaseAsset{}, fmt.Errorf(
-			"release %s has an invalid GitHub digest for %s: %w",
-			release.TagName,
-			debAsset.Name,
-			err,
-		)
-	}
-	repository, err := trustedCLIReleaseRepository(release)
-	if err != nil {
-		return cliReleaseAsset{}, err
-	}
-	if err := validateCLIUpdateAssetURLForRepository(
-		debAsset.DownloadURL,
-		repository,
-	); err != nil {
-		return cliReleaseAsset{}, fmt.Errorf(
-			"release asset %s: %w",
-			debAsset.Name,
-			err,
-		)
-	}
-	return debAsset, nil
+func selectCLIUpdateAsset(release cliRelease, version, goArch string) (cliReleaseAsset, error) {
+	return selectCLIUpdatePackage(release, version, goArch, "deb")
 }
 
 func cliDebianArchitecture(goArch string) string {
@@ -873,23 +831,4 @@ func confirmCLIUpdate(reader io.Reader, writer io.Writer) (bool, error) {
 	}
 	value = strings.ToLower(strings.TrimSpace(value))
 	return value == "y" || value == "yes", nil
-}
-
-func installCLIUpdate(debPath string) error {
-	arguments := []string{"dpkg", "-i", debPath}
-	commandName := "sudo"
-	if os.Geteuid() == 0 {
-		commandName = "dpkg"
-		arguments = []string{"-i", debPath}
-	} else if _, err := exec.LookPath("sudo"); err != nil {
-		return errors.New("sudo is required to install the Debian package")
-	}
-	command := exec.Command(commandName, arguments...)
-	command.Stdin = os.Stdin
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("install update: %w", err)
-	}
-	return nil
 }
