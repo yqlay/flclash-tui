@@ -19,6 +19,21 @@ func TestTUIFormatting(t *testing.T) {
 	if got := formatBytes(1024 * 1024); got != "1.0 MB" {
 		t.Fatalf("formatBytes(1 MiB) = %q", got)
 	}
+	if got := formatBytes(1024*1024 - 1); got != "1.0 MB" {
+		t.Fatalf("formatBytes(1 MiB-1) = %q", got)
+	}
+	if got := formatBytes(1024*1024*1024 - 1); got != "1.0 GB" {
+		t.Fatalf("formatBytes(1 GiB-1) = %q", got)
+	}
+	if got := formatBytes(1024 * 1024 * 1024 * 1024); got != "1.0 TB" {
+		t.Fatalf("formatBytes(1 TiB) = %q", got)
+	}
+	if got := formatTUIMemoryPercent(9996, 10000); got != "99.9" {
+		t.Fatalf("formatTUIMemoryPercent(near full) = %q", got)
+	}
+	if got := formatTUIMemoryPercent(10000, 10000); got != "100.0" {
+		t.Fatalf("formatTUIMemoryPercent(full) = %q", got)
+	}
 	if got := truncateTUI("abcdef", 4); got != "abc…" {
 		t.Fatalf("truncateTUI = %q", got)
 	}

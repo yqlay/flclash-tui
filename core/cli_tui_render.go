@@ -205,7 +205,8 @@ func renderTUICompact(
 	contentWidth := width - 2
 	var page string
 	switch {
-	case snapshot.LanguageSelectionOpen || snapshot.NotificationDetailOpen ||
+	case snapshot.ShowHelp ||
+		snapshot.LanguageSelectionOpen || snapshot.NotificationDetailOpen ||
 		snapshot.DangerConfirmOpen ||
 		snapshot.ProfileDelete.Open ||
 		snapshot.SSHForm.DeleteConfirmOpen ||
@@ -456,6 +457,14 @@ func renderTUITiny(
 				lines = append([]string{"SSH"}, row.value, "Enter · Esc")
 				break
 			}
+		}
+	} else if snapshot.ShowHelp {
+		lines = []string{
+			tr("ui.e9bef0b0f3c2"),
+			tr("ui.c3f444889f5d"),
+			tr("ui.54250fb97a2d"),
+			tr("ui.f94a0d033f3a"),
+			tr("ui.aa107e7dba26"),
 		}
 	} else if notification, ok := tuiLatestUnreadNotification(snapshot.Notifications); ok {
 		lines = append(lines, tuiNotificationTinySummary(notification, width, language...))
@@ -988,10 +997,10 @@ func tuiTrafficTitle(
 
 func formatTUITrafficLegend(traffic trafficSnapshot, peak int64, language ...string) string {
 	tr := tuiTranslator(language...)
-	return fmt.Sprintf(tr("ui.41278a3a38a0"), tuiTrafficChartUpload,
+	return fmt.Sprintf(tr("ui.41278a3a38a0"), tuiTrafficChartColor,
 		formatBytes(traffic.Up),
 		tuiReset,
-		tuiTrafficChartDownload,
+		tuiTrafficChartColor,
 		formatBytes(traffic.Down),
 		tuiReset,
 		tuiDim,

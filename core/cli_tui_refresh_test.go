@@ -1400,7 +1400,7 @@ func TestTUITrafficHistoryKeepsLatestThirtySamples(t *testing.T) {
 	}
 }
 
-func TestTUITrafficChartOverlaysUploadAndDownload(t *testing.T) {
+func TestTUITrafficChartDrawsCombinedArea(t *testing.T) {
 	history := make([]trafficSnapshot, tuiTrafficHistoryLimit)
 	for index := range history {
 		history[index] = trafficSnapshot{
@@ -1408,32 +1408,49 @@ func TestTUITrafficChartOverlaysUploadAndDownload(t *testing.T) {
 			Down: int64((tuiTrafficHistoryLimit - index) * 2048),
 		}
 	}
-	chart := buildTUITrafficChart(history, 32, 4)
+	chart := buildTUITrafficChart(history, 32, 8)
 	if chart.peak != int64(tuiTrafficHistoryLimit*2048) {
 		t.Fatalf("traffic chart peak = %d", chart.peak)
 	}
-	if len(chart.lines) != 4 {
+	if len(chart.lines) != 8 {
 		t.Fatalf("traffic chart line count = %d", len(chart.lines))
 	}
 	rendered := strings.Join(chart.lines, "\n")
-	if !strings.Contains(rendered, tuiTrafficChartUpload) ||
-		!strings.Contains(rendered, tuiTrafficChartDownload) ||
-		!strings.Contains(rendered, tuiTrafficChartOverlap) {
-		t.Fatalf("traffic chart does not contain both series and overlap: %q", rendered)
+	if strings.Contains(rendered, "\x1b[38;5;33m") || strings.Contains(rendered, tuiGreen) || strings.Contains(rendered, "·") {
+		t.Fatalf("traffic chart still draws two series or a dotted baseline: %q", rendered)
 	}
-	if tuiTrafficChartUpload != "\x1b[38;5;33m" ||
-		tuiTrafficChartDownload != tuiGreen ||
-		tuiTrafficChartOverlap != tuiCyan ||
-		strings.Contains(rendered, "\x1b[97m") {
-		t.Fatalf("traffic chart colors are not blue/green/cyan: %q", rendered)
+	if !strings.Contains(rendered, tuiTrafficChartColor) || !strings.Contains(rendered, tuiTrafficChartFill) {
+		t.Fatalf("traffic chart is missing the stroke or the faded fill: %q", rendered)
 	}
-	empty := buildTUITrafficChart(nil, 12, 3)
-	if strings.Contains(stripTUIANSI(empty.lines[0]), "·") ||
-		strings.Contains(stripTUIANSI(empty.lines[1]), "·") ||
-		stripTUIANSI(empty.lines[2]) != strings.Repeat("·", 12) ||
-		!strings.Contains(empty.lines[2], tuiTrafficChartBaseline) {
-		t.Fatalf("traffic chart baseline is not white dotted: %q", empty.lines)
+	if countTUIBrailleDots(chart.lines[0]) == 0 {
+		t.Fatal("combined peak does not reach the top of the chart")
 	}
+	if upper, lower := countTUIBrailleDots(chart.lines[5]), countTUIBrailleDots(chart.lines[7]); upper <= lower {
+		t.Fatalf("fill does not fade downward: upper %d lower %d", upper, lower)
+	}
+
+	empty := buildTUITrafficChart(nil, 12, 8)
+	if empty.peak != 0 || countTUIBrailleDots(empty.lines[0]) != 0 || countTUIBrailleDots(empty.lines[4]) != 0 {
+		t.Fatalf("empty chart is not flat below the 70%% line: peak %d lines %#v", empty.peak, empty.lines)
+	}
+	if countTUIBrailleDots(empty.lines[6]) == 0 || countTUIBrailleDots(empty.lines[7]) == 0 {
+		t.Fatalf("empty chart has no baseline fill: %#v", empty.lines)
+	}
+}
+
+func countTUIBrailleDots(line string) int {
+	total := 0
+	for _, char := range stripTUIANSI(line) {
+		if char < 0x2800 || char > 0x28FF {
+			continue
+		}
+		dots := byte(char - 0x2800)
+		for dots != 0 {
+			total += int(dots & 1)
+			dots >>= 1
+		}
+	}
+	return total
 }
 
 func TestTUITrafficLegendMatchesSeriesColorsAndResetsBorder(t *testing.T) {
@@ -1441,10 +1458,10 @@ func TestTUITrafficLegendMatchesSeriesColorsAndResetsBorder(t *testing.T) {
 	legend := formatTUITrafficLegend(traffic, 4096)
 	if !strings.Contains(
 		legend,
-		tuiTrafficChartUpload+"↑ 1.0 KB/s"+tuiReset,
+		tuiTrafficChartColor+"↑ 1.0 KB/s"+tuiReset,
 	) || !strings.Contains(
 		legend,
-		tuiTrafficChartDownload+"↓ 2.0 KB/s"+tuiReset,
+		tuiTrafficChartColor+"↓ 2.0 KB/s"+tuiReset,
 	) {
 		t.Fatalf("traffic legend does not match series colors: %q", legend)
 	}
@@ -1454,10 +1471,10 @@ func TestTUITrafficLegendMatchesSeriesColorsAndResetsBorder(t *testing.T) {
 	)
 	if !strings.Contains(
 		example,
-		tuiTrafficChartUpload+"↑ 1021.0 B/s"+tuiReset,
+		tuiTrafficChartColor+"↑ 1021.0 B/s"+tuiReset,
 	) || !strings.Contains(
 		example,
-		tuiTrafficChartDownload+"↓ 18.0 B/s"+tuiReset,
+		tuiTrafficChartColor+"↓ 18.0 B/s"+tuiReset,
 	) {
 		t.Fatalf("live traffic values do not match chart colors: %q", example)
 	}
@@ -1686,9 +1703,10 @@ func TestTUIDashboardRendersAdaptiveLiveTrafficChart(t *testing.T) {
 			t.Fatalf("Dashboard traffic chart does not contain %q:\n%s", expected, plain)
 		}
 	}
-	if !strings.Contains(output, tuiTrafficChartUpload+"↑ ") ||
-		!strings.Contains(output, tuiTrafficChartDownload+"↓ ") {
-		t.Fatalf("Dashboard traffic legend is missing series colors: %q", output)
+	if !strings.Contains(output, tuiTrafficChartColor+"↑ ") ||
+		!strings.Contains(output, tuiTrafficChartColor+"↓ ") ||
+		!strings.Contains(output, tuiTrafficChartFill) {
+		t.Fatalf("Dashboard traffic legend or area chart is missing: %q", output)
 	}
 }
 

@@ -28,6 +28,26 @@ func TestCatalogsCompleteAndFormatSafe(t *testing.T) {
 		if Normalize(item.Code) != item.Code {
 			t.Errorf("invalid code %q", item.Code)
 		}
+		for _, key := range []string{"ui.5438c6aedc05", "ui.bdee1acc5021"} {
+			if !strings.Contains(entries[key], "flclash update") {
+				t.Errorf("%s: updater instruction %s = %q", item.Code, key, entries[key])
+			}
+		}
+	}
+}
+
+func TestChineseUpdateCommandAndModeHint(t *testing.T) {
+	for _, code := range []string{"zh-Hans", "zh-Hant"} {
+		entries := Entries(code)
+		for _, key := range []string{"ui.5438c6aedc05", "ui.bdee1acc5021"} {
+			if !strings.Contains(entries[key], "flclash update") {
+				t.Fatalf("%s %s = %q", code, key, entries[key])
+			}
+		}
+		hint := entries["ui.35294cbec8a7"]
+		if strings.Contains(hint, "直连代理") || strings.Contains(hint, "直接連線代理") {
+			t.Fatalf("%s mode hint = %q", code, hint)
+		}
 	}
 }
 

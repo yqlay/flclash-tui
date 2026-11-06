@@ -686,7 +686,7 @@ func TestTUIDashboardSelectionStaysWithLabeledRows(t *testing.T) {
 
 func TestTUIRowHighlightSurvivesEmbeddedReset(t *testing.T) {
 	var b strings.Builder
-	tuiRow(&b, "Speed  "+tuiTrafficChartDownload+"1 KB/s"+tuiReset+" · "+tuiTrafficChartUpload+"2 KB/s"+tuiReset, 80, true, "")
+	tuiRow(&b, "Speed  "+tuiGreen+"1 KB/s"+tuiReset+" · "+tuiCyan+"2 KB/s"+tuiReset, 80, true, "")
 	line := strings.TrimSuffix(b.String(), "\n")
 	final := strings.LastIndex(line, tuiReset)
 	if final < 0 {

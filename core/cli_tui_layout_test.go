@@ -141,6 +141,26 @@ func TestTUIResponsiveColumnsPreserveWideNamesAndStatus(t *testing.T) {
 	}
 }
 
+func TestTUIHelpVisibleOnCompactAndTiny(t *testing.T) {
+	paths := cliPaths{}
+	address := "127.0.0.1:9090"
+	for _, focusSidebar := range []bool{false, true} {
+		snapshot := populatedTUISnapshot(tuiPageDashboard)
+		snapshot.ShowHelp = true
+		snapshot.FocusSidebar = focusSidebar
+		view := stripTUIANSI(renderTUIAtSize(snapshot, paths, address, true, true, 80, 24))
+		if !strings.Contains(view, "Keyboard shortcuts") {
+			t.Fatalf("compact help missing with sidebar %v:\n%s", focusSidebar, view)
+		}
+	}
+	tiny := populatedTUISnapshot(tuiPageDashboard)
+	tiny.ShowHelp = true
+	view := stripTUIANSI(renderTUIAtSize(tiny, paths, address, true, true, 30, 8))
+	if !strings.Contains(view, "Keyboard shortcuts") {
+		t.Fatalf("tiny help missing:\n%s", view)
+	}
+}
+
 func TestTUILocalizedOverlayBudgetsKeepControlsAndBorders(t *testing.T) {
 	for _, language := range i18n.Languages() {
 		for _, size := range [][2]int{{40, 10}, {64, 14}, {88, 18}, {120, 40}} {

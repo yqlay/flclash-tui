@@ -1,3 +1,12 @@
+## FlClash TUI v1.0.0
+
+- Draw the Dashboard and SSH speed charts as one combined upload and download area. The curve is a quadratic Bézier, the peak is the top of the plot, and the area fades below the line.
+- Show the keyboard-help page on an 80-column terminal and on a window narrower than 40 columns. `?`, `q`, and Ctrl+C keep their current meaning.
+- Step byte counts into the next unit when one decimal place would show `1024.0`, through TB. A memory reading below the total stays at `99.9%` until the total is reached.
+- Keep the download progress line off the last terminal column, erase the previous tail, and stay at `99.9%` until the download finishes.
+- Keep the install command `flclash update` literal in every language. Correct the Simplified and Traditional Chinese update, mode, help, and connection wording that described the wrong action.
+- Backend IPC remains v7. Quit the TUI and start `flclash` again to use this build.
+
 ## FlClash TUI v0.5.42
 
 - Add separate Dashboard and SSH whitelist and blacklist lists. Dashboard entries live in `.flclash-route-policy.json` and are compiled into the managed config. SSH entries live in `.flclash-ssh-route.json` and stay on this machine.

@@ -612,6 +612,8 @@ type cliDownloadProgress struct {
 	lastDrawnAt time.Time
 	interactive bool
 	finished    bool
+	columns     int
+	lastLineLen int
 }
 
 func newCLIDownloadProgress(
@@ -662,45 +664,168 @@ func (p *cliDownloadProgress) draw(now time.Time, complete bool) {
 		elapsed = time.Nanosecond
 	}
 	speed := float64(p.written) / elapsed.Seconds()
-	const barWidth = 28
-	if p.total > 0 {
-		ratio := float64(p.written) / float64(p.total)
-		if ratio > 1 {
-			ratio = 1
-		}
-		filled := int(ratio * barWidth)
-		bar := strings.Repeat("=", filled) + strings.Repeat(".", barWidth-filled)
-		prefix := "\r"
-		if !p.interactive {
-			prefix = ""
-		}
-		_, _ = fmt.Fprintf(
-			p.output,
-			"%s[%s] %6.1f%%  %s/%s  %s/s",
-			prefix,
-			bar,
-			ratio*100,
-			formatBytes(p.written),
-			formatBytes(p.total),
-			formatBytes(int64(speed)),
-		)
+	width := 0
+	if p.interactive {
+		width = p.displayWidth()
+		p.rewindWrappedProgress(width)
+	}
+	line := renderCLIProgressLine(p.written, p.total, speed, width)
+	if p.interactive {
+		_, _ = fmt.Fprintf(p.output, "\r%s\033[K", line)
+		p.lastLineLen = len(line)
 	} else {
-		prefix := "\r"
-		if !p.interactive {
-			prefix = ""
-		}
-		_, _ = fmt.Fprintf(
-			p.output,
-			"%sDownloaded %s  %s/s",
-			prefix,
-			formatBytes(p.written),
-			formatBytes(int64(speed)),
-		)
+		_, _ = fmt.Fprint(p.output, line)
 	}
 	p.lastDrawnAt = now
 	if complete {
 		_, _ = fmt.Fprintln(p.output)
+		p.lastLineLen = 0
 	}
+}
+
+func (p *cliDownloadProgress) displayWidth() int {
+	if p.columns > 0 {
+		return p.columns
+	}
+	file, ok := p.output.(*os.File)
+	if !ok {
+		return 0
+	}
+	width, _, err := term.GetSize(int(file.Fd()))
+	if err != nil || width < 1 {
+		return 0
+	}
+	return width
+}
+
+// rewindWrappedProgress clears a previous line that now wraps because the
+// terminal became narrower than that line. The cursor sits on the last row.
+func (p *cliDownloadProgress) rewindWrappedProgress(width int) {
+	if p.lastLineLen == 0 || width <= 0 || p.lastLineLen <= width {
+		return
+	}
+	rows := (p.lastLineLen + width - 1) / width
+	if rows <= 1 {
+		return
+	}
+	_, _ = fmt.Fprintf(p.output, "\033[%dA", rows-1)
+	for row := 0; row < rows; row++ {
+		_, _ = fmt.Fprint(p.output, "\r\033[K")
+		if row+1 < rows {
+			_, _ = fmt.Fprint(p.output, "\033[1B")
+		}
+	}
+	if rows > 1 {
+		_, _ = fmt.Fprintf(p.output, "\033[%dA", rows-1)
+	}
+}
+
+func renderCLIProgressLine(written, total int64, speed float64, width int) string {
+	speedText := formatBytes(int64(speed)) + "/s"
+	if total <= 0 {
+		return clipProgressLine(
+			fmt.Sprintf("Downloaded %s  %s", formatBytes(written), speedText),
+			width,
+		)
+	}
+	percent, done := progressPercent(written, total)
+	percentText := fmt.Sprintf("%6.1f%%", percent)
+	sizeText := formatBytes(written) + "/" + formatBytes(total)
+	stages := []struct {
+		speed bool
+		size  bool
+	}{
+		{speed: true, size: true},
+		{speed: false, size: true},
+		{speed: false, size: false},
+	}
+	for _, stage := range stages {
+		for bar := progressBarFull; bar >= 0; bar-- {
+			line := assembleCLIProgress(bar, percent, done, percentText, sizeText, speedText, stage.size, stage.speed)
+			if progressLineFits(line, width) {
+				return line
+			}
+		}
+	}
+	return clipProgressLine(assembleCLIProgress(0, percent, done, percentText, sizeText, speedText, false, false), width)
+}
+
+// progressLineFits rejects a line that fills the last column. That column
+// either wraps before EL runs, or EL erases the glyph that landed on it.
+func progressLineFits(line string, width int) bool {
+	if width <= 0 {
+		return true
+	}
+	if width == 1 {
+		return len(line) <= 1
+	}
+	return len(line) < width
+}
+
+const progressBarFull = 28
+
+func progressPercent(written, total int64) (float64, bool) {
+	if total <= 0 || written <= 0 {
+		return 0, false
+	}
+	if written >= total {
+		return 100, true
+	}
+	percent := float64(written) / float64(total) * 100
+	if percent > 99.9 {
+		percent = 99.9
+	}
+	return percent, false
+}
+
+func progressBar(percent float64, done bool, width int) string {
+	filled := 0
+	if done {
+		filled = width
+	} else if percent > 0 {
+		filled = int(percent / 100 * float64(width))
+		if filled >= width {
+			filled = width - 1
+		}
+		if filled < 1 {
+			filled = 1
+		}
+	}
+	return "[" + strings.Repeat("=", filled) + strings.Repeat(".", width-filled) + "]"
+}
+
+func assembleCLIProgress(
+	barWidth int,
+	percent float64,
+	done bool,
+	percentText, sizeText, speedText string,
+	showSize, showSpeed bool,
+) string {
+	var line strings.Builder
+	if barWidth > 0 {
+		line.WriteString(progressBar(percent, done, barWidth))
+		line.WriteByte(' ')
+	}
+	line.WriteString(percentText)
+	if showSize {
+		line.WriteString("  ")
+		line.WriteString(sizeText)
+	}
+	if showSpeed {
+		line.WriteString("  ")
+		line.WriteString(speedText)
+	}
+	return line.String()
+}
+
+func clipProgressLine(line string, width int) string {
+	if progressLineFits(line, width) {
+		return line
+	}
+	if width <= 1 {
+		return "."
+	}
+	return line[:width-2] + "."
 }
 
 func isCLIProgressTerminal(output io.Writer) bool {

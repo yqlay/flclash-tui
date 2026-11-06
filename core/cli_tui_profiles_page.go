@@ -442,10 +442,10 @@ func drawTUISSHDetails(b *strings.Builder, snapshot tuiSnapshot, profile tuiSSHP
 		fields = append(fields,
 			tuiLabelField(tr("ui.d0e0f92fa371"), inetIP),
 			tuiLabelField(tr("ui.b5a2eb00c061"), tuiSSHNetworkLabel(snapshot.SSHNetwork, tr("ui.309ee924bee5"), language...)),
-			tuiTemplateField(tr("ui.205b4200a20d"), tuiTrafficChartDownload,
+			tuiTemplateField(tr("ui.205b4200a20d"), tuiTrafficChartColor,
 				formatBytes(snapshot.SSHTraffic.Down),
 				tuiReset,
-				tuiTrafficChartUpload,
+				tuiTrafficChartColor,
 				formatBytes(snapshot.SSHTraffic.Up),
 				tuiReset,
 			),
@@ -536,10 +536,15 @@ func truncateTUI(value string, width int) string {
 }
 
 func formatBytes(value int64) string {
-	units := []string{"B", "KB", "MB", "GB"}
+	units := []string{"B", "KB", "MB", "GB", "TB"}
 	amount := float64(value)
 	unit := 0
 	for amount >= 1024 && unit < len(units)-1 {
+		amount /= 1024
+		unit++
+	}
+	// %.1f rounds 1023.999 KB up to 1024.0 KB. Step up so it stays 1.0 MB.
+	if unit < len(units)-1 && fmt.Sprintf("%.1f", amount) == "1024.0" {
 		amount /= 1024
 		unit++
 	}

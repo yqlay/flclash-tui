@@ -20,7 +20,7 @@ import (
 
 func TestMain(m *testing.M) {
 	if Version == "" {
-		Version = "0.5.42"
+		Version = "1.0.0"
 	}
 	os.Exit(m.Run())
 }
@@ -384,6 +384,185 @@ func TestCLIUpdateProgressShowsBarPercentageAndSpeed(t *testing.T) {
 	if !strings.HasSuffix(line, "/s") {
 		t.Fatalf("download speed is not on the right side: %q", line)
 	}
+}
+
+func TestCLIUpdateProgressClearsShorterRedraw(t *testing.T) {
+	var output bytes.Buffer
+	progress := newCLIDownloadProgress(&output, 2*1024*1024, true)
+	progress.columns = 80
+	start := time.Now()
+	progress.startedAt = start
+	progress.written = 1023 * 1024
+	progress.draw(start.Add(100*time.Millisecond), false)
+	progress.written = 1024 * 1024
+	progress.draw(start.Add(time.Second), false)
+	progress.written = 2 * 1024 * 1024
+	progress.draw(start.Add(2*time.Second), true)
+
+	screen := progressScreen(output.String())
+	if strings.Contains(screen, "MB/sMB/s") || strings.HasSuffix(strings.TrimRight(screen, "\n"), "MB/sMB/s") {
+		t.Fatalf("shorter progress redraw left the previous tail:\n%q", screen)
+	}
+	if !strings.Contains(screen, "[============================]  100.0%  2.0 MB/2.0 MB  1.0 MB/s") {
+		t.Fatalf("final progress line = %q", screen)
+	}
+}
+
+func TestCLIUpdateProgressNearlyCompleteStaysConsistent(t *testing.T) {
+	if got := formatBytes(1024*1024 - 1); got != "1.0 MB" {
+		t.Fatalf("formatBytes(1MiB-1) = %q", got)
+	}
+	line := renderCLIProgressLine(1024*1024-1, 1024*1024, float64(1024*1024-1), 0)
+	if strings.Contains(line, "100.0%") || strings.Contains(line, "1024.0 KB") || strings.Contains(line, "[============================]") {
+		t.Fatalf("nearly complete line looks finished: %q", line)
+	}
+	if !strings.Contains(line, "99.9%") || !strings.Contains(line, "1.0 MB/1.0 MB") {
+		t.Fatalf("nearly complete line = %q", line)
+	}
+}
+
+func TestCLIUpdateProgressFitsNarrowTerminal(t *testing.T) {
+	const (
+		half  = 6 * 1024 * 1024
+		whole = 12 * 1024 * 1024
+		huge  = int64(1) << 62
+	)
+	// Every width the bar shrinker can be asked to fit, including 20 and 40.
+	for width := 2; width <= 80; width++ {
+		assertCLIProgressFits(t, half, whole, float64(half), time.Second, width)
+		assertCLIProgressFits(t, huge, 0, float64(huge), time.Second, width)
+	}
+}
+
+func assertCLIProgressFits(t *testing.T, written, total int64, speed float64, elapsed time.Duration, width int) {
+	t.Helper()
+	full := renderCLIProgressLine(written, total, speed, 0)
+	line := renderCLIProgressLine(written, total, speed, width)
+	if width > 1 && len(line) >= width {
+		t.Fatalf("width %d progress line is %d columns: %q", width, len(line), line)
+	}
+	if total <= 0 && len(full) >= width && (len(line) != width-1 || !strings.HasSuffix(line, ".")) {
+		t.Fatalf("width %d did not clip %q to %q", width, full, line)
+	}
+	var output bytes.Buffer
+	progress := newCLIDownloadProgress(&output, total, true)
+	progress.columns = width
+	now := time.Now()
+	progress.startedAt = now.Add(-elapsed)
+	progress.written = written
+	progress.draw(now, false)
+	raw := output.String()
+	if strings.Contains(raw, "\n") {
+		t.Fatalf("width %d progress wrapped or finished early: %q", width, raw)
+	}
+	payload := drawnCLIProgressLine(raw)
+	if payload != line || (width > 1 && len(payload) >= width) {
+		t.Fatalf("width %d drawn line is %d columns: %q want %q", width, len(payload), payload, line)
+	}
+	if total > 0 && width >= 8 && !strings.Contains(payload, "%") {
+		t.Fatalf("width %d progress lost the percent: %q", width, payload)
+	}
+}
+
+func drawnCLIProgressLine(raw string) string {
+	start := strings.LastIndex(raw, "\r")
+	if start < 0 {
+		return raw
+	}
+	payload := raw[start+1:]
+	if end := strings.Index(payload, "\033[K"); end >= 0 {
+		payload = payload[:end]
+	}
+	return payload
+}
+
+func TestCLIUpdateProgressClearsWrappedLineAfterResize(t *testing.T) {
+	var output bytes.Buffer
+	progress := newCLIDownloadProgress(&output, 12*1024*1024, true)
+	progress.columns = 80
+	progress.startedAt = time.Now().Add(-time.Second)
+	progress.written = 6 * 1024 * 1024
+	progress.draw(time.Now(), false)
+	progress.columns = 20
+	progress.draw(time.Now().Add(time.Second), false)
+	screen := progressScreen(output.String())
+	for _, line := range strings.Split(screen, "\n") {
+		if line != "" && len(line) >= 20 {
+			t.Fatalf("resized progress still occupies %d columns: %q", len(line), screen)
+		}
+	}
+	if strings.TrimSpace(screen) == "" || !strings.Contains(screen, "%") {
+		t.Fatalf("resized progress = %q", screen)
+	}
+}
+
+// progressScreen applies the cursor controls used by the download line.
+func progressScreen(raw string) string {
+	lines := []string{""}
+	row, column := 0, 0
+	ensure := func() {
+		for len(lines) <= row {
+			lines = append(lines, "")
+		}
+	}
+	for index := 0; index < len(raw); {
+		if raw[index] == '\r' {
+			column = 0
+			index++
+			continue
+		}
+		if raw[index] == '\n' {
+			row++
+			column = 0
+			ensure()
+			index++
+			continue
+		}
+		if raw[index] == '\033' && index+1 < len(raw) && raw[index+1] == '[' {
+			end := index + 2
+			for end < len(raw) && raw[end] >= '0' && raw[end] <= '9' {
+				end++
+			}
+			if end < len(raw) {
+				command := raw[end]
+				argument := 1
+				if number := raw[index+2 : end]; number != "" {
+					argument = 0
+					for _, digit := range number {
+						argument = argument*10 + int(digit-'0')
+					}
+				}
+				index = end + 1
+				switch command {
+				case 'K':
+					ensure()
+					if column < len(lines[row]) {
+						lines[row] = lines[row][:column]
+					}
+				case 'A':
+					row -= argument
+					if row < 0 {
+						row = 0
+					}
+				case 'B':
+					row += argument
+					ensure()
+				}
+				continue
+			}
+		}
+		ensure()
+		if column < len(lines[row]) {
+			text := []byte(lines[row])
+			text[column] = raw[index]
+			lines[row] = string(text)
+		} else {
+			lines[row] += raw[index : index+1]
+		}
+		column++
+		index++
+	}
+	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
 }
 
 func TestConfirmCLIUpdateDefaultsToNo(t *testing.T) {

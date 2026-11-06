@@ -2,13 +2,16 @@
 
 package main
 
-import "strings"
+import (
+	"math"
+	"strings"
+)
 
+// The live chart follows the Flutter dashboard painter: one quadratic-Bezier
+// curve of upload+download, a two-pixel stroke, and a fill that fades downward.
 const (
-	tuiTrafficChartUpload   = "\x1b[38;5;33m"
-	tuiTrafficChartDownload = "\x1b[32m"
-	tuiTrafficChartOverlap  = "\x1b[36m"
-	tuiTrafficChartBaseline = "\x1b[37m"
+	tuiTrafficChartColor = tuiCyan
+	tuiTrafficChartFill  = tuiDim + tuiCyan
 )
 
 var tuiBrailleDots = [4][2]uint8{
@@ -23,6 +26,11 @@ type tuiTrafficChart struct {
 	peak  int64
 }
 
+type tuiChartPoint struct {
+	x int
+	y int
+}
+
 func buildTUITrafficChart(
 	history []trafficSnapshot,
 	width,
@@ -31,45 +39,70 @@ func buildTUITrafficChart(
 	if width <= 0 || height <= 0 {
 		return tuiTrafficChart{}
 	}
-	samples := make([]trafficSnapshot, tuiTrafficHistoryLimit)
 	if len(history) > tuiTrafficHistoryLimit {
 		history = history[len(history)-tuiTrafficHistoryLimit:]
 	}
-	copy(samples[len(samples)-len(history):], history)
-
-	peak := int64(0)
-	for _, sample := range samples {
-		peak = maxTUIInt64(peak, maxTUIInt64(sample.Up, sample.Down))
+	// Two leading zeros match the Flutter chart's initPoints, so an empty
+	// history is a flat line and the first real sample leaves the baseline.
+	values := make([]int64, 0, len(history)+2)
+	values = append(values, 0, 0)
+	var peak int64
+	for _, sample := range history {
+		speed := tuiTrafficSpeed(sample)
+		values = append(values, speed)
+		peak = maxTUIInt64(peak, speed)
 	}
-	scale := peak
-	if scale <= 0 {
-		scale = 1
-	}
 
-	up := makeTUIBrailleCanvas(width, height)
-	down := makeTUIBrailleCanvas(width, height)
 	pixelWidth := width * 2
 	pixelHeight := height * 4
-	for index := 1; index < len(samples); index++ {
-		x0 := (index - 1) * (pixelWidth - 1) / (len(samples) - 1)
-		x1 := index * (pixelWidth - 1) / (len(samples) - 1)
-		if samples[index-1].Up > 0 || samples[index].Up > 0 {
-			drawTUIBrailleLine(
-				up,
-				x0,
-				tuiTrafficChartY(samples[index-1].Up, scale, pixelHeight),
-				x1,
-				tuiTrafficChartY(samples[index].Up, scale, pixelHeight),
-			)
+	baseline := int(math.Round(0.70 * float64(pixelHeight-1)))
+	points := make([]tuiChartPoint, len(values))
+	for index, value := range values {
+		points[index] = tuiChartPoint{
+			x: index * (pixelWidth - 1) / (len(values) - 1),
+			y: tuiTrafficChartY(value, peak, baseline),
 		}
-		if samples[index-1].Down > 0 || samples[index].Down > 0 {
-			drawTUIBrailleLine(
-				down,
-				x0,
-				tuiTrafficChartY(samples[index-1].Down, scale, pixelHeight),
-				x1,
-				tuiTrafficChartY(samples[index].Down, scale, pixelHeight),
-			)
+	}
+
+	curveY := make([]int, pixelWidth)
+	for index := range curveY {
+		curveY[index] = baseline
+	}
+	plot := func(from, to tuiChartPoint) {
+		coverTUIChartSegment(curveY, pixelWidth, pixelHeight, from, to)
+	}
+	if len(points) < 3 {
+		plot(points[0], points[len(points)-1])
+	} else {
+		current := points[0]
+		for index := 1; index < len(points)-1; index++ {
+			end := tuiChartPoint{
+				x: int(math.Round(float64(points[index].x+points[index+1].x) / 2)),
+				y: int(math.Round(float64(points[index].y+points[index+1].y) / 2)),
+			}
+			previous := current
+			for _, point := range tuiQuadraticPoints(current, points[index], end) {
+				plot(previous, point)
+				previous = point
+			}
+			current = end
+		}
+		plot(current, points[len(points)-1])
+	}
+
+	stroke := makeTUIBrailleCanvas(width, height)
+	fill := makeTUIBrailleCanvas(width, height)
+	for x, y := range curveY {
+		setTUIBrailleDot(stroke, x, y)
+		setTUIBrailleDot(stroke, x, y+1)
+		span := pixelHeight - 1 - y
+		if span < 1 {
+			span = 1
+		}
+		for py := y; py < pixelHeight; py++ {
+			if keepTUITrafficFillDot(x, py, py-y, span) {
+				setTUIBrailleDot(fill, x, py)
+			}
 		}
 	}
 
@@ -78,19 +111,14 @@ func buildTUITrafficChart(
 		var line strings.Builder
 		activeColor := ""
 		for column := 0; column < width; column++ {
-			upDots := up[row][column]
-			downDots := down[row][column]
+			dots := fill[row][column]
 			color := ""
-			dots := upDots | downDots
-			switch {
-			case upDots != 0 && downDots != 0:
-				color = tuiTrafficChartOverlap
-			case upDots != 0:
-				color = tuiTrafficChartUpload
-			case downDots != 0:
-				color = tuiTrafficChartDownload
-			case row == height-1:
-				color = tuiTrafficChartBaseline
+			if dots != 0 {
+				color = tuiTrafficChartFill
+			}
+			if stroke[row][column] != 0 {
+				dots |= stroke[row][column]
+				color = tuiTrafficChartColor
 			}
 			if color != activeColor {
 				line.WriteString(tuiReset)
@@ -98,11 +126,7 @@ func buildTUITrafficChart(
 				activeColor = color
 			}
 			if dots == 0 {
-				if row == height-1 {
-					line.WriteRune('·')
-				} else {
-					line.WriteByte(' ')
-				}
+				line.WriteByte(' ')
 			} else {
 				line.WriteRune(rune(0x2800 + int(dots)))
 			}
@@ -113,51 +137,114 @@ func buildTUITrafficChart(
 	return tuiTrafficChart{lines: lines, peak: peak}
 }
 
+func tuiTrafficSpeed(sample trafficSnapshot) int64 {
+	up := sample.Up
+	down := sample.Down
+	if up < 0 {
+		up = 0
+	}
+	if down < 0 {
+		down = 0
+	}
+	if up > math.MaxInt64-down {
+		return math.MaxInt64
+	}
+	return up + down
+}
+
+func tuiTrafficChartY(value, peak int64, baseline int) int {
+	if value <= 0 || peak <= 0 {
+		return baseline
+	}
+	if value > peak {
+		value = peak
+	}
+	return baseline - int(value*int64(baseline)/peak)
+}
+
+// tuiQuadraticPoints samples B(t)=(1-t)²P0+2(1-t)tP1+t²P2. P1 is the control
+// point, so the curve bends toward a sample and ends on the next midpoint.
+func tuiQuadraticPoints(start, control, end tuiChartPoint) []tuiChartPoint {
+	steps := absTUIChartInt(end.x-start.x) + absTUIChartInt(end.y-start.y)
+	if steps < 8 {
+		steps = 8
+	}
+	points := make([]tuiChartPoint, 0, steps)
+	for step := 1; step <= steps; step++ {
+		t := float64(step) / float64(steps)
+		u := 1 - t
+		points = append(points, tuiChartPoint{
+			x: int(math.Round(u*u*float64(start.x) + 2*u*t*float64(control.x) + t*t*float64(end.x))),
+			y: int(math.Round(u*u*float64(start.y) + 2*u*t*float64(control.y) + t*t*float64(end.y))),
+		})
+	}
+	return points
+}
+
+func coverTUIChartSegment(curveY []int, pixelWidth, pixelHeight int, from, to tuiChartPoint) {
+	x0, y0 := from.x, from.y
+	x1, y1 := to.x, to.y
+	if x1 < x0 {
+		x0, x1 = x1, x0
+		y0, y1 = y1, y0
+	}
+	if x1 < 0 || x0 >= pixelWidth {
+		return
+	}
+	if x0 < 0 {
+		x0 = 0
+	}
+	if x1 >= pixelWidth {
+		x1 = pixelWidth - 1
+	}
+	record := func(x, y int) {
+		if x < 0 || x >= len(curveY) {
+			return
+		}
+		if y < 0 {
+			y = 0
+		}
+		if y >= pixelHeight {
+			y = pixelHeight - 1
+		}
+		if y < curveY[x] {
+			curveY[x] = y
+		}
+	}
+	if x0 == x1 {
+		record(x0, y0)
+		record(x0, y1)
+		return
+	}
+	for x := x0; x <= x1; x++ {
+		y := y0 + (y1-y0)*(x-x0)/(x1-x0)
+		record(x, y)
+	}
+}
+
+// keepTUITrafficFillDot fades the fill from about 38% density at the curve
+// to about 10% at the bottom, the terminal stand-in for the Flutter gradient.
+func keepTUITrafficFillDot(x, y, depth, span int) bool {
+	if span < 1 {
+		span = 1
+	}
+	percent := 38 - 28*depth/span
+	if percent < 10 {
+		percent = 10
+	}
+	bucket := (x*73 + y*37) % 100
+	if bucket < 0 {
+		bucket += 100
+	}
+	return bucket < percent
+}
+
 func makeTUIBrailleCanvas(width, height int) [][]uint8 {
 	canvas := make([][]uint8, height)
 	for row := range canvas {
 		canvas[row] = make([]uint8, width)
 	}
 	return canvas
-}
-
-func tuiTrafficChartY(value, scale int64, pixelHeight int) int {
-	if value < 0 {
-		value = 0
-	}
-	if value > scale {
-		value = scale
-	}
-	return int((scale - value) * int64(pixelHeight-1) / scale)
-}
-
-func drawTUIBrailleLine(canvas [][]uint8, x0, y0, x1, y1 int) {
-	deltaX := absTUIChartInt(x1 - x0)
-	stepX := -1
-	if x0 < x1 {
-		stepX = 1
-	}
-	deltaY := -absTUIChartInt(y1 - y0)
-	stepY := -1
-	if y0 < y1 {
-		stepY = 1
-	}
-	err := deltaX + deltaY
-	for {
-		setTUIBrailleDot(canvas, x0, y0)
-		if x0 == x1 && y0 == y1 {
-			return
-		}
-		doubled := 2 * err
-		if doubled >= deltaY {
-			err += deltaY
-			x0 += stepX
-		}
-		if doubled <= deltaX {
-			err += deltaX
-			y0 += stepY
-		}
-	}
 }
 
 func setTUIBrailleDot(canvas [][]uint8, x, y int) {

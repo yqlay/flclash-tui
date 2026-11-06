@@ -265,13 +265,11 @@ func tuiMemoryFields(snapshot tuiSnapshot, language ...string) []tuiField {
 	tr := tuiTranslator(language...)
 	systemMemory := tr("ui.ca1844969742")
 	if snapshot.Memory.SystemTotal > 0 {
-		percentage := float64(snapshot.Memory.SystemUsed) /
-			float64(snapshot.Memory.SystemTotal) * 100
 		systemMemory = fmt.Sprintf(
-			"%s / %s  %.1f%%",
+			"%s / %s  %s%%",
 			formatTUIUintBytes(snapshot.Memory.SystemUsed),
 			formatTUIUintBytes(snapshot.Memory.SystemTotal),
-			percentage,
+			formatTUIMemoryPercent(snapshot.Memory.SystemUsed, snapshot.Memory.SystemTotal),
 		)
 	}
 	rows := []tuiField{tuiLabelField(tr("ui.bc59b24ffe23"), systemMemory)}
@@ -308,6 +306,18 @@ func tuiMemoryFields(snapshot tuiSnapshot, language ...string) []tuiField {
 		goHeap = formatTUIUintBytes(snapshot.Memory.GoHeap)
 	}
 	return append(rows, tuiLabelField(tr("ui.34dc50a0cfa2"), goHeap))
+}
+
+// formatTUIMemoryPercent keeps a partial reading from rounding up to 100.0%.
+func formatTUIMemoryPercent(used, total uint64) string {
+	if total == 0 || used >= total {
+		return "100.0"
+	}
+	text := fmt.Sprintf("%.1f", float64(used)/float64(total)*100)
+	if text == "100.0" {
+		return "99.9"
+	}
+	return text
 }
 
 func formatTUIUintBytes(value uint64) string {
