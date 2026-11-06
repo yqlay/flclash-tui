@@ -143,7 +143,7 @@ func completionCommand(args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: flclash completion bash|zsh|fish")
 	}
-	commands := "tui core sys tun mode port flc ssh net start stop restart reload status backend shutdown exit profile proxy settings traffic history connections logs config geo env doctor completion check update run version help"
+	commands := "tui core sys tun mode port flc ssh net start stop restart reload status backend shutdown exit profile proxy route settings traffic history connections logs config geo env doctor completion check update run version help"
 	groups := []struct {
 		command string
 		values  string
@@ -155,7 +155,8 @@ func completionCommand(args []string) error {
 		{"mode", "rule global direct silent"},
 		{"port", "off"},
 		{"flc", "status select test env ssh"},
-		{"ssh", "add edit delete list show connect attach disconnect status test default import probe --user --port --local-port --jump --identity --passphrase --clear-passphrase --password --clear-password --clear-jump --option --file"},
+		{"ssh", "add edit delete list show connect attach disconnect status test default import probe route --user --port --local-port --jump --identity --passphrase --clear-passphrase --password --clear-password --clear-jump --option --file"},
+		{"route", "whitelist blacklist list add delete"},
 		{"net", "show refresh delay speed"},
 		{"status", "--json --watch"},
 		{"backend", "start stop restart status logs clients"},

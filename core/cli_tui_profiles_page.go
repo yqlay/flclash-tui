@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -192,7 +193,7 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int, lan
 		b,
 		fmt.Sprintf(tr("ui.e0a7eec09c2f"), len(snapshot.SSHProfiles)), tr("ui.79403c9f1ae4"), width,
 	)
-	listLen := len(snapshot.SSHProfiles) + 1
+	listLen := len(snapshot.SSHProfiles) + 3
 	visual := snapshot.SelectedSSH + 1
 	if visual < 0 {
 		visual = 0
@@ -232,8 +233,28 @@ func drawTUISSH(b *strings.Builder, snapshot tuiSnapshot, width, height int, lan
 			)
 			continue
 		}
+		profileCount := len(snapshot.SSHProfiles)
+		if visualIndex == profileCount+1 || visualIndex == profileCount+2 {
+			blacklist := visualIndex == profileCount+2
+			labelKey := "route.ssh_whitelist"
+			count := snapshot.SSHWhitelistCount
+			selectedIndex := profileCount
+			if blacklist {
+				labelKey = "route.ssh_blacklist"
+				count = snapshot.SSHBlacklistCount
+				selectedIndex = profileCount + 1
+			}
+			tuiRow(
+				b,
+				fmt.Sprintf(tr(labelKey), strconv.Itoa(count)),
+				width,
+				snapshot.SelectedSSH == selectedIndex && listFocused,
+				tuiCyan,
+			)
+			continue
+		}
 		index := visualIndex - 1
-		if index < 0 || index >= len(snapshot.SSHProfiles) {
+		if index < 0 || index >= profileCount {
 			continue
 		}
 		profile := snapshot.SSHProfiles[index]

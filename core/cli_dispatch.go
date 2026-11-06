@@ -73,6 +73,8 @@ func dispatchCLI(program string, args []string) error {
 		return checkCommand(commandArgs)
 	case "proxy":
 		return proxyCommand(commandArgs)
+	case "route":
+		return routeCommand(commandArgs)
 	case "profile":
 		return profileCommand(commandArgs)
 	case "config":

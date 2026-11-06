@@ -1146,15 +1146,18 @@ func TestTUIDashboardOwnsDailyControlsAndSettingsDoesNotRepeatThem(t *testing.T)
 		26,
 	)
 	dashboardPlain := stripTUIANSI(dashboard.String())
+	dashboardCollapsed := strings.Join(strings.Fields(dashboardPlain), " ")
 	for _, row := range []string{
-		"Core          STOPPED · Enter to start",
-		"Mode          rule",
-		"flc           pick a node in Proxies",
-		"Proxy port    17890",
+		"Core STOPPED · Enter to start",
+		"Mode rule",
+		"flc pick a node in Proxies",
+		"Proxy port 17890",
 		"System proxy",
-		"TUN           USER ON",
+		"TUN USER ON",
+		"Whitelist",
+		"Blacklist",
 	} {
-		if !strings.Contains(dashboardPlain, row) {
+		if !strings.Contains(dashboardCollapsed, row) {
 			t.Fatalf("Dashboard does not contain %q:\n%s", row, dashboardPlain)
 		}
 	}
@@ -1174,6 +1177,9 @@ func TestTUIDashboardOwnsDailyControlsAndSettingsDoesNotRepeatThem(t *testing.T)
 		if strings.Contains(settingsPlain, daily) {
 			t.Fatalf("Settings repeats daily control %q:\n%s", daily, settingsPlain)
 		}
+	}
+	if strings.Contains(settingsPlain, "Whitelist") || strings.Contains(settingsPlain, "Blacklist") {
+		t.Fatalf("Settings still shows proxy lists:\n%s", settingsPlain)
 	}
 	for _, row := range []string{
 		"Allow LAN",
@@ -1687,18 +1693,16 @@ func TestTUIDashboardRendersAdaptiveLiveTrafficChart(t *testing.T) {
 }
 
 func TestTUIDashboardTrafficChartFillsRemainingHeight(t *testing.T) {
+	paths := cliPaths{ConfigPath: "/tmp/config.yaml"}
 	for _, managed := range []bool{false, true} {
-		for _, height := range []int{33, 40, 60} {
-			snapshot := populatedTUISnapshot(tuiPageDashboard)
-			snapshot.ManagedService = managed
+		snapshot := populatedTUISnapshot(tuiPageDashboard)
+		snapshot.ManagedService = managed
+		contentRows := len(tuiFieldRows(tuiDashboardControlFields(snapshot), 100)) +
+			len(tuiFieldRows(tuiDashboardNetworkFields(snapshot), 100)) +
+			len(tuiFieldRows(tuiDashboardOverviewFields(snapshot, paths), 100)) + 12
+		for _, height := range []int{contentRows + 1, 40, 60} {
 			var output strings.Builder
-			drawTUIDashboard(
-				&output,
-				snapshot,
-				cliPaths{ConfigPath: "/tmp/config.yaml"},
-				100,
-				height,
-			)
+			drawTUIDashboard(&output, snapshot, paths, 100, height)
 			lines := strings.Split(strings.TrimSuffix(stripTUIANSI(output.String()), "\n"), "\n")
 			if len(lines) != height {
 				t.Fatalf("managed=%t height=%d: Dashboard uses %d rows", managed, height, len(lines))
@@ -1712,13 +1716,9 @@ func TestTUIDashboardTrafficChartFillsRemainingHeight(t *testing.T) {
 					overviewTitle = index
 				}
 			}
-			fixedRows := 30
-			if managed {
-				fixedRows++
-			}
 			plotRows := len(lines) - chartTitle - 2
-			if overviewTitle < 0 || chartTitle < overviewTitle || plotRows != height-fixedRows {
-				t.Fatalf("managed=%t height=%d: chart title=%d overview title=%d plot=%d, want %d plot rows after overview", managed, height, chartTitle, overviewTitle, plotRows, height-fixedRows)
+			if overviewTitle < 0 || chartTitle < overviewTitle || plotRows != height-contentRows {
+				t.Fatalf("managed=%t height=%d: chart title=%d overview title=%d plot=%d, want %d plot rows after overview", managed, height, chartTitle, overviewTitle, plotRows, height-contentRows)
 			}
 		}
 	}

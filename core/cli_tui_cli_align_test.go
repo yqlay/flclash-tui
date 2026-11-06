@@ -23,6 +23,8 @@ import (
 //	Dashboard Mode          flclash mode
 //	Dashboard FLC outbound  flclash proxy select (opens that group)
 //	Dashboard Mixed port    flclash port
+//	Dashboard Whitelist       route list editor
+//	Dashboard Blacklist       route list editor
 //	Dashboard Public IP     flclash net refresh
 //	Dashboard Intranet      flclash net refresh
 //	Dashboard Delay         flclash net delay

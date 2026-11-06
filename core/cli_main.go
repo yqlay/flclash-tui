@@ -14,7 +14,7 @@ import (
 	"syscall"
 )
 
-const cliVersion = "0.5.41"
+const cliVersion = "0.5.42"
 
 type controllerOptions struct {
 	address    string
@@ -77,6 +77,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Configuration and runtime:")
 	fmt.Fprintln(w, "  profile           Import, select, update, rename, edit, or list profiles")
 	fmt.Fprintln(w, "  proxy             List groups/nodes/providers, select nodes, or run tests")
+	fmt.Fprintln(w, "  route             Dashboard whitelist and blacklist")
 	fmt.Fprintln(w, "  settings          Show or set profile switches and the saved TUN scope")
 	fmt.Fprintln(w, "  traffic           Reset traffic counters")
 	fmt.Fprintln(w, "  config            Inspect, validate, edit, back up, or restore config")

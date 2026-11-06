@@ -68,6 +68,11 @@ func writeTUIManagedRuntimeConfig(
 			os.Getuid(),
 		),
 	)
+	policyRules, err := compileProxyRouteRules(paths.HomeDir, mode, loadTUIFLCOutbound(paths.HomeDir))
+	if err != nil {
+		return "", err
+	}
+	insertTUIYAMLSequenceValues(root, "rules", 1, policyRules)
 	setTUIYAMLNode(root, "listeners", &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"})
 	setTUIYAMLNode(root, "tunnels", &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"})
 	for _, key := range []string{"ss-config", "vmess-config", "external-controller", "external-controller-tls", "external-controller-pipe", "external-controller-unix", "external-ui", "external-ui-url", "external-doh-server"} {
@@ -129,6 +134,26 @@ func setTUIYAMLSequence(root *yaml.Node, key string, values []string, tag string
 		sequence.Content = append(sequence.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value})
 	}
 	setTUIYAMLNode(root, key, sequence)
+}
+
+func insertTUIYAMLSequenceValues(root *yaml.Node, key string, index int, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	sequence := tuiYAMLMappingValue(root, key)
+	if sequence == nil || sequence.Kind != yaml.SequenceNode {
+		sequence = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+		setTUIYAMLNode(root, key, sequence)
+	}
+	if index < 0 || index > len(sequence.Content) {
+		index = len(sequence.Content)
+	}
+	nodes := make([]*yaml.Node, len(values))
+	for valueIndex, value := range values {
+		nodes[valueIndex] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+	}
+	tail := append([]*yaml.Node{}, sequence.Content[index:]...)
+	sequence.Content = append(append(sequence.Content[:index], nodes...), tail...)
 }
 
 func prependTUIYAMLSequenceValue(root *yaml.Node, key, value string) {
@@ -283,6 +308,10 @@ func writeTUISilentRuntimeConfig(
 		setTUIYAMLScalar(dns, "listen", "", "!!str")
 	}
 
+	policyRules, err := compileProxyRouteRules(paths.HomeDir, tuiSilentMode, state.Outbound)
+	if err != nil {
+		return "", err
+	}
 	listeners := &yaml.Node{
 		Kind: yaml.SequenceNode,
 		Tag:  "!!seq",
@@ -293,7 +322,19 @@ func writeTUISilentRuntimeConfig(
 		setTUIYAMLScalar(listener, "type", "mixed", "!!str")
 		setTUIYAMLScalar(listener, "listen", "127.0.0.1", "!!str")
 		setTUIYAMLScalar(listener, "port", strconv.Itoa(state.Port), "!!int")
-		setTUIYAMLScalar(listener, "proxy", state.Outbound, "!!str")
+		// A listener proxy field skips every rule. Keep it only while the
+		// direct blacklist is empty. A non-empty blacklist matches first, then
+		// MATCH sends the remaining flc traffic to the same outbound.
+		if len(policyRules) == 0 {
+			setTUIYAMLScalar(listener, "proxy", state.Outbound, "!!str")
+		} else {
+			target := strings.TrimSpace(state.Outbound)
+			if target == "" {
+				target = "GLOBAL"
+			}
+			block := append(append([]string{}, policyRules...), "MATCH,"+target)
+			insertTUIYAMLSequenceValues(root, "rules", 0, block)
+		}
 		user := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 		setTUIYAMLScalar(user, "username", state.Username, "!!str")
 		setTUIYAMLScalar(user, "password", state.Password, "!!str")

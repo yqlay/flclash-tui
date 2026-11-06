@@ -416,9 +416,12 @@ func refreshTUIProfiles(snapshot *tuiSnapshot, paths cliPaths) {
 
 func refreshTUISSH(snapshot *tuiSnapshot) {
 	selectedName := ""
-	captureSelected := snapshot.SelectedSSH == tuiSSHCaptureRow
-	if snapshot.SelectedSSH >= 0 && snapshot.SelectedSSH < len(snapshot.SSHProfiles) {
-		selectedName = snapshot.SSHProfiles[snapshot.SelectedSSH].Name
+	oldCount := len(snapshot.SSHProfiles)
+	selected := snapshot.SelectedSSH
+	marked := snapshot.SSHRouteRow
+	captureSelected := selected == tuiSSHCaptureRow
+	if selected >= 0 && selected < oldCount {
+		selectedName = snapshot.SSHProfiles[selected].Name
 	}
 	views, err := loadCLISSHProfileViews()
 	if err != nil {
@@ -454,6 +457,17 @@ func refreshTUISSH(snapshot *tuiSnapshot) {
 			Options:       append([]string(nil), view.Options...),
 		})
 	}
+	routeRow := tuiSSHRouteRowAt(selected, oldCount, marked)
+	if routeRow != 0 {
+		if routeRow == 1 {
+			snapshot.SelectedSSH = len(snapshot.SSHProfiles)
+		} else {
+			snapshot.SelectedSSH = len(snapshot.SSHProfiles) + 1
+		}
+		snapshot.SSHRouteRow = routeRow
+		return
+	}
+	snapshot.SSHRouteRow = 0
 	if captureSelected || len(snapshot.SSHProfiles) == 0 {
 		snapshot.SelectedSSH = tuiSSHCaptureRow
 		return

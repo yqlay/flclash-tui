@@ -212,7 +212,8 @@ func renderTUICompact(
 		snapshot.SSHCredentialPrompt.Open ||
 		snapshot.SSHForm.Open ||
 		snapshot.SelectionTitle != "" ||
-		snapshot.InputTitle != "":
+		snapshot.InputTitle != "" ||
+		snapshot.RouteListOpen:
 		page = tuiRenderPage(
 			snapshot,
 			paths,
@@ -432,6 +433,16 @@ func renderTUITiny(
 		lines = []string{tr("ui.5495b65bea00"), snapshot.SSHCredentialPrompt.Value, "Enter · Esc"}
 	} else if snapshot.InputTitle != "" {
 		lines = []string{snapshot.InputTitle, snapshot.InputValue, "Enter · Esc"}
+	} else if snapshot.RouteListOpen {
+		selected := tr("route.empty")
+		if len(snapshot.RouteListEntries) > 0 {
+			index := snapshot.RouteListCursor
+			if index < 0 || index >= len(snapshot.RouteListEntries) {
+				index = 0
+			}
+			selected = snapshot.RouteListEntries[index]
+		}
+		lines = []string{snapshot.RouteListTitle, selected, tr("route.editor_hint")}
 	} else if snapshot.SelectionTitle != "" {
 		lines = []string{snapshot.SelectionTitle}
 		if len(snapshot.SelectionOptions) > 0 {
@@ -499,9 +510,18 @@ func (w *tuiFrameWriter) invalidate() {
 
 func tuiRenderPage(snapshot tuiSnapshot, paths cliPaths, width, height int, language ...string) string {
 	tr := tuiTranslator(language...)
+	if snapshot.Page == tuiPageDashboard || snapshot.Page == tuiPageSSH {
+		annotateRouteCounts(&snapshot, paths.HomeDir)
+	}
 	var b strings.Builder
 	if snapshot.LanguageSelectionOpen {
 		drawTUILanguageSelection(&b, snapshot, width, height)
+	} else if snapshot.RouteListOpen {
+		if snapshot.InputTitle != "" {
+			drawTUIInput(&b, snapshot, width, height, language...)
+		} else {
+			drawTUIRouteList(&b, snapshot, width, height, language...)
+		}
 	} else if snapshot.NotificationDetailOpen {
 		drawTUINotificationDetails(&b, snapshot, width, height, language...)
 	} else if snapshot.DangerConfirmOpen {

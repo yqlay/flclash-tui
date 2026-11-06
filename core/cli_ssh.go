@@ -67,6 +67,7 @@ type cliSSHTunnelState struct {
 	ControlPath      string    `json:"control_path"`
 	RelayControl     string    `json:"relay_control,omitempty"`
 	RelayPID         int       `json:"relay_pid,omitempty"`
+	DirectPort       int       `json:"direct_port,omitempty"`
 	Kind             string    `json:"kind"`
 	AutoCreated      bool      `json:"auto_created,omitempty"`
 	Reverse          bool      `json:"reverse,omitempty"`
@@ -296,6 +297,8 @@ func sshManagementCommand(args []string) error {
 		return cliSSHAttachCommand(args[1:])
 	case "probe":
 		return cliSSHProbeCommand(args[1:])
+	case "route":
+		return sshRouteCommand(args[1:])
 	default:
 		return fmt.Errorf("unknown ssh command %q; use `flclash ssh -help`", args[0])
 	}
@@ -316,6 +319,8 @@ func printSSHManagementUsage(w io.Writer) {
 	fmt.Fprintln(w, "  flclash ssh disconnect [NAME|all]")
 	fmt.Fprintln(w, "  flclash ssh test [NAME]")
 	fmt.Fprintln(w, "  flclash ssh probe --json  # read-only endpoint check for flc ssh -d")
+	fmt.Fprintln(w, "  flclash ssh route whitelist|blacklist list|add|delete [ENTRY]")
+	fmt.Fprintln(w, "The SSH blacklist is separate from Dashboard. `flc ssh` uses it only without -d.")
 	fmt.Fprintln(w, "`ssh add` with no arguments and `ssh edit NAME` open an interactive prompt.")
 	fmt.Fprintln(w, "`ssh connect` and `flc ssh COMMAND` use the default profile, or the only profile, when NAME is omitted.")
 	fmt.Fprintln(w, "`ssh attach` captures a SOCKS already on this machine (`ssh -D` / ControlMaster, or inbound `ssh -R`). `ssh connect` starts or reuses a tunnel to a saved host.")
@@ -520,12 +525,16 @@ func runCLICommandThroughSSHForCommand(
 	state cliSSHTunnelState,
 	direct bool,
 ) error {
+	port := state.Port
 	if direct {
 		if err := requireCLISSHDirectExit(state); err != nil {
 			return err
 		}
+		if state.DirectPort > 0 {
+			port = state.DirectPort
+		}
 	}
-	return runCLICommandWithSSHProxyForCommand(args, state.Port)
+	return runCLICommandWithSSHProxyForCommand(args, port)
 }
 
 func requireCLISSHDirectExit(state cliSSHTunnelState) error {

@@ -29,6 +29,10 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 			return m.openProxiesForFLCOutbound()
 		case tuiDashboardMixedPortRow:
 			m.beginInput(tuiInputMixedPort)
+		case tuiDashboardProxyWhitelistRow:
+			m.openRouteList(proxyRoutePolicyFilename, routeListWhitelist)
+		case tuiDashboardDirectBlacklistRow:
+			m.openRouteList(proxyRoutePolicyFilename, routeListBlacklist)
 		case tuiDashboardPublicIPRow, tuiDashboardIntranetRow:
 			return m.startNetworkCheck()
 		case tuiDashboardDelayRow:
@@ -98,6 +102,16 @@ func (m *tuiModel) selectCurrent() tea.Cmd {
 		m.pendingSSHView = nil
 		if !m.snapshot.SSHDashboardFocus && m.snapshot.SelectedSSH == tuiSSHCaptureRow {
 			return m.beginSSHCapture()
+		}
+		if !m.snapshot.SSHDashboardFocus {
+			switch tuiSSHRouteRowAt(m.snapshot.SelectedSSH, len(m.snapshot.SSHProfiles), m.snapshot.SSHRouteRow) {
+			case 1:
+				m.openRouteList(sshRoutePolicyFilename, routeListWhitelist)
+				return nil
+			case 2:
+				m.openRouteList(sshRoutePolicyFilename, routeListBlacklist)
+				return nil
+			}
 		}
 		index := m.snapshot.SelectedSSH
 		if m.snapshot.SSHDashboardFocus {

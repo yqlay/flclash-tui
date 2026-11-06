@@ -1072,10 +1072,11 @@ func TestTUISettingsRunningServiceUnlocksSystemProxy(t *testing.T) {
 		24,
 	)
 	plain := stripTUIANSI(output.String())
-	if !strings.Contains(plain, "Core          RUNNING · Enter to stop") {
+	collapsed := strings.Join(strings.Fields(plain), " ")
+	if !strings.Contains(collapsed, "Core RUNNING · Enter to stop") {
 		t.Fatalf("running Dashboard has no clear service state:\n%s", plain)
 	}
-	if !strings.Contains(plain, "System proxy  DISABLED · Enter to enable") {
+	if !strings.Contains(collapsed, "System proxy DISABLED · Enter to enable") {
 		t.Fatalf("running Dashboard has no clear system proxy state:\n%s", plain)
 	}
 	if strings.Contains(plain, "(starts Core)") {
@@ -1348,15 +1349,16 @@ func TestTUISeparatesSettingsAndMaintenance(t *testing.T) {
 	var output strings.Builder
 	drawTUITools(&output, snapshot, 100, 30)
 	plain := stripTUIANSI(output.String())
+	collapsed := strings.Join(strings.Fields(plain), " ")
 	for _, expected := range []string{
 		"Allow LAN",
 		"IPv6",
 		"Unified delay",
 		"TCP concurrent",
-		"Log level      info",
+		"Log level info",
 		"TUN scope",
 	} {
-		if !strings.Contains(plain, expected) {
+		if !strings.Contains(collapsed, expected) {
 			t.Fatalf("Settings does not contain %q:\n%s", expected, plain)
 		}
 	}

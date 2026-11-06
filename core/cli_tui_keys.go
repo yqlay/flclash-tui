@@ -658,12 +658,22 @@ func (m *tuiModel) moveSelection(delta int) tea.Cmd {
 			m.syncSSHDetailRowStatus()
 			break
 		} else {
-			listLen := len(m.snapshot.SSHProfiles) + 1
+			listLen := len(m.snapshot.SSHProfiles) + 3
 			position := wrapTUIIndex(m.snapshot.SelectedSSH+1, delta, listLen)
 			m.snapshot.SelectedSSH = position - 1
-			if m.snapshot.SelectedSSH == tuiSSHCaptureRow {
+			switch {
+			case m.snapshot.SelectedSSH == tuiSSHCaptureRow:
+				m.snapshot.SSHRouteRow = 0
 				m.snapshot.setStatus(newTUIMessage("ui.f4ae67d05d76"))
-			} else {
+			case m.snapshot.SelectedSSH >= len(m.snapshot.SSHProfiles):
+				m.snapshot.SSHRouteRow = m.snapshot.SelectedSSH - len(m.snapshot.SSHProfiles) + 1
+				if m.snapshot.SSHRouteRow == 1 {
+					m.snapshot.setStatus(newTUIMessage("route.ssh_whitelist_status"))
+				} else {
+					m.snapshot.setStatus(newTUIMessage("route.ssh_blacklist_status"))
+				}
+			default:
+				m.snapshot.SSHRouteRow = 0
 				m.snapshot.setStatus(newTUIMessage("ui.0c44df2190bd", m.selectedSSHName()))
 			}
 		}

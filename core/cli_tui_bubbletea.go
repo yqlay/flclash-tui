@@ -286,6 +286,7 @@ const (
 	tuiInputHistorySearch
 	tuiInputConnectionsSearch
 	tuiInputLogsSearch
+	tuiInputRouteEntry
 )
 
 var tuiTrafficModes = []string{
@@ -340,6 +341,11 @@ type tuiModel struct {
 	languageSelectionOpen    bool
 	languageSaving           bool
 	selectedLanguage         int
+	routeListOpen            bool
+	routeListStore           string
+	routeListName            string
+	routeListCursor          int
+	routeListEntries         []string
 	pageSaver                tuiPageSaver
 	persistedPage            tuiPage
 	pageSavePending          bool
@@ -1276,6 +1282,9 @@ func (m *tuiModel) update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.inputMode != tuiInputNone {
 			return m, m.handleInput(message)
+		}
+		if m.routeListOpen {
+			return m, m.handleRouteListKey(message)
 		}
 		if m.sshProxyPortEditing {
 			return m, m.handleSSHProxyPortInput(message)

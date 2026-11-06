@@ -134,6 +134,12 @@ func safeTUISnapshotForRender(source tuiSnapshot) tuiSnapshot {
 	}
 	snapshot.SelectionTitle = safeCLITerminalLine(snapshot.SelectionTitle)
 	snapshot.SelectionHint = safeCLITerminalLine(snapshot.SelectionHint)
+	snapshot.RouteListTitle = safeCLITerminalLine(snapshot.RouteListTitle)
+	snapshot.RouteListNote = safeCLITerminalLine(snapshot.RouteListNote)
+	snapshot.RouteListEntries = append([]string(nil), source.RouteListEntries...)
+	for index := range snapshot.RouteListEntries {
+		snapshot.RouteListEntries[index] = safeCLITerminalLine(snapshot.RouteListEntries[index])
+	}
 	snapshot.InputTitle, snapshot.InputHint = safeCLITerminalLine(snapshot.InputTitle), safeCLITerminalLine(snapshot.InputHint)
 	snapshot.InputValue = safeCLITerminalLine(snapshot.InputValue)
 	snapshot.SSHForm.FieldInput = safeCLITerminalLine(snapshot.SSHForm.FieldInput)

@@ -41,6 +41,7 @@ func settleRowEnter(model *tuiModel) {
 	model.snapshot.DashboardSpeed.Testing = false
 	model.languageSelectionOpen = false
 	model.modeSelectionOpen = false
+	model.routeListOpen = false
 	model.inputMode = tuiInputNone
 	model.sshCaptureOpen = false
 	model.sshProxyPortEditing = false
@@ -55,6 +56,7 @@ func finishRowEnter(model *tuiModel) {
 		model.inputMode != tuiInputNone ||
 		model.languageSelectionOpen ||
 		model.modeSelectionOpen ||
+		model.routeListOpen ||
 		model.sshCaptureOpen ||
 		model.snapshot.ConnectionsDetailOpen ||
 		model.snapshot.HistoryDetailOpen ||
@@ -139,6 +141,14 @@ func TestTUIRowEnterWalksDashboard(t *testing.T) {
 		case tuiDashboardMixedPortRow:
 			if model.inputMode != tuiInputMixedPort || model.snapshot.Network.Loading {
 				t.Fatalf("mixed port enter mode=%d", model.inputMode)
+			}
+		case tuiDashboardProxyWhitelistRow:
+			if command != nil || !model.routeListOpen || model.routeListStore != proxyRoutePolicyFilename || model.routeListName != routeListWhitelist {
+				t.Fatalf("whitelist enter open=%t store=%s list=%s", model.routeListOpen, model.routeListStore, model.routeListName)
+			}
+		case tuiDashboardDirectBlacklistRow:
+			if command != nil || !model.routeListOpen || model.routeListStore != proxyRoutePolicyFilename || model.routeListName != routeListBlacklist {
+				t.Fatalf("blacklist enter open=%t store=%s list=%s", model.routeListOpen, model.routeListStore, model.routeListName)
 			}
 		case tuiDashboardPublicIPRow, tuiDashboardIntranetRow:
 			if command == nil || !model.snapshot.Network.Loading || !model.networkCheckActive || model.snapshot.DashboardDelay.Testing || model.snapshot.DashboardSpeed.Testing || strings.Contains(model.snapshot.Status, "delay test") || strings.Contains(model.snapshot.Status, "speed test") {
@@ -249,7 +259,7 @@ func TestTUIRowEnterWalksSSHList(t *testing.T) {
 		{Name: "alpha"},
 		{Name: "beta"},
 	}
-	want := []int{tuiSSHCaptureRow, 0, 1}
+	want := []int{tuiSSHCaptureRow, 0, 1, 2, 3}
 	for step, index := range want {
 		if model.snapshot.SelectedSSH != index {
 			t.Fatalf("SSH list step %d = %d, want %d", step, model.snapshot.SelectedSSH, index)

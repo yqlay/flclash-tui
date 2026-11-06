@@ -1,3 +1,12 @@
+## FlClash TUI v0.5.42
+
+- Add separate Dashboard and SSH whitelist and blacklist lists. Dashboard entries live in `.flclash-route-policy.json` and are compiled into the managed config. SSH entries live in `.flclash-ssh-route.json` and stay on this machine.
+- Dashboard whitelist traffic uses the selected proxy. Dashboard blacklist traffic stays DIRECT. Silent mode applies the blacklist only on the private `flc` listener. Rule mode emits both lists. Global mode emits only the blacklist. Direct mode emits only the whitelist.
+- SSH blacklist destinations dial DIRECT from this machine. The SSH whitelist is stored and shown, and does not change the dial. `flc ssh -d` does not read the SSH list.
+- Edit either list in the TUI or with `flclash route` and `flclash ssh route`. Listing does not reload Backend. Adding or deleting a Dashboard entry reloads a running Backend unless the command names an explicit directory.
+- Treat an IPv4-mapped prefix of /96 or longer as the same entry as the matching IPv4 CIDR. Page Up and Page Down move an open list by the visible window, including one row on a tiny terminal.
+- Backend IPC remains v7. Restart Backend after upgrading, and reconnect existing SSH relays to load the route checks.
+
 ## FlClash TUI v0.5.41
 
 - Publish AMD64/ARM64 Debian, RPM, Arch Linux, Alpine APK, OpenWrt IPK, and portable packages from one nFPM configuration. Add systemd helper integration for RPM/Arch and OpenRC integration for Alpine; IPK and portable packages do not install a privileged helper.

@@ -163,6 +163,13 @@ func (m *tuiModel) View() string {
 	snapshot := m.snapshot
 	snapshot.LanguageSelectionOpen = m.languageSelectionOpen
 	snapshot.SelectedLanguage = m.selectedLanguage
+	if m.routeListOpen {
+		snapshot.RouteListOpen = true
+		snapshot.RouteListTitle = m.routeListTitle()
+		snapshot.RouteListNote = m.routeListNote()
+		snapshot.RouteListEntries = append([]string(nil), m.routeListEntries...)
+		snapshot.RouteListCursor = m.routeListCursor
+	}
 	snapshot.DangerConfirmOpen = m.dangerConfirmOpen
 	snapshot.DangerConfirmTitle = m.dangerConfirmTitle
 	snapshot.DangerConfirmMessage = m.dangerConfirmMessage
@@ -321,6 +328,8 @@ func (m *tuiModel) inputPresentation() (string, string) {
 		return tr("ui.902ce24cde98"), tr("ui.0adcb8727d46")
 	case tuiInputLogsSearch:
 		return tr("ui.a12157d01bea"), tr("ui.20a730d8e192")
+	case tuiInputRouteEntry:
+		return tr("route.add_title"), tr("route.add_hint")
 	default:
 		return tr("ui.36ecb4f86691"), ""
 	}

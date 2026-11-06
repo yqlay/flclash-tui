@@ -104,6 +104,8 @@ const (
 	tuiDashboardModeRow
 	tuiDashboardFLCOutboundRow
 	tuiDashboardMixedPortRow
+	tuiDashboardProxyWhitelistRow
+	tuiDashboardDirectBlacklistRow
 	tuiDashboardPublicIPRow
 	tuiDashboardIntranetRow
 	tuiDashboardDelayRow
@@ -327,6 +329,16 @@ type tuiSnapshot struct {
 	SelectedNode            int
 	SelectedRow             int
 	SelectedSSH             int
+	SSHRouteRow             int
+	ProxyWhitelistCount     int
+	ProxyBlacklistCount     int
+	SSHWhitelistCount       int
+	SSHBlacklistCount       int
+	RouteListOpen           bool
+	RouteListTitle          string
+	RouteListNote           string
+	RouteListEntries        []string
+	RouteListCursor         int
 	SelectedProvider        int
 	SelectedConnection      int
 	SelectedRequest         int

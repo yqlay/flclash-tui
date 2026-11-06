@@ -34,15 +34,16 @@ const (
 )
 
 type cliSSHRelayStats struct {
-	PID          int       `json:"pid"`
-	StartedAt    time.Time `json:"started_at"`
-	ListenPort   int       `json:"listen_port"`
-	UpstreamPort int       `json:"upstream_port"`
-	Upload       int64     `json:"upload"`
-	Download     int64     `json:"download"`
-	Connections  int64     `json:"connections"`
-	OK           bool      `json:"ok"`
-	Error        string    `json:"error,omitempty"`
+	PID              int       `json:"pid"`
+	StartedAt        time.Time `json:"started_at"`
+	ListenPort       int       `json:"listen_port"`
+	DirectListenPort int       `json:"direct_listen_port,omitempty"`
+	UpstreamPort     int       `json:"upstream_port"`
+	Upload           int64     `json:"upload"`
+	Download         int64     `json:"download"`
+	Connections      int64     `json:"connections"`
+	OK               bool      `json:"ok"`
+	Error            string    `json:"error,omitempty"`
 }
 
 type cliSSHRelayRequest struct {
@@ -81,22 +82,26 @@ type cliSSHRelayFlowState struct {
 }
 
 type cliSSHRelay struct {
-	listenPort   int
-	upstreamPort int
-	controlPath  string
-	profile      string
-	startedAt    time.Time
-	upload       atomic.Int64
-	download     atomic.Int64
-	connections  atomic.Int64
-	flowSeq      atomic.Uint64
-	shutdown     chan struct{}
-	shutdownOnce sync.Once
-	listener     net.Listener
-	control      net.Listener
-	flowsMu      sync.Mutex
-	active       map[string]*cliSSHRelayFlowState
-	closed       []cliSSHRelayFlow
+	listenPort       int
+	directListenPort int
+	upstreamPort     int
+	controlPath      string
+	profile          string
+	policyHome       string
+	startedAt        time.Time
+	directListener   net.Listener
+	dialUpstream     func(context.Context, int, string) (net.Conn, error)
+	upload           atomic.Int64
+	download         atomic.Int64
+	connections      atomic.Int64
+	flowSeq          atomic.Uint64
+	shutdown         chan struct{}
+	shutdownOnce     sync.Once
+	listener         net.Listener
+	control          net.Listener
+	flowsMu          sync.Mutex
+	active           map[string]*cliSSHRelayFlowState
+	closed           []cliSSHRelayFlow
 }
 
 type cliSSHCountingWriter struct {
@@ -124,6 +129,7 @@ func runCLISSHRelayCommand(args []string) error {
 	upstreamPort := fs.Int("upstream-port", 0, "OpenSSH SOCKS5 port")
 	controlPath := fs.String("control", "", "private control socket")
 	profile := fs.String("profile", "", "SSH profile name")
+	policyHome := fs.String("policy-home", "", "directory containing the SSH route list")
 	guardState := fs.String("guard-state", "", "pending SSH ownership record")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -138,11 +144,16 @@ func runCLISSHRelayCommand(args []string) error {
 	if strings.TrimSpace(*controlPath) == "" || !filepath.IsAbs(*controlPath) {
 		return errors.New("invalid SSH relay control socket")
 	}
+	home := filepath.Clean(strings.TrimSpace(*policyHome))
+	if !filepath.IsAbs(home) {
+		home = ""
+	}
 	relay := &cliSSHRelay{
 		listenPort:   *listenPort,
 		upstreamPort: *upstreamPort,
 		controlPath:  filepath.Clean(*controlPath),
 		profile:      strings.TrimSpace(*profile),
+		policyHome:   home,
 		startedAt:    time.Now(),
 		shutdown:     make(chan struct{}),
 		active:       map[string]*cliSSHRelayFlowState{},
@@ -158,16 +169,29 @@ func (r *cliSSHRelay) run() error {
 	if err != nil {
 		return err
 	}
+	// flc ssh and flc ssh -d share one relay process. The second listener has
+	// route policy off so -d does not apply Skip SSH.
+	directListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		_ = publicListener.Close()
+		return err
+	}
+	if tcp, ok := directListener.Addr().(*net.TCPAddr); ok {
+		r.directListenPort = tcp.Port
+	}
+	r.directListener = directListener
 	r.listener = publicListener
 	_ = os.Remove(r.controlPath)
 	controlListener, err := net.Listen("unix", r.controlPath)
 	if err != nil {
 		_ = publicListener.Close()
+		_ = directListener.Close()
 		return err
 	}
 	r.control = controlListener
 	defer os.Remove(r.controlPath)
 	defer publicListener.Close()
+	defer directListener.Close()
 	defer controlListener.Close()
 	if err := os.Chmod(r.controlPath, 0o600); err != nil {
 		return err
@@ -176,15 +200,28 @@ func (r *cliSSHRelay) run() error {
 	signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(interrupt)
 	go r.acceptControl()
-	go func() {
+	errCh := make(chan error, 2)
+	go func() { errCh <- r.acceptLoop(publicListener, true) }()
+	go func() { errCh <- r.acceptLoop(directListener, false) }()
+	for {
 		select {
 		case <-interrupt:
 			r.stop()
+			return nil
 		case <-r.shutdown:
+			return nil
+		case acceptErr := <-errCh:
+			if acceptErr != nil {
+				r.stop()
+				return acceptErr
+			}
 		}
-	}()
+	}
+}
+
+func (r *cliSSHRelay) acceptLoop(listener net.Listener, applyRoutePolicy bool) error {
 	for {
-		connection, acceptErr := publicListener.Accept()
+		connection, acceptErr := listener.Accept()
 		if acceptErr != nil {
 			select {
 			case <-r.shutdown:
@@ -193,7 +230,7 @@ func (r *cliSSHRelay) run() error {
 				return acceptErr
 			}
 		}
-		go r.serveAccepted(connection)
+		go r.serveAccepted(connection, applyRoutePolicy)
 	}
 }
 
@@ -203,6 +240,9 @@ func (r *cliSSHRelay) stop() {
 		_ = r.closeFlows("all")
 		if r.listener != nil {
 			_ = r.listener.Close()
+		}
+		if r.directListener != nil {
+			_ = r.directListener.Close()
 		}
 		if r.control != nil {
 			_ = r.control.Close()
@@ -257,14 +297,15 @@ func (r *cliSSHRelay) serveControl(connection net.Conn) {
 
 func (r *cliSSHRelay) stats() cliSSHRelayStats {
 	return cliSSHRelayStats{
-		PID:          os.Getpid(),
-		StartedAt:    r.startedAt,
-		ListenPort:   r.listenPort,
-		UpstreamPort: r.upstreamPort,
-		Upload:       r.upload.Load(),
-		Download:     r.download.Load(),
-		Connections:  r.connections.Load(),
-		OK:           true,
+		PID:              os.Getpid(),
+		StartedAt:        r.startedAt,
+		ListenPort:       r.listenPort,
+		DirectListenPort: r.directListenPort,
+		UpstreamPort:     r.upstreamPort,
+		Upload:           r.upload.Load(),
+		Download:         r.download.Load(),
+		Connections:      r.connections.Load(),
+		OK:               true,
 	}
 }
 
@@ -277,7 +318,7 @@ func (c *cliRelayBufferedConn) Read(data []byte) (int, error) {
 	return c.reader.Read(data)
 }
 
-func (r *cliSSHRelay) serveAccepted(raw net.Conn) {
+func (r *cliSSHRelay) serveAccepted(raw net.Conn, applyRoutePolicy bool) {
 	defer raw.Close()
 	_ = raw.SetDeadline(time.Now().Add(15 * time.Second))
 	client := &cliRelayBufferedConn{Conn: raw, reader: bufio.NewReader(raw)}
@@ -286,20 +327,41 @@ func (r *cliSSHRelay) serveAccepted(raw net.Conn) {
 		return
 	}
 	if peek[0] == 5 {
-		r.serveSOCKS(client)
+		r.serveSOCKS(client, applyRoutePolicy)
 		return
 	}
-	r.serveHTTP(client)
+	r.serveHTTP(client, applyRoutePolicy)
 }
 
-func (r *cliSSHRelay) serveSOCKS(client *cliRelayBufferedConn) {
+func (r *cliSSHRelay) dialRelayTarget(ctx context.Context, target string, applyRoutePolicy bool) (net.Conn, error) {
+	if applyRoutePolicy {
+		skip, err := sshRouteSkipsProxy(r.policyHome, target)
+		if err != nil {
+			return nil, err
+		}
+		if skip {
+			return dialRouteDirect(ctx, "tcp", target)
+		}
+	}
+	if r.dialUpstream != nil {
+		return r.dialUpstream(ctx, r.upstreamPort, target)
+	}
+	return dialCLISSHRelayUpstream(ctx, r.upstreamPort, target)
+}
+
+func dialRouteDirect(ctx context.Context, network, address string) (net.Conn, error) {
+	var dialer net.Dialer
+	return dialer.DialContext(ctx, network, address)
+}
+
+func (r *cliSSHRelay) serveSOCKS(client *cliRelayBufferedConn, applyRoutePolicy bool) {
 	target, err := readCLIInboundSOCKS5(client)
 	if err != nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	upstream, err := dialCLISSHRelayUpstream(ctx, r.upstreamPort, target)
+	upstream, err := r.dialRelayTarget(ctx, target, applyRoutePolicy)
 	if err != nil {
 		_ = writeCLISOCKS5Reply(client, 0x05)
 		return
@@ -311,7 +373,7 @@ func (r *cliSSHRelay) serveSOCKS(client *cliRelayBufferedConn) {
 	r.relayTunnel(client, target, upstream)
 }
 
-func (r *cliSSHRelay) serveHTTP(client *cliRelayBufferedConn) {
+func (r *cliSSHRelay) serveHTTP(client *cliRelayBufferedConn, applyRoutePolicy bool) {
 	request, err := http.ReadRequest(client.reader)
 	if err != nil {
 		return
@@ -325,7 +387,7 @@ func (r *cliSSHRelay) serveHTTP(client *cliRelayBufferedConn) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	upstream, err := dialCLISSHRelayUpstream(ctx, r.upstreamPort, target)
+	upstream, err := r.dialRelayTarget(ctx, target, applyRoutePolicy)
 	if err != nil {
 		writeCLIHTTPProxyStatus(client, http.StatusBadGateway, "Bad Gateway")
 		_ = client.Close()
@@ -713,6 +775,9 @@ func startCLISSHRelay(state *cliSSHTunnelState) error {
 	if name := strings.TrimSpace(state.Name); name != "" {
 		args = append(args, "--profile", name)
 	}
+	if paths, pathErr := resolvePaths("", ""); pathErr == nil && filepath.IsAbs(paths.HomeDir) {
+		args = append(args, "--policy-home", paths.HomeDir)
+	}
 	command := exec.Command(executable, args...)
 	command.Stdin = nil
 	command.Stdout = nil
@@ -736,6 +801,13 @@ func startCLISSHRelay(state *cliSSHTunnelState) error {
 		stats, statusErr := queryCLISSHRelay(*state, "status")
 		if statusErr == nil && stats.OK && stats.PID == state.RelayPID &&
 			stats.ListenPort == state.Port && stats.UpstreamPort == state.UpstreamPort {
+			if stats.DirectListenPort > 0 {
+				state.DirectPort = stats.DirectListenPort
+				if err := saveCLISSHTunnelState(*state); err != nil {
+					_ = stopCLISSHRelay(*state)
+					return err
+				}
+			}
 			return nil
 		}
 		_ = waitCLISSHOperation(ctx, 25*time.Millisecond)

@@ -338,6 +338,8 @@ func (m *tuiModel) handleInput(message tea.KeyMsg) tea.Cmd {
 			limit = 5
 		} else if m.inputMode == tuiInputProfileName {
 			limit = 128
+		} else if m.inputMode == tuiInputRouteEntry {
+			limit = 512
 		}
 		if m.inputSelectAll {
 			m.clearInputSelection()
@@ -382,6 +384,8 @@ func (m *tuiModel) submitInput() tea.Cmd {
 	}
 	m.resetInput()
 	switch mode {
+	case tuiInputRouteEntry:
+		return m.commitRouteEntry(value)
 	case tuiInputHistorySearch:
 		m.snapshot.HistoryQuery = value
 		m.snapshot.SelectedRequest = firstTUIRequestMatch(m.snapshot)

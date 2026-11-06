@@ -312,6 +312,7 @@ func cloneTUISnapshot(source tuiSnapshot) tuiSnapshot {
 			cloned.Profiles[index].SubscriptionInfo = &copied
 		}
 	}
+	cloned.RouteListEntries = append([]string(nil), source.RouteListEntries...)
 	cloned.SSHProfiles = append([]tuiSSHProfile(nil), source.SSHProfiles...)
 	for index := range cloned.SSHProfiles {
 		cloned.SSHProfiles[index].Options = append([]string(nil), source.SSHProfiles[index].Options...)
@@ -436,8 +437,9 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 		selectedProfilePath = current.Profiles[current.SelectedRow].Path
 	}
 	selectedSSHName := ""
+	oldSSHCount := len(current.SSHProfiles)
 	captureSelected := current.SelectedSSH == tuiSSHCaptureRow
-	if current.SelectedSSH >= 0 && current.SelectedSSH < len(current.SSHProfiles) {
+	if current.SelectedSSH >= 0 && current.SelectedSSH < oldSSHCount {
 		selectedSSHName = current.SSHProfiles[current.SelectedSSH].Name
 	}
 
@@ -597,15 +599,26 @@ func preserveTUIInteraction(current, updated tuiSnapshot) tuiSnapshot {
 	if !importSelected && len(updated.Profiles) == 0 {
 		updated.SelectedRow = tuiProfileImportSubscriptionRow
 	}
-	if captureSelected || len(updated.SSHProfiles) == 0 {
-		updated.SelectedSSH = tuiSSHCaptureRow
+	routeRow := tuiSSHRouteRowAt(current.SelectedSSH, oldSSHCount, current.SSHRouteRow)
+	if routeRow != 0 {
+		if routeRow == 1 {
+			updated.SelectedSSH = len(updated.SSHProfiles)
+		} else {
+			updated.SelectedSSH = len(updated.SSHProfiles) + 1
+		}
+		updated.SSHRouteRow = routeRow
 	} else {
-		updated.SelectedSSH = findTUISSHProfile(updated.SSHProfiles, selectedSSHName)
-		if selectedSSHName == "" {
-			updated.SelectedSSH = clampTUISelection(
-				current.SelectedSSH,
-				len(updated.SSHProfiles),
-			)
+		updated.SSHRouteRow = 0
+		if captureSelected || len(updated.SSHProfiles) == 0 {
+			updated.SelectedSSH = tuiSSHCaptureRow
+		} else {
+			updated.SelectedSSH = findTUISSHProfile(updated.SSHProfiles, selectedSSHName)
+			if selectedSSHName == "" {
+				updated.SelectedSSH = clampTUISelection(
+					current.SelectedSSH,
+					len(updated.SSHProfiles),
+				)
+			}
 		}
 	}
 	if updated.SSHDetailName != "" {

@@ -316,14 +316,16 @@ func TestTUICompactDashboardCanScrollEverySection(t *testing.T) {
 
 	first := stripTUIANSI(model.View())
 	if !strings.Contains(first, "Core") ||
-		!strings.Contains(first, "Public IP") ||
+		!strings.Contains(first, "Whitelist") ||
+		strings.Contains(first, "Public IP") ||
 		strings.Contains(first, "TUI frontends") ||
 		strings.Contains(first, "Live traffic") {
 		t.Fatalf("first compact viewport is wrong:\n%s", first)
 	}
 	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	network := stripTUIANSI(model.View())
-	if !strings.Contains(network, "Public IP") ||
+	if !strings.Contains(network, "Blacklist") ||
+		!strings.Contains(network, "Public IP") ||
 		!strings.Contains(network, "Rule route") {
 		t.Fatalf("PageDown did not reveal network section:\n%s", network)
 	}
@@ -752,6 +754,14 @@ func TestTUIDashboardRouteTestsAreSelectable(t *testing.T) {
 	model.snapshot.FocusSidebar = false
 	model.snapshot.SelectedDashboard = tuiDashboardMixedPortRow
 
+	model.moveSelection(1)
+	if model.snapshot.SelectedDashboard != tuiDashboardProxyWhitelistRow {
+		t.Fatalf("Dashboard down selected %d, want proxy whitelist", model.snapshot.SelectedDashboard)
+	}
+	model.moveSelection(1)
+	if model.snapshot.SelectedDashboard != tuiDashboardDirectBlacklistRow {
+		t.Fatalf("Dashboard down selected %d, want direct blacklist", model.snapshot.SelectedDashboard)
+	}
 	model.moveSelection(1)
 	if model.snapshot.SelectedDashboard != tuiDashboardPublicIPRow {
 		t.Fatalf("Dashboard down selected %d, want public IP", model.snapshot.SelectedDashboard)

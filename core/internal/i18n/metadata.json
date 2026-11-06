@@ -1598,5 +1598,65 @@
     "level": "INFO",
     "kind": "normal",
     "progress": false
+  },
+  "route.added": {
+    "level": "SUCCESS",
+    "kind": "normal",
+    "progress": false
+  },
+  "route.removed": {
+    "level": "SUCCESS",
+    "kind": "normal",
+    "progress": false
+  },
+  "route.invalid": {
+    "level": "ERROR",
+    "kind": "normal",
+    "progress": false
+  },
+  "route.saved_reload_failed": {
+    "level": "ERROR",
+    "kind": "normal",
+    "progress": false
+  },
+  "route.duplicate": {
+    "level": "WARNING",
+    "kind": "normal",
+    "progress": false
+  },
+  "route.overlap": {
+    "level": "WARNING",
+    "kind": "normal",
+    "progress": false
+  },
+  "route.full": {
+    "level": "WARNING",
+    "kind": "normal",
+    "progress": false
+  },
+  "route.missing": {
+    "level": "WARNING",
+    "kind": "normal",
+    "progress": false
+  },
+  "route.editor_hint": {
+    "level": "INFO",
+    "kind": "normal",
+    "progress": false
+  },
+  "route.empty": {
+    "level": "INFO",
+    "kind": "normal",
+    "progress": false
+  },
+  "route.ssh_whitelist_status": {
+    "level": "INFO",
+    "kind": "normal",
+    "progress": false
+  },
+  "route.ssh_blacklist_status": {
+    "level": "INFO",
+    "kind": "normal",
+    "progress": false
   }
 }

@@ -17,6 +17,8 @@ func tuiDashboardControlFields(snapshot tuiSnapshot, language ...string) []tuiFi
 		tuiTemplateField(tr("ui.9a0dbc8998df"), snapshot.Settings.Mode),
 		tuiTemplateField(tr("ui.1b54c40c04fc"), tuiFLCOutboundLabel(snapshot, language...)),
 		tuiTemplateField(tr("ui.4e7d696cd5d1"), tuiProxyPortLabel(snapshot, language...)),
+		tuiTemplateField(tr("route.proxy_whitelist"), strconv.Itoa(snapshot.ProxyWhitelistCount)),
+		tuiTemplateField(tr("route.proxy_blacklist"), strconv.Itoa(snapshot.ProxyBlacklistCount)),
 	}
 	applyTUIDashboardFieldSelection(snapshot, fields, tuiDashboardServiceRow)
 	return fields
