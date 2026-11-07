@@ -264,7 +264,7 @@ func TestAudit3RenderingSanitizesOpaqueTextAndKeepsTrustedChartANSI(t *testing.T
 			if snapshot.Groups[0].Name != unsafe || snapshot.Connections[0].ID != unsafe {
 				t.Fatal("rendering changed backend identifiers")
 			}
-			if page == tuiPageDashboard && (!strings.Contains(frame, tuiTrafficChartColor+"↑ ") || !strings.Contains(frame, tuiTrafficChartFill)) {
+			if page == tuiPageDashboard && !strings.Contains(frame, tuiTrafficChartUpload+"↑ ") {
 				t.Fatal("safe opaque text removed the trusted traffic chart")
 			}
 		}

@@ -997,10 +997,10 @@ func tuiTrafficTitle(
 
 func formatTUITrafficLegend(traffic trafficSnapshot, peak int64, language ...string) string {
 	tr := tuiTranslator(language...)
-	return fmt.Sprintf(tr("ui.41278a3a38a0"), tuiTrafficChartColor,
+	return fmt.Sprintf(tr("ui.41278a3a38a0"), tuiTrafficChartUpload,
 		formatBytes(traffic.Up),
 		tuiReset,
-		tuiTrafficChartColor,
+		tuiTrafficChartDownload,
 		formatBytes(traffic.Down),
 		tuiReset,
 		tuiDim,

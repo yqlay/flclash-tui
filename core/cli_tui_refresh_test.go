@@ -1401,40 +1401,69 @@ func TestTUITrafficHistoryKeepsLatestThirtySamples(t *testing.T) {
 }
 
 func TestTUITrafficChartDrawsCombinedArea(t *testing.T) {
-	history := make([]trafficSnapshot, tuiTrafficHistoryLimit)
-	for index := range history {
-		history[index] = trafficSnapshot{
-			Up:   int64(index * 1024),
-			Down: int64((tuiTrafficHistoryLimit - index) * 2048),
+	crossing := make([]trafficSnapshot, 12)
+	crossing[2] = trafficSnapshot{Up: 1000}
+	crossing[3] = trafficSnapshot{Up: 8000}
+	crossing[4] = trafficSnapshot{Up: 1200}
+	crossing[8] = trafficSnapshot{Down: 1500}
+	crossing[9] = trafficSnapshot{Down: 9000}
+	crossing[10] = trafficSnapshot{Down: 1500}
+	crossingRendered := strings.Join(buildTUITrafficChart(crossing, 32, 8).lines, "\n")
+	for _, color := range []string{tuiTrafficChartUpload, tuiTrafficChartDownload, tuiTrafficChartOverlap} {
+		if !strings.Contains(crossingRendered, color) {
+			t.Fatalf("crossing chart missing %q:\n%s", color, crossingRendered)
 		}
 	}
-	chart := buildTUITrafficChart(history, 32, 8)
-	if chart.peak != int64(tuiTrafficHistoryLimit*2048) {
-		t.Fatalf("traffic chart peak = %d", chart.peak)
+
+	uploadRendered := strings.Join(buildTUITrafficChart([]trafficSnapshot{
+		{Up: 100},
+		{Up: 6000},
+		{Up: 200},
+	}, 32, 8).lines, "\n")
+	if !strings.Contains(uploadRendered, tuiTrafficChartUpload) || strings.Contains(uploadRendered, tuiTrafficChartDownload) {
+		t.Fatalf("upload-only chart colors: %q", uploadRendered)
 	}
-	if len(chart.lines) != 8 {
-		t.Fatalf("traffic chart line count = %d", len(chart.lines))
-	}
-	rendered := strings.Join(chart.lines, "\n")
-	if strings.Contains(rendered, "\x1b[38;5;33m") || strings.Contains(rendered, tuiGreen) || strings.Contains(rendered, "·") {
-		t.Fatalf("traffic chart still draws two series or a dotted baseline: %q", rendered)
-	}
-	if !strings.Contains(rendered, tuiTrafficChartColor) || !strings.Contains(rendered, tuiTrafficChartFill) {
-		t.Fatalf("traffic chart is missing the stroke or the faded fill: %q", rendered)
-	}
-	if countTUIBrailleDots(chart.lines[0]) == 0 {
-		t.Fatal("combined peak does not reach the top of the chart")
-	}
-	if upper, lower := countTUIBrailleDots(chart.lines[5]), countTUIBrailleDots(chart.lines[7]); upper <= lower {
-		t.Fatalf("fill does not fade downward: upper %d lower %d", upper, lower)
+	downloadRendered := strings.Join(buildTUITrafficChart([]trafficSnapshot{
+		{Down: 100},
+		{Down: 6000},
+		{Down: 200},
+	}, 32, 8).lines, "\n")
+	if !strings.Contains(downloadRendered, tuiTrafficChartDownload) || strings.Contains(downloadRendered, tuiTrafficChartUpload) {
+		t.Fatalf("download-only chart colors: %q", downloadRendered)
 	}
 
-	empty := buildTUITrafficChart(nil, 12, 8)
-	if empty.peak != 0 || countTUIBrailleDots(empty.lines[0]) != 0 || countTUIBrailleDots(empty.lines[4]) != 0 {
-		t.Fatalf("empty chart is not flat below the 70%% line: peak %d lines %#v", empty.peak, empty.lines)
+	const peakValue = int64(8192)
+	equal := buildTUITrafficChart([]trafficSnapshot{
+		{Up: 1, Down: 1},
+		{Up: peakValue, Down: peakValue},
+	}, 32, 8)
+	if equal.peak != peakValue {
+		t.Fatalf("shared peak = %d, want %d", equal.peak, peakValue)
 	}
-	if countTUIBrailleDots(empty.lines[6]) == 0 || countTUIBrailleDots(empty.lines[7]) == 0 {
-		t.Fatalf("empty chart has no baseline fill: %#v", empty.lines)
+	if countTUIBrailleDots(equal.lines[0]) == 0 {
+		t.Fatal("last-sample maximum does not reach the top row")
+	}
+
+	interior := buildTUITrafficChart([]trafficSnapshot{
+		{},
+		{Up: 7000},
+		{},
+	}, 32, 8)
+	if countTUIBrailleDots(interior.lines[0]) != 0 {
+		t.Fatal("interior control reached the top row")
+	}
+	if !strings.Contains(strings.Join(interior.lines[1:], "\n"), tuiTrafficChartUpload) {
+		t.Fatal("interior series color missing below the top row")
+	}
+
+	empty := buildTUITrafficChart(nil, 32, 8)
+	for row := 0; row <= 4; row++ {
+		if countTUIBrailleDots(empty.lines[row]) != 0 {
+			t.Fatalf("empty chart row %d has dots: %#v", row, empty.lines)
+		}
+	}
+	if countTUIBrailleDots(empty.lines[5]) == 0 {
+		t.Fatalf("empty chart baseline is not on row 5: %#v", empty.lines)
 	}
 }
 
@@ -1458,10 +1487,10 @@ func TestTUITrafficLegendMatchesSeriesColorsAndResetsBorder(t *testing.T) {
 	legend := formatTUITrafficLegend(traffic, 4096)
 	if !strings.Contains(
 		legend,
-		tuiTrafficChartColor+"↑ 1.0 KB/s"+tuiReset,
+		tuiTrafficChartUpload+"↑ 1.0 KB/s"+tuiReset,
 	) || !strings.Contains(
 		legend,
-		tuiTrafficChartColor+"↓ 2.0 KB/s"+tuiReset,
+		tuiTrafficChartDownload+"↓ 2.0 KB/s"+tuiReset,
 	) {
 		t.Fatalf("traffic legend does not match series colors: %q", legend)
 	}
@@ -1471,10 +1500,10 @@ func TestTUITrafficLegendMatchesSeriesColorsAndResetsBorder(t *testing.T) {
 	)
 	if !strings.Contains(
 		example,
-		tuiTrafficChartColor+"↑ 1021.0 B/s"+tuiReset,
+		tuiTrafficChartUpload+"↑ 1021.0 B/s"+tuiReset,
 	) || !strings.Contains(
 		example,
-		tuiTrafficChartColor+"↓ 18.0 B/s"+tuiReset,
+		tuiTrafficChartDownload+"↓ 18.0 B/s"+tuiReset,
 	) {
 		t.Fatalf("live traffic values do not match chart colors: %q", example)
 	}
@@ -1703,10 +1732,43 @@ func TestTUIDashboardRendersAdaptiveLiveTrafficChart(t *testing.T) {
 			t.Fatalf("Dashboard traffic chart does not contain %q:\n%s", expected, plain)
 		}
 	}
-	if !strings.Contains(output, tuiTrafficChartColor+"↑ ") ||
-		!strings.Contains(output, tuiTrafficChartColor+"↓ ") ||
-		!strings.Contains(output, tuiTrafficChartFill) {
-		t.Fatalf("Dashboard traffic legend or area chart is missing: %q", output)
+	if !strings.Contains(output, tuiTrafficChartUpload+"↑ ") ||
+		!strings.Contains(output, tuiTrafficChartDownload+"↓ ") {
+		t.Fatalf("Dashboard traffic legend is missing the series colors: %q", output)
+	}
+}
+
+func TestTUIDashboardRendersAdaptiveSSHTrafficColors(t *testing.T) {
+	history := make([]trafficSnapshot, tuiTrafficHistoryLimit)
+	for index := range history {
+		history[index] = trafficSnapshot{
+			Up:   int64((index + 1) * 1024),
+			Down: int64((tuiTrafficHistoryLimit - index) * 2048),
+		}
+	}
+	snapshot := tuiSnapshot{
+		Page:              tuiPageSSH,
+		Language:          "en",
+		FocusSidebar:      false,
+		SSHDashboardFocus: true,
+		SSHDetailName:     "split-series",
+		SSHProfiles: []tuiSSHProfile{{
+			Name: "split-series", Connected: true, Ready: true, SocksPort: 1080,
+		}},
+		SSHTraffic:        history[len(history)-1],
+		SSHTrafficHistory: history,
+	}
+	output := renderTUIAtSize(
+		snapshot,
+		cliPaths{},
+		"unix:///tmp/flclash-chart.sock",
+		true,
+		true,
+		120,
+		40,
+	)
+	if !strings.Contains(output, tuiTrafficChartUpload) || !strings.Contains(output, tuiTrafficChartDownload) {
+		t.Fatalf("SSH speed chart does not draw upload and download: %q", output)
 	}
 }
 

@@ -1,3 +1,8 @@
+## FlClash TUI v1.0.1
+
+- Draw the Dashboard live-traffic chart and the SSH speed chart as two quadratic-Bézier series on one scale. Upload is blue, download is green, and a braille cell that contains both is cyan. The curves are strokes only: samples are not added together, and there is no filled area under the line.
+- Backend IPC remains v7. Quit the TUI and start `flclash` again to use this build.
+
 ## FlClash TUI v1.0.0
 
 - Draw the Dashboard and SSH speed charts as one combined upload and download area. The curve is a quadratic Bézier, the peak is the top of the plot, and the area fades below the line.
