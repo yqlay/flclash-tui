@@ -20,7 +20,7 @@ import (
 
 func TestMain(m *testing.M) {
 	if Version == "" {
-		Version = "1.0.1"
+		Version = "1.0.2"
 	}
 	os.Exit(m.Run())
 }

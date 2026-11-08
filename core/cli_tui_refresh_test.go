@@ -1401,13 +1401,11 @@ func TestTUITrafficHistoryKeepsLatestThirtySamples(t *testing.T) {
 }
 
 func TestTUITrafficChartDrawsCombinedArea(t *testing.T) {
-	crossing := make([]trafficSnapshot, 12)
-	crossing[2] = trafficSnapshot{Up: 1000}
-	crossing[3] = trafficSnapshot{Up: 8000}
-	crossing[4] = trafficSnapshot{Up: 1200}
-	crossing[8] = trafficSnapshot{Down: 1500}
-	crossing[9] = trafficSnapshot{Down: 9000}
-	crossing[10] = trafficSnapshot{Down: 1500}
+	crossing := []trafficSnapshot{
+		{Up: 1000, Down: 8000},
+		{Up: 8000, Down: 8000},
+		{Up: 8000, Down: 1000},
+	}
 	crossingRendered := strings.Join(buildTUITrafficChart(crossing, 32, 8).lines, "\n")
 	for _, color := range []string{tuiTrafficChartUpload, tuiTrafficChartDownload, tuiTrafficChartOverlap} {
 		if !strings.Contains(crossingRendered, color) {
@@ -1415,19 +1413,21 @@ func TestTUITrafficChartDrawsCombinedArea(t *testing.T) {
 		}
 	}
 
-	uploadRendered := strings.Join(buildTUITrafficChart([]trafficSnapshot{
+	uploadChart := buildTUITrafficChart([]trafficSnapshot{
 		{Up: 100},
 		{Up: 6000},
 		{Up: 200},
-	}, 32, 8).lines, "\n")
+	}, 32, 8)
+	uploadRendered := strings.Join(uploadChart.lines, "\n")
 	if !strings.Contains(uploadRendered, tuiTrafficChartUpload) || strings.Contains(uploadRendered, tuiTrafficChartDownload) {
 		t.Fatalf("upload-only chart colors: %q", uploadRendered)
 	}
-	downloadRendered := strings.Join(buildTUITrafficChart([]trafficSnapshot{
+	downloadChart := buildTUITrafficChart([]trafficSnapshot{
 		{Down: 100},
 		{Down: 6000},
 		{Down: 200},
-	}, 32, 8).lines, "\n")
+	}, 32, 8)
+	downloadRendered := strings.Join(downloadChart.lines, "\n")
 	if !strings.Contains(downloadRendered, tuiTrafficChartDownload) || strings.Contains(downloadRendered, tuiTrafficChartUpload) {
 		t.Fatalf("download-only chart colors: %q", downloadRendered)
 	}
@@ -1443,6 +1443,9 @@ func TestTUITrafficChartDrawsCombinedArea(t *testing.T) {
 	if countTUIBrailleDots(equal.lines[0]) == 0 {
 		t.Fatal("last-sample maximum does not reach the top row")
 	}
+	if gap := tuiChartPixelRowGap(equal.lines); gap >= 0 {
+		t.Fatalf("last-sample peak stroke has an empty pixel row at y=%d", gap)
+	}
 
 	interior := buildTUITrafficChart([]trafficSnapshot{
 		{},
@@ -1450,21 +1453,442 @@ func TestTUITrafficChartDrawsCombinedArea(t *testing.T) {
 		{},
 	}, 32, 8)
 	if countTUIBrailleDots(interior.lines[0]) != 0 {
-		t.Fatal("interior control reached the top row")
+		t.Fatal("interior maximum reached the top row")
+	}
+	interiorTop := tuiChartHighestY(interior.lines)
+	if interiorTop <= 0 {
+		t.Fatalf("interior hump is not below its sample height, highest y=%d", interiorTop)
 	}
 	if !strings.Contains(strings.Join(interior.lines[1:], "\n"), tuiTrafficChartUpload) {
 		t.Fatal("interior series color missing below the top row")
 	}
 
 	empty := buildTUITrafficChart(nil, 32, 8)
-	for row := 0; row <= 4; row++ {
+	for row := range empty.lines {
 		if countTUIBrailleDots(empty.lines[row]) != 0 {
-			t.Fatalf("empty chart row %d has dots: %#v", row, empty.lines)
+			t.Fatalf("empty chart row %d has a stroke: %#v", row, empty.lines)
+		}
+		if row < len(empty.lines)-1 && strings.Contains(empty.lines[row], "·") {
+			t.Fatalf("empty chart row %d has the bottom frame: %#v", row, empty.lines)
 		}
 	}
-	if countTUIBrailleDots(empty.lines[5]) == 0 {
-		t.Fatalf("empty chart baseline is not on row 5: %#v", empty.lines)
+	if !strings.Contains(empty.lines[len(empty.lines)-1], "·") {
+		t.Fatalf("empty chart is missing the bottom frame: %#v", empty.lines)
 	}
+	humpSamples := make([]trafficSnapshot, 0, 16)
+	for _, up := range []int64{0, 200, 800, 2000, 4000, 6500, 8000, 6500, 4000, 2000, 800, 200, 0} {
+		humpSamples = append(humpSamples, trafficSnapshot{Up: up})
+	}
+	hump := buildTUITrafficChart(humpSamples, 32, 8)
+	spike := buildTUITrafficChart([]trafficSnapshot{{}, {Up: 7000}, {}}, 32, 8)
+	band := false
+	for row := range spike.lines {
+		if countTUIBrailleDots(spike.lines[row]) == 0 {
+			if band {
+				for _, rest := range spike.lines[row:] {
+					if countTUIBrailleDots(rest) != 0 {
+						t.Fatal("spike stroke has a gap")
+					}
+				}
+				break
+			}
+			continue
+		}
+		band = true
+		for _, char := range []rune(stripTUIANSI(spike.lines[row])) {
+			if tuiBrailleRuneSmeared(char) {
+				t.Fatalf("spike stroke is thicker than one line: %q", stripTUIANSI(spike.lines[row]))
+			}
+		}
+	}
+
+	flatSamples := make([]trafficSnapshot, tuiTrafficHistoryLimit)
+	for index := range flatSamples {
+		flatSamples[index] = trafficSnapshot{Up: 5000}
+	}
+	flat := buildTUITrafficChart(flatSamples, 32, 8)
+	flatTop := stripTUIANSI(flat.lines[0])
+	if flatTop != strings.Repeat("\u2809", 32) {
+		t.Fatalf("flat peak is not a single-row line: %q", flatTop)
+	}
+	for row := 1; row < len(flat.lines); row++ {
+		if countTUIBrailleDots(flat.lines[row]) != 0 {
+			t.Fatalf("flat peak leaves the top row at row %d: %q", row, stripTUIANSI(flat.lines[row]))
+		}
+	}
+	if !strings.Contains(flat.lines[len(flat.lines)-1], "·") {
+		t.Fatal("flat peak bottom row lost the dotted frame")
+	}
+	singleSeries := append(append([]string{}, uploadChart.lines...), downloadChart.lines...)
+	singleSeries = append(singleSeries, flat.lines...)
+	singleSeries = append(singleSeries, hump.lines...)
+	for _, line := range singleSeries {
+		for _, char := range []rune(stripTUIANSI(line)) {
+			if tuiBrailleRuneSmeared(char) {
+				t.Fatalf("chart stroke is smeared: %q", stripTUIANSI(line))
+			}
+		}
+	}
+}
+
+func TestTUITrafficChartOneSeriesShapesStayJoined(t *testing.T) {
+	shapes := []struct {
+		name    string
+		samples []int64
+	}{
+		{name: "rising shoulder", samples: []int64{0, 8000, 100}},
+		{name: "falling shoulder", samples: []int64{8000, 100, 0}},
+		{name: "interior hump", samples: []int64{0, 8000, 0}},
+		{name: "last-sample peak", samples: []int64{1, 8192}},
+	}
+	for _, shape := range shapes {
+		for _, upload := range []bool{true, false} {
+			history := make([]trafficSnapshot, len(shape.samples))
+			for index, value := range shape.samples {
+				if upload {
+					history[index].Up = value
+				} else {
+					history[index].Down = value
+				}
+			}
+			chart := buildTUITrafficChart(history, 32, 8)
+			label := shape.name
+			if upload {
+				label += " upload"
+			} else {
+				label += " download"
+			}
+			if gap := tuiChartPixelRowGap(chart.lines); gap >= 0 {
+				t.Errorf("%s has an empty pixel row at y=%d", label, gap)
+			}
+			if got := tuiChartStrokeComponents(chart.lines); got != 1 {
+				t.Errorf("%s stroke components = %d, want 1", label, got)
+			}
+			switch shape.name {
+			case "last-sample peak":
+				if countTUIBrailleDots(chart.lines[0]) == 0 {
+					t.Errorf("%s does not reach the top row", label)
+				}
+			case "interior hump":
+				if countTUIBrailleDots(chart.lines[0]) != 0 {
+					t.Errorf("%s reached the top row", label)
+				}
+			}
+			for _, line := range chart.lines {
+				for _, char := range []rune(stripTUIANSI(line)) {
+					if tuiBrailleRuneSmeared(char) {
+						t.Errorf("%s stroke is smeared: %q", label, stripTUIANSI(line))
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestTUITrafficChartKeepsWindowFrameAndSeriesColors(t *testing.T) {
+	burst := buildTUITrafficChart([]trafficSnapshot{
+		{Up: 100, Down: 50},
+		{Up: 8000, Down: 1000},
+		{Up: 50, Down: 8000},
+	}, 32, 8)
+	burstHasStroke := false
+	for row, line := range burst.lines {
+		cells := []rune(stripTUIANSI(line))
+		half := len(cells) / 2
+		for column := 0; column < half; column++ {
+			char := cells[column]
+			if char >= 0x2800 && char <= 0x28FF {
+				t.Fatalf("three-sample burst has braille in the left half: %q", string(cells))
+			}
+			if row == len(burst.lines)-1 && char != '·' {
+				t.Fatalf("three-sample burst left-half bottom cell = %q, want ·", string(char))
+			}
+		}
+		for column := half; column < len(cells); column++ {
+			char := cells[column]
+			if char >= 0x2800 && char <= 0x28FF {
+				burstHasStroke = true
+			}
+		}
+	}
+	if !burstHasStroke {
+		t.Fatal("three-sample burst drew no stroke on the right half")
+	}
+
+	gapped := buildTUITrafficChart([]trafficSnapshot{
+		{Up: 5000},
+		{},
+		{},
+		{},
+		{Up: 4000},
+	}, 32, 8)
+	bottom := stripTUIANSI(gapped.lines[len(gapped.lines)-1])
+	bottomCells := []rune(bottom)
+	if len(bottomCells) < 2 || !strings.Contains(bottom, "·") {
+		t.Fatalf("zero gap bottom row lost the dotted frame: %q", bottom)
+	}
+	// The two spikes sit at the right of the 30-sample window. The long
+	// all-zero stretch before them is the left half of the bottom row.
+	for column := 0; column < len(bottomCells)/2; column++ {
+		if bottomCells[column] != '·' {
+			t.Fatalf("zero-gap bottom cell %d = %q, want · in %q", column, string(bottomCells[column]), bottom)
+		}
+	}
+
+	empty := buildTUITrafficChart(nil, 32, 8)
+	for row := range empty.lines {
+		if countTUIBrailleDots(empty.lines[row]) != 0 {
+			t.Fatalf("empty chart row %d has a stroke", row)
+		}
+		if row < len(empty.lines)-1 && strings.Contains(empty.lines[row], "·") {
+			t.Fatalf("empty chart row %d has the bottom frame", row)
+		}
+	}
+	if !strings.Contains(empty.lines[len(empty.lines)-1], "·") {
+		t.Fatal("empty chart is missing the bottom frame")
+	}
+
+	crossing := strings.Join(buildTUITrafficChart([]trafficSnapshot{
+		{Up: 1000, Down: 8000},
+		{Up: 8000, Down: 8000},
+		{Up: 8000, Down: 1000},
+	}, 32, 8).lines, "\n")
+	for _, color := range []string{tuiTrafficChartUpload, tuiTrafficChartDownload, tuiTrafficChartOverlap} {
+		if !strings.Contains(crossing, color) {
+			t.Fatalf("crossing chart missing %q", color)
+		}
+	}
+	uploadOnly := strings.Join(buildTUITrafficChart([]trafficSnapshot{{Up: 100}, {Up: 6000}, {Up: 200}}, 32, 8).lines, "\n")
+	if !strings.Contains(uploadOnly, tuiTrafficChartUpload) || strings.Contains(uploadOnly, tuiTrafficChartDownload) {
+		t.Fatal("upload-only chart has the wrong series color")
+	}
+	downloadOnly := strings.Join(buildTUITrafficChart([]trafficSnapshot{{Down: 100}, {Down: 6000}, {Down: 200}}, 32, 8).lines, "\n")
+	if !strings.Contains(downloadOnly, tuiTrafficChartDownload) || strings.Contains(downloadOnly, tuiTrafficChartUpload) {
+		t.Fatal("download-only chart has the wrong series color")
+	}
+}
+
+func TestTUITrafficChartShoulderStaysConnected(t *testing.T) {
+	chart := buildTUITrafficChart([]trafficSnapshot{
+		{},
+		{Up: 8000},
+		{Up: 100},
+	}, 32, 8)
+	if got := tuiChartStrokeComponents(chart.lines); got != 1 {
+		t.Fatalf("shoulder stroke components = %d, want 1", got)
+	}
+	for _, line := range chart.lines {
+		for _, char := range []rune(stripTUIANSI(line)) {
+			if tuiBrailleRuneSmeared(char) {
+				t.Fatalf("shoulder stroke is smeared: %q", stripTUIANSI(line))
+			}
+		}
+	}
+}
+
+func TestTUITrafficChartLastSamplePeakStaysConnected(t *testing.T) {
+	chart := buildTUITrafficChart([]trafficSnapshot{
+		{Up: 1, Down: 1},
+		{Up: 8192, Down: 8192},
+	}, 32, 8)
+	if countTUIBrailleDots(chart.lines[0]) == 0 {
+		t.Fatal("last-sample maximum does not reach the top row")
+	}
+	if gap := tuiChartPixelRowGap(chart.lines); gap >= 0 {
+		t.Fatalf("last-sample peak has an empty pixel row at y=%d", gap)
+	}
+	if got := tuiChartStrokeComponents(chart.lines); got != 1 {
+		t.Fatalf("last-sample peak stroke components = %d, want 1", got)
+	}
+}
+
+func TestTUITrafficChartFollowsOriginalQuadratic(t *testing.T) {
+	const width = 32
+	const height = 8
+	chart := buildTUITrafficChart([]trafficSnapshot{{}, {Up: 7000}, {}}, width, height)
+	pixelWidth := width * 2
+	pixelHeight := height * 4
+	count := tuiTrafficHistoryLimit
+	peakIndex := count - 2
+	control := tuiChartPoint{
+		x: tuiTrafficChartX(peakIndex, count, pixelWidth),
+		y: tuiTrafficChartY(7000, 7000, pixelHeight),
+	}
+	start := tuiChartMidpoint(
+		tuiChartPoint{
+			x: tuiTrafficChartX(peakIndex-1, count, pixelWidth),
+			y: tuiTrafficChartY(0, 7000, pixelHeight),
+		},
+		control,
+	)
+	end := tuiChartMidpoint(
+		control,
+		tuiChartPoint{
+			x: tuiTrafficChartX(peakIndex+1, count, pixelWidth),
+			y: tuiTrafficChartY(0, 7000, pixelHeight),
+		},
+	)
+	if control.x <= start.x || control.x >= end.x {
+		t.Fatalf("control x=%d is outside the quadratic %d..%d", control.x, start.x, end.x)
+	}
+	tRatio := tuiQuadraticTAtX(float64(start.x), float64(control.x), float64(end.x), float64(control.x))
+	curveY := clampTUIChartY(
+		roundTUIChart(tuiQuadraticBezier(float64(start.y), float64(control.y), float64(end.y), tRatio)),
+		pixelHeight,
+	)
+	if curveY <= control.y {
+		t.Fatalf("quadratic reaches the control height %d at y=%d", control.y, curveY)
+	}
+	if !tuiChartDotSet(chart.lines, control.x, curveY) {
+		t.Fatalf("chart missed the quadratic point (%d,%d)", control.x, curveY)
+	}
+	if tuiChartDotSet(chart.lines, control.x, control.y) {
+		t.Fatalf("chart lit the control sample (%d,%d)", control.x, control.y)
+	}
+}
+
+func tuiChartStrokeComponents(lines []string) int {
+	lit := map[[2]int]struct{}{}
+	for row, line := range lines {
+		for column, char := range []rune(stripTUIANSI(line)) {
+			if char < 0x2800 || char > 0x28FF {
+				continue
+			}
+			dots := uint8(char - 0x2800)
+			for dotRow := 0; dotRow < 4; dotRow++ {
+				for side := 0; side < 2; side++ {
+					if dots&tuiBrailleDots[dotRow][side] == 0 {
+						continue
+					}
+					lit[[2]int{column*2 + side, row*4 + dotRow}] = struct{}{}
+				}
+			}
+		}
+	}
+	seen := map[[2]int]struct{}{}
+	components := 0
+	for start := range lit {
+		if _, ok := seen[start]; ok {
+			continue
+		}
+		components++
+		stack := [][2]int{start}
+		seen[start] = struct{}{}
+		for len(stack) > 0 {
+			point := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			for dy := -1; dy <= 1; dy++ {
+				for dx := -1; dx <= 1; dx++ {
+					if dx == 0 && dy == 0 {
+						continue
+					}
+					next := [2]int{point[0] + dx, point[1] + dy}
+					if _, ok := lit[next]; !ok {
+						continue
+					}
+					if _, ok := seen[next]; ok {
+						continue
+					}
+					seen[next] = struct{}{}
+					stack = append(stack, next)
+				}
+			}
+		}
+	}
+	return components
+}
+
+func tuiChartPixelRowGap(lines []string) int {
+	lit := make([]bool, len(lines)*4)
+	highest := -1
+	lowest := -1
+	for row, line := range lines {
+		for _, char := range []rune(stripTUIANSI(line)) {
+			if char < 0x2800 || char > 0x28FF {
+				continue
+			}
+			dots := uint8(char - 0x2800)
+			for dotRow := 0; dotRow < 4; dotRow++ {
+				if dots&(tuiBrailleDots[dotRow][0]|tuiBrailleDots[dotRow][1]) == 0 {
+					continue
+				}
+				y := row*4 + dotRow
+				if y < 0 || y >= len(lit) {
+					continue
+				}
+				lit[y] = true
+				if highest < 0 || y < highest {
+					highest = y
+				}
+				if y > lowest {
+					lowest = y
+				}
+			}
+		}
+	}
+	if highest < 0 {
+		return -1
+	}
+	for y := highest; y <= lowest; y++ {
+		if !lit[y] {
+			return y
+		}
+	}
+	return -1
+}
+
+func tuiChartHighestY(lines []string) int {
+	highest := -1
+	for row, line := range lines {
+		cells := []rune(stripTUIANSI(line))
+		for _, char := range cells {
+			if char < 0x2800 || char > 0x28FF {
+				continue
+			}
+			dots := uint8(char - 0x2800)
+			for dotRow := 0; dotRow < 4; dotRow++ {
+				if dots&(tuiBrailleDots[dotRow][0]|tuiBrailleDots[dotRow][1]) == 0 {
+					continue
+				}
+				y := row*4 + dotRow
+				if highest < 0 || y < highest {
+					highest = y
+				}
+			}
+		}
+	}
+	return highest
+}
+
+func tuiChartDotSet(lines []string, x, y int) bool {
+	row := y / 4
+	column := x / 2
+	if row < 0 || row >= len(lines) || column < 0 {
+		return false
+	}
+	cells := []rune(stripTUIANSI(lines[row]))
+	if column >= len(cells) {
+		return false
+	}
+	char := cells[column]
+	if char < 0x2800 || char > 0x28FF {
+		return false
+	}
+	return uint8(char-0x2800)&tuiBrailleDots[y%4][x%2] != 0
+}
+
+func tuiBrailleRuneSmeared(char rune) bool {
+	if char < 0x2800 || char > 0x28FF {
+		return false
+	}
+	dots := uint8(char - 0x2800)
+	fullRows := 0
+	for row := 0; row < 4; row++ {
+		if dots&tuiBrailleDots[row][0] != 0 && dots&tuiBrailleDots[row][1] != 0 {
+			fullRows++
+		}
+	}
+	return fullRows >= 2
 }
 
 func countTUIBrailleDots(line string) int {

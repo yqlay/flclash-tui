@@ -1,3 +1,9 @@
+## FlClash TUI v1.0.2
+
+- Fit the Dashboard and SSH speed charts with the original quadratic. Each interior sample is only a control point, the segment ends at the midpoint toward the next sample, and a straight segment reaches the last sample. An interior peak is rounded below that sample. The last sample still reaches the top of the plot.
+- Keep upload and download as separate strokes on one scale. A cell with both stays cyan. Zero sits on the bottom row of dots, and the stroke is one dot wide.
+- Backend IPC remains v7. Quit the TUI and start `flclash` again to use this build.
+
 ## FlClash TUI v1.0.1
 
 - Draw the Dashboard live-traffic chart and the SSH speed chart as two quadratic-Bézier series on one scale. Upload is blue, download is green, and a braille cell that contains both is cyan. The curves are strokes only: samples are not added together, and there is no filled area under the line.
